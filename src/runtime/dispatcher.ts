@@ -23,8 +23,17 @@ export async function dispatchOnce(options: {
   const summary: DispatchSummary = { considered: 0, completed: 0, failed: 0, waiting: 0, tasks: [] };
   try {
     const now = Date.now();
+    const allTasks = new Map(repository.listTasks().map((task) => [task.task_id, task]));
     const candidates = repository.listTasks(["queued"])
       .filter((task) => Date.parse(task.available_after) <= now && (!task.next_retry_at || Date.parse(task.next_retry_at) <= now))
+      .filter((task) => {
+        if (!task.dependency_task_ids.length) return true;
+        const dependencies = task.dependency_task_ids.map((id) => allTasks.get(id)).filter((item): item is RuntimeTask => Boolean(item));
+        if (dependencies.length !== task.dependency_task_ids.length) return false;
+        if (task.dependency_policy === "all-finished") return dependencies.every((item) => ["completed", "failed", "cancelled"].includes(item.status));
+        if (task.dependency_policy === "any-success") return dependencies.some((item) => item.status === "completed");
+        return dependencies.every((item) => item.status === "completed");
+      })
       .sort((left, right) => PRIORITY[left.priority] - PRIORITY[right.priority] || Date.parse(left.scheduled_for) - Date.parse(right.scheduled_for))
       .slice(0, options.limit ?? 2);
     for (const task of candidates) {

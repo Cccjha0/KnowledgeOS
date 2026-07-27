@@ -90,12 +90,13 @@ export class RuntimeRepository {
     outputFiles?: string[];
     metrics?: JsonObject;
     completionReason?: string | null;
+    nextRetryAt?: string | null;
   }): { run: TaskRun; task: RuntimeTask } {
     return this.call("finish-run", {
       run_id: runId, run_status: result.runStatus, task_status: result.taskStatus, error: result.error ?? null,
       operation_plan_id: result.operationPlanId ?? null, git_snapshot_id: result.gitSnapshotId ?? null,
       input_files: result.inputFiles ?? [], output_files: result.outputFiles ?? [], metrics: result.metrics ?? {},
-      completion_reason: result.completionReason ?? null,
+      completion_reason: result.completionReason ?? null, next_retry_at: result.nextRetryAt ?? null,
     }) as unknown as { run: TaskRun; task: RuntimeTask };
   }
   heartbeatRun(runId: string): string { return String((this.call("heartbeat-run", { run_id: runId }) as JsonObject).heartbeat_at); }
@@ -106,6 +107,10 @@ export class RuntimeRepository {
     return Number((this.call("wake-resource-tasks", { resource }) as JsonObject).woken);
   }
   setCheckpoint(checkpoint: SchedulerCheckpoint): void { this.call("set-checkpoint", checkpoint); }
+  getCheckpoints(): SchedulerCheckpoint[] { return this.call("get-checkpoints"); }
+  reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
+  retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
+  cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));
     this.call("checkpoint");

@@ -9,7 +9,7 @@ SCHEMA_VERSION = 1
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
-    "running": {"completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"},
+    "running": {"queued", "completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"},
     "waiting-for-network": {"queued", "cancelled", "failed"},
     "waiting-for-ai": {"queued", "cancelled", "failed"},
     "waiting-for-user": {"queued", "completed", "cancelled", "failed"},
@@ -199,6 +199,13 @@ def start_run(connection, payload):
     if task["status"] != "queued":
         connection.rollback(); fail("TASK_NOT_QUEUED", f"Task {payload['task_id']} is {task['status']}.")
     now = now_iso()
+    lock_key = task.get("concurrency_key")
+    if lock_key and task.get("concurrency_policy") != "allow":
+        held = connection.execute("SELECT task_id FROM task_locks WHERE lock_key=?", (lock_key,)).fetchone()
+        if held:
+            connection.rollback(); fail("TASK_LOCKED", f"Concurrency key {lock_key} is held by {held['task_id']}.")
+        connection.execute("INSERT INTO task_locks(lock_key,task_id,worker_id,acquired_at,heartbeat_at) VALUES(?,?,?,?,?)",
+                           (lock_key, task["task_id"], payload["worker_id"], now, now))
     run_id = allocate_id(connection, "RUN")
     attempt = task["attempt_count"] + 1
     cursor = connection.execute("UPDATE tasks SET status='running',attempt_count=?,updated_at=? WHERE task_id=? AND status='queued'",
@@ -236,9 +243,10 @@ def finish_run(connection, payload):
        json.dumps(payload.get("input_files") or []), json.dumps(payload.get("output_files") or []),
        json.dumps(error) if error else None, json.dumps(payload.get("metrics") or {}), payload["run_id"]))
     completed_at = now if task_status in {"completed", "failed", "cancelled"} else None
-    connection.execute("""UPDATE tasks SET status=?,updated_at=?,completed_at=?,last_error_json=?,completion_reason=?
+    connection.execute("""UPDATE tasks SET status=?,updated_at=?,completed_at=?,last_error_json=?,completion_reason=?,next_retry_at=?
       WHERE task_id=? AND status='running'""",
-      (task_status, now, completed_at, json.dumps(error) if error else None, payload.get("completion_reason"), run["task_id"]))
+      (task_status, now, completed_at, json.dumps(error) if error else None, payload.get("completion_reason"), payload.get("next_retry_at"), run["task_id"]))
+    connection.execute("DELETE FROM task_locks WHERE task_id=?", (run["task_id"],))
     updated_run = connection.execute("SELECT * FROM task_runs WHERE run_id=?", (payload["run_id"],)).fetchone()
     updated_task = connection.execute("SELECT * FROM tasks WHERE task_id=?", (run["task_id"],)).fetchone()
     connection.commit()
@@ -296,6 +304,34 @@ def dispatch(command, connection, payload):
           ON CONFLICT(job_id) DO UPDATE SET last_evaluated_at=excluded.last_evaluated_at,last_created_window=excluded.last_created_window,next_evaluation_at=excluded.next_evaluation_at""",
           (payload["job_id"], payload.get("last_evaluated_at"), payload.get("last_created_window"), payload.get("next_evaluation_at")))
         connection.commit(); return {"job_id": payload["job_id"]}
+    if command == "get-checkpoints":
+        return [dict(row) for row in connection.execute("SELECT * FROM scheduler_checkpoints ORDER BY job_id")]
+    if command == "retry-task":
+        row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+        if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
+        if row["status"] not in {"failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"}:
+            fail("TASK_RETRY_INVALID", f"Task {payload['task_id']} cannot be retried from {row['status']}.")
+        connection.execute("UPDATE tasks SET status='queued',updated_at=?,next_retry_at=NULL,defer_until=NULL WHERE task_id=?", (now_iso(), payload["task_id"]))
+        connection.commit(); return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
+    if command == "cancel-task":
+        row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+        if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
+        if row["status"] == "running":
+            connection.execute("UPDATE tasks SET cancel_requested=1,updated_at=? WHERE task_id=?", (now_iso(), payload["task_id"]))
+        elif row["status"] in {"queued", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted", "failed"}:
+            connection.execute("UPDATE tasks SET status='cancelled',completed_at=?,updated_at=?,completion_reason='user-cancelled' WHERE task_id=?", (now_iso(), now_iso(), payload["task_id"]))
+        else: fail("TASK_CANCEL_INVALID", f"Task {payload['task_id']} cannot be cancelled from {row['status']}.")
+        connection.commit(); return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
+    if command == "reconcile":
+        interrupted = []
+        for row in connection.execute("""SELECT t.task_id,r.run_id FROM tasks t JOIN task_runs r ON r.task_id=t.task_id
+          WHERE t.status='running' AND r.status='running' AND r.heartbeat_at < ?""", (payload["heartbeat_cutoff"],)):
+            connection.execute("UPDATE task_runs SET status='interrupted',ended_at=? WHERE run_id=?", (payload["now"], row["run_id"]))
+            connection.execute("UPDATE tasks SET status='interrupted',updated_at=? WHERE task_id=?", (payload["now"], row["task_id"]))
+            connection.execute("DELETE FROM task_locks WHERE task_id=?", (row["task_id"],)); interrupted.append(row["task_id"])
+        due = [row["task_id"] for row in connection.execute("SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"],))]
+        connection.execute("UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"], payload["now"]))
+        connection.commit(); return {"interrupted": interrupted, "deferred_requeued": due}
     if command == "checkpoint":
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
     fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")

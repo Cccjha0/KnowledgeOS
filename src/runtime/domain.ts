@@ -123,7 +123,7 @@ export const TERMINAL_TASK_STATUSES = new Set<TaskStatus>(["completed", "failed"
 
 const TRANSITIONS: Record<TaskStatus, ReadonlySet<TaskStatus>> = {
   queued: new Set(["running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"]),
-  running: new Set(["completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"]),
+  running: new Set(["queued", "completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"]),
   "waiting-for-network": new Set(["queued", "cancelled", "failed"]),
   "waiting-for-ai": new Set(["queued", "cancelled", "failed"]),
   "waiting-for-user": new Set(["queued", "completed", "cancelled", "failed"]),

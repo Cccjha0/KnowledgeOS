@@ -31,7 +31,7 @@ const coreHandlers: Record<string, RuntimeHandler> = {
 function runtimeError(error: unknown): RuntimeError {
   const code = error instanceof PkbError ? error.code : "WORKER_FAILED";
   return {
-    code, message: error instanceof Error ? error.message : String(error), retryable: false,
+    code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE"].includes(code),
     occurred_at: new Date().toISOString(), details: {},
   };
 }
@@ -54,9 +54,14 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
       metrics: { ...(result.metrics ?? {}), duration_ms: performance.now() - started }, completionReason: result.completion_reason,
     }).task;
   } catch (error) {
+    const classified = runtimeError(error);
+    const attempt = run.attempt_number;
+    const delays = [5, 15, 45];
+    const retry = classified.retryable && attempt < task.max_attempts;
+    const nextRetryAt = retry ? new Date(Date.now() + (delays[Math.min(attempt - 1, delays.length - 1)] ?? 45) * 60_000).toISOString() : null;
     return repository.finishRun(run.run_id, {
-      runStatus: "failed", taskStatus: "failed", error: runtimeError(error),
-      metrics: { duration_ms: performance.now() - started }, completionReason: "worker-failed",
+      runStatus: "failed", taskStatus: retry ? "queued" : "failed", error: classified, nextRetryAt,
+      metrics: { duration_ms: performance.now() - started }, completionReason: retry ? "retry-scheduled" : "worker-failed",
     }).task;
   }
 }
