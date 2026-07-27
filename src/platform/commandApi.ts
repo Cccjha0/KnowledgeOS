@@ -5,9 +5,11 @@ import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModules } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
-import { exists, fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
+import { fromVaultPath, listFilesRecursive, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { rollbackTransaction } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, ReviewItem, RunLog } from "../core/types.js";
+import { allocateId } from "../core/ids.js";
+import { writeRunLog } from "../core/logs.js";
 import { decideReview, reconcileReviews, resolveReviewByUserEdit, retryReview } from "./reviewWorkflow.js";
 import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
 import { createCapture } from "./captureWorkflow.js";
@@ -15,6 +17,7 @@ import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } f
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { listInbox } from "./inboxDiscovery.js";
 import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
+import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -144,27 +147,6 @@ async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Prom
   }) as unknown as JsonValue;
 }
 
-async function listRuns(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
-  const limit = typeof params.limit === "number" ? Math.max(1, Math.min(100, Math.floor(params.limit))) : 20;
-  const requestedStatus = typeof params.status === "string" ? params.status : null;
-  const runs: Array<RunLog & { vault_path: string; can_rollback: boolean }> = [];
-  for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Logs"), ".md")) {
-    const data = parseMarkdown(vaultRoot, file).data;
-    if (typeof data.run_id !== "string") continue;
-    const run = data as unknown as RunLog;
-    if (requestedStatus && run.status !== requestedStatus) continue;
-    runs.push({ ...run, vault_path: toVaultPath(vaultRoot, file), can_rollback: run.status === "completed" && run.plan_id !== null });
-  }
-  return runs.sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at)).slice(0, limit);
-}
-
-async function findRun(vaultRoot: string, runId: string): Promise<{ log: RunLog; path: string; content: string }> {
-  const file = path.join(vaultRoot, "90-System", "Logs", `${runId}.md`);
-  if (!(await exists(file))) throw new PkbError("RUN_NOT_FOUND", `Run ${runId} was not found.`);
-  const document = parseMarkdown(vaultRoot, file);
-  return { log: document.data as unknown as RunLog, path: toVaultPath(vaultRoot, file), content: document.content };
-}
-
 async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
   if (method === "getTodayItems") {
@@ -194,20 +176,41 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const instances = await discoverInstances(vaultRoot);
     return instances.filter((instance) => !moduleId || instance.data.module_id === moduleId).map((instance) => instance.data) as JsonValue;
   }
-  if (method === "getRecentRuns") return listRuns(vaultRoot, params);
+  if (method === "getRecentRuns") return listRunViews(vaultRoot, params);
   if (method === "getRunDetails") {
-    const found = await findRun(vaultRoot, stringParam(params, "run_id"));
-    const transaction = found.log.plan_id
-      ? await readJson<JsonObject | null>(path.join(vaultRoot, "90-System", "Logs", "Transactions", `${found.log.plan_id}.json`), null)
-      : null;
-    return { ...found, transaction } as unknown as JsonValue;
+    const runId = stringParam(params, "run_id");
+    const view = await getRunView(vaultRoot, runId, params.developer_mode === true);
+    if (!view) throw new PkbError("RUN_NOT_FOUND", `Run ${runId} was not found.`);
+    return view;
   }
   if (method === "rollbackRun") {
-    const found = await findRun(vaultRoot, stringParam(params, "run_id"));
+    const runId = stringParam(params, "run_id");
+    const found = await findRun(vaultRoot, runId);
+    if (!found) throw new PkbError("RUN_NOT_FOUND", `Run ${runId} was not found.`);
+    const assessment = await assessRunRollback(vaultRoot, found.log);
+    if (!assessment.can_rollback) throw new PkbError("RUN_NOT_ROLLBACKABLE", assessment.reasons.join(" "), assessment);
+    if (assessment.requires_confirmation && params.confirm !== true) {
+      throw new PkbError("ROLLBACK_CONFIRMATION_REQUIRED", "This rollback may affect later dependent runs and requires explicit confirmation.", assessment);
+    }
     if (!found.log.plan_id) throw new PkbError("RUN_NOT_ROLLBACKABLE", "This run has no Operation Plan snapshot.");
     const status = await rollbackTransaction(vaultRoot, found.log.plan_id);
-    await rebuildTodayDashboard(vaultRoot);
-    return { run_id: found.log.run_id, plan_id: found.log.plan_id, status };
+    let rollbackRunId: string | null = null;
+    const warnings: string[] = [];
+    try {
+      rollbackRunId = await allocateId(vaultRoot, "RUN");
+      const now = new Date().toISOString();
+      const rollbackLog: RunLog = {
+        run_id: rollbackRunId, task_id: null, plan_id: null, source_module: "core", instance_id: found.log.instance_id,
+        review_id: null, status: "completed", git_snapshot: found.log.git_snapshot,
+        started_at: now, completed_at: new Date().toISOString(), schema_version: 1,
+      };
+      await writeRunLog(vaultRoot, rollbackLog, `# ${rollbackRunId}\n\nRolled back ${found.log.run_id}.\n\n- Plan: ${found.log.plan_id}\n- Status: ${status}\n`);
+    } catch (error) {
+      warnings.push(`Rollback completed, but the audit Run could not be written: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try { await rebuildTodayDashboard(vaultRoot); }
+    catch (error) { warnings.push(`Rollback completed, but Today could not be refreshed: ${error instanceof Error ? error.message : String(error)}`); }
+    return { run_id: found.log.run_id, rollback_run_id: rollbackRunId, plan_id: found.log.plan_id, status, assessment, warnings };
   }
   if (method === "createCapture") {
     return createCapture({
@@ -233,6 +236,8 @@ function userFacingError(error: unknown): UserFacingError {
     DESTINATION_EXISTS: { impact: "系统没有覆盖同名文件。", actions: ["打开目标 Inbox 处理同名冲突", "刷新后重试"], retryable: true },
     RUN_NOT_FOUND: { impact: "没有执行撤销或读取操作。", actions: ["刷新运行历史", "确认 Run ID"], retryable: true },
     RUN_NOT_ROLLBACKABLE: { impact: "现有文件保持不变。", actions: ["查看 Run 详情", "使用 Git 历史人工恢复"], retryable: false },
+    ROLLBACK_CONFIRMATION_REQUIRED: { impact: "尚未执行撤销。", actions: ["查看后续依赖 Run", "确认影响后再次撤销"], retryable: true },
+    ROLLBACK_CONFLICT: { impact: "系统拒绝覆盖 Run 之后的用户修改。", actions: ["打开冲突文件", "使用 Git 历史人工比较"], retryable: false },
     CAPTURE_CONTENT_REQUIRED: { impact: "没有创建 Capture 文件。", actions: ["输入内容后重新保存"], retryable: true },
     CAPTURE_IN_PROGRESS: { impact: "系统没有创建重复文件。", actions: ["稍后刷新 Today", "若未出现则重试"], retryable: true },
     IDEMPOTENCY_CONFLICT: { impact: "系统拒绝覆盖先前的 Capture 请求。", actions: ["保留输入并重新打开 Capture"], retryable: false },

@@ -305,7 +305,7 @@ export async function recoverInterruptedTransactions(vaultRoot: string): Promise
   return recovered;
 }
 
-export async function rollbackTransaction(vaultRoot: string, planId: string): Promise<TransactionStatus> {
+async function rollbackTransactionUnlocked(vaultRoot: string, planId: string): Promise<TransactionStatus> {
   const record = await readJson<TransactionRecord | null>(transactionPath(vaultRoot, planId), null);
   if (!record) throw new PkbError("TRANSACTION_NOT_FOUND", `Transaction ${planId} was not found.`);
   if (record.status === "rolled-back") return record.status;
@@ -325,6 +325,15 @@ export async function rollbackTransaction(vaultRoot: string, planId: string): Pr
     }
   }
   return record.status;
+}
+
+export async function rollbackTransaction(vaultRoot: string, planId: string): Promise<TransactionStatus> {
+  const lock = await acquireLock(vaultRoot, `rollback-${planId}`);
+  try {
+    return await rollbackTransactionUnlocked(vaultRoot, planId);
+  } finally {
+    await releaseLock(vaultRoot, lock);
+  }
 }
 
 export async function executeOperationPlan(vaultRoot: string, plan: OperationPlan, policy: ExecutionPolicy = {}): Promise<void> {

@@ -4,12 +4,14 @@ const { execFile } = require("node:child_process");
 const VIEW_TYPE = "knowledgeos-today";
 const REVIEW_VIEW_TYPE = "knowledgeos-reviews";
 const INBOX_VIEW_TYPE = "knowledgeos-inbox";
+const SYSTEM_VIEW_TYPE = "knowledgeos-system";
 const DEFAULT_SETTINGS = {
   coreCliPath: "",
   nodePath: "node",
   vaultPath: "",
   openTodayOnStartup: true,
   autoRefresh: true,
+  developerMode: false,
 };
 
 class CoreCommandClient {
@@ -723,6 +725,221 @@ class InboxCenterView extends ItemView {
   }
 }
 
+function rollbackLabel(assessment) {
+  if (!assessment?.can_rollback) return "不可自动撤销";
+  return assessment.requires_confirmation ? "撤销（需要确认）" : "安全撤销";
+}
+
+class RollbackConfirmModal extends Modal {
+  constructor(app, plugin, run, onComplete) { super(app); this.plugin = plugin; this.run = run; this.onComplete = onComplete; }
+  onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-review-modal");
+    root.createEl("h2", { text: "确认撤销" });
+    root.createEl("p", { text: `准备撤销 ${this.run.run_id}：${this.run.source_action}` });
+    const assessment = this.run.rollback;
+    const warning = root.createDiv({ cls: assessment.requires_confirmation ? "knowledgeos-review-warning" : "knowledgeos-state" });
+    for (const reason of assessment.reasons || []) warning.createDiv({ text: reason });
+    if (assessment.later_dependent_runs?.length) warning.createDiv({ text: `后续关联 Run：${assessment.later_dependent_runs.join("、")}` });
+    root.createEl("p", { text: "撤销只恢复该事务记录的文件快照；如果文件已被用户修改，Core 会拒绝覆盖。" });
+    this.statusEl = root.createDiv({ cls: "knowledgeos-capture-status" });
+    const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
+    this.confirmButton = actions.createEl("button", { cls: "mod-warning", text: "确认撤销" });
+    this.confirmButton.onclick = () => this.submit();
+    const cancel = actions.createEl("button", { text: "取消" });
+    cancel.onclick = () => this.close();
+  }
+  async submit() {
+    this.confirmButton.disabled = true;
+    this.statusEl.setText("Core 正在验证文件状态并执行撤销…");
+    const response = await this.plugin.client.invoke("rollbackRun", {
+      run_id: this.run.run_id,
+      confirm: this.run.rollback.requires_confirmation === true,
+    });
+    this.confirmButton.disabled = false;
+    if (!response.ok) {
+      this.statusEl.setText(response.error?.message || "撤销失败；现有文件保持不变。");
+      return;
+    }
+    const warning = response.data.warnings?.length ? `；${response.data.warnings.join("；")}` : "";
+    new Notice(`已撤销 ${this.run.run_id}${warning}`);
+    this.close();
+    await this.onComplete(response.data);
+  }
+}
+
+class RunDetailsModal extends Modal {
+  constructor(app, plugin, runId, onChanged) { super(app); this.plugin = plugin; this.runId = runId; this.onChanged = onChanged; }
+  async onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-run-modal");
+    root.createEl("h2", { text: "Run 详情" });
+    this.body = root.createDiv({ cls: "knowledgeos-state", text: "正在加载运行详情…" });
+    const response = await this.plugin.client.invoke("getRunDetails", { run_id: this.runId, developer_mode: this.plugin.settings.developerMode });
+    if (!response.ok) { this.body.setText(response.error?.message || "无法加载 Run 详情"); return; }
+    this.run = response.data;
+    this.renderDetails();
+  }
+  renderDetails() {
+    const run = this.run;
+    const root = this.body;
+    root.empty();
+    root.removeClass("knowledgeos-state");
+    root.createEl("h3", { text: `${run.run_id} · ${run.status}` });
+    root.createDiv({ cls: "knowledgeos-review-meta", text: `${run.source_module}${run.instance_id ? ` / ${run.instance_id}` : ""} · ${run.completed_at}` });
+    root.createEl("p", { text: run.input_summary || run.source_action || "Core operation" });
+
+    root.createEl("h4", { text: `修改文件 (${run.affected_files.length})` });
+    if (!run.affected_files.length) root.createDiv({ cls: "knowledgeos-empty", text: "此 Run 没有可展示的事务文件。" });
+    for (const file of run.affected_files) {
+      const button = root.createEl("button", { cls: "knowledgeos-link knowledgeos-run-file", text: file.path });
+      button.onclick = () => this.app.workspace.openLinkText(file.path, "", false);
+    }
+    root.createEl("h4", { text: `执行操作 (${run.operations.length})` });
+    for (const operation of run.operations) {
+      const row = root.createDiv({ cls: "knowledgeos-run-operation" });
+      row.createEl("strong", { text: `${operation.type} · ${operation.status}` });
+      if (operation.target) row.createDiv({ text: operation.target });
+      if (operation.error) row.createDiv({ cls: "knowledgeos-impact", text: operation.error });
+    }
+    if (run.reviews.length) {
+      root.createEl("h4", { text: `创建审核 (${run.reviews.length})` });
+      for (const review of run.reviews) {
+        const button = root.createEl("button", { cls: "knowledgeos-link knowledgeos-run-file", text: `${review.review_id} · ${review.action}` });
+        button.onclick = () => { this.close(); this.plugin.activateReviews(review.review_id); };
+      }
+    }
+    root.createEl("h4", { text: "恢复能力" });
+    const assessment = root.createDiv({ cls: `knowledgeos-rollback rollback-${run.rollback.level}` });
+    assessment.createEl("strong", { text: rollbackLabel(run.rollback) });
+    for (const reason of run.rollback.reasons || []) assessment.createDiv({ text: reason });
+    if (run.rollback.changed_paths?.length) assessment.createDiv({ text: `已变化：${run.rollback.changed_paths.join("、")}` });
+    assessment.createDiv({ cls: "knowledgeos-review-meta", text: `Git 快照：${run.git_snapshot || "无"}` });
+    if (run.error_summary) root.createDiv({ cls: "knowledgeos-review-warning", text: run.error_summary });
+
+    if (this.plugin.settings.developerMode && run.developer) {
+      const details = root.createEl("details");
+      details.createEl("summary", { text: "开发者数据" });
+      details.createEl("pre", { text: displayJson(run.developer) });
+    }
+    const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
+    const rollback = actions.createEl("button", { text: rollbackLabel(run.rollback) });
+    rollback.disabled = !run.rollback.can_rollback;
+    rollback.onclick = () => {
+      this.close();
+      new RollbackConfirmModal(this.app, this.plugin, run, async () => { await this.onChanged(); }).open();
+    };
+    const openLog = actions.createEl("button", { text: "打开运行日志" });
+    openLog.onclick = () => this.app.workspace.openLinkText(run.vault_path, "", false);
+    const close = actions.createEl("button", { text: "关闭" });
+    close.onclick = () => this.close();
+  }
+}
+
+class SystemCenterView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
+  getViewType() { return SYSTEM_VIEW_TYPE; }
+  getDisplayText() { return "KnowledgeOS System"; }
+  getIcon() { return "activity"; }
+  async onOpen() { await this.refresh(); }
+
+  async refresh(openRunId = null) {
+    const root = this.contentEl;
+    root.empty();
+    root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" });
+    const [modules, instances, inbox, reviews, runs] = await Promise.all([
+      this.plugin.client.invoke("getModules", {}),
+      this.plugin.client.invoke("getInstances", {}),
+      this.plugin.client.invoke("listInboxItems", {}),
+      this.plugin.client.invoke("listReviewItems", { statuses: ["pending", "error"] }),
+      this.plugin.client.invoke("getRecentRuns", { limit: 20 }),
+    ]);
+    const failed = [modules, instances, inbox, reviews, runs].find((response) => !response.ok);
+    if (failed) { this.renderFailure(failed.error); return; }
+    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data };
+    this.render();
+    if (openRunId) new RunDetailsModal(this.app, this.plugin, openRunId, () => this.refresh()).open();
+  }
+
+  renderFailure(error) {
+    const root = this.contentEl;
+    root.empty();
+    root.createEl("h2", { text: "System Center 无法连接 Core" });
+    root.createEl("p", { text: error?.message || "未知连接错误" });
+    if (error?.impact) root.createEl("p", { cls: "knowledgeos-impact", text: error.impact });
+    for (const action of error?.recovery_actions || []) root.createDiv({ text: `• ${action}` });
+    const retry = root.createEl("button", { text: "重新连接" });
+    retry.onclick = () => this.refresh();
+  }
+
+  moduleStats(moduleId) {
+    return {
+      inbox: this.data.inbox.items.filter((item) => item.suggested_module_id === moduleId).length,
+      reviews: this.data.reviews.filter((item) => item.source_module === moduleId).length,
+      latest: this.data.runs.find((run) => run.source_module === moduleId) || null,
+    };
+  }
+  instanceStats(instanceId) {
+    return {
+      inbox: this.data.inbox.items.filter((item) => item.suggested_instance_id === instanceId).length,
+      reviews: this.data.reviews.filter((item) => item.instance_id === instanceId).length,
+      latest: this.data.runs.find((run) => run.instance_id === instanceId) || null,
+    };
+  }
+
+  render() {
+    const root = this.contentEl;
+    root.empty();
+    const header = root.createDiv({ cls: "knowledgeos-header" });
+    header.createEl("h2", { text: "System Center" });
+    const refresh = header.createEl("button", { text: "刷新" });
+    refresh.onclick = () => this.refresh();
+    const health = root.createDiv({ cls: "knowledgeos-system-health" });
+    health.createEl("strong", { text: "Core 已连接 · Command API v1" });
+    health.createDiv({ text: `模块 ${this.data.modules.length} · 实例 ${this.data.instances.length} · Inbox ${this.data.inbox.counts.total} · 待审核 ${this.data.reviews.length}` });
+
+    root.createEl("h3", { text: "模块" });
+    for (const module of this.data.modules) {
+      const stats = this.moduleStats(module.id);
+      const card = root.createDiv({ cls: "knowledgeos-card knowledgeos-system-card" });
+      card.createEl("strong", { text: `${module.name} · ${module.status}` });
+      card.createDiv({ cls: "knowledgeos-review-meta", text: `v${module.version} · 活跃实例 ${module.active_instance_count} · Inbox ${stats.inbox} · 审核 ${stats.reviews}` });
+      if (module.description) card.createDiv({ cls: "knowledgeos-description", text: module.description.trim() });
+      card.createDiv({ cls: "knowledgeos-review-meta", text: stats.latest ? `最近运行：${stats.latest.run_id} · ${stats.latest.status}` : "尚无运行记录" });
+      const lifecycle = card.createEl("button", { text: "启停与验证（API 尚未开放）" });
+      lifecycle.disabled = true;
+    }
+
+    root.createEl("h3", { text: "实例" });
+    if (!this.data.instances.length) root.createDiv({ cls: "knowledgeos-empty", text: "当前没有模块实例。创建向导将在生命周期 API 开放后提供。" });
+    for (const instance of this.data.instances) {
+      const stats = this.instanceStats(instance.instance_id);
+      const card = root.createDiv({ cls: "knowledgeos-card knowledgeos-system-card" });
+      const open = card.createEl("button", { cls: "knowledgeos-link", text: `${instance.display_name} · ${instance.status}` });
+      open.onclick = () => this.app.workspace.openLinkText(instance.content_root, "", false);
+      card.createDiv({ cls: "knowledgeos-review-meta", text: `${instance.module_id} · Inbox ${stats.inbox} · 审核 ${stats.reviews}` });
+      card.createDiv({ cls: "knowledgeos-description", text: instance.content_root });
+      card.createDiv({ cls: "knowledgeos-review-meta", text: stats.latest ? `最近成功：${stats.latest.run_id} · ${stats.latest.completed_at}` : "尚无运行记录" });
+    }
+
+    root.createEl("h3", { text: "最近运行" });
+    if (!this.data.runs.length) root.createDiv({ cls: "knowledgeos-empty", text: "尚无运行记录。" });
+    for (const run of this.data.runs) this.renderRun(root, run);
+  }
+
+  renderRun(root, run) {
+    const card = root.createDiv({ cls: `knowledgeos-card knowledgeos-run-card run-${run.status}` });
+    const title = card.createEl("button", { cls: "knowledgeos-link", text: run.source_action });
+    title.onclick = () => new RunDetailsModal(this.app, this.plugin, run.run_id, () => this.refresh()).open();
+    card.createDiv({ cls: "knowledgeos-review-meta", text: `${run.run_id} · ${run.source_module}${run.instance_id ? ` / ${run.instance_id}` : ""} · ${run.completed_at}` });
+    card.createDiv({ text: `文件 ${run.modified_file_count} · 操作 ${run.operation_count} · 审核 ${run.review_count}` });
+    const recovery = card.createDiv({ cls: `knowledgeos-rollback-inline rollback-${run.rollback.level}`, text: rollbackLabel(run.rollback) });
+    if (run.status === "failed") recovery.setText("运行失败 · 查看详情");
+  }
+}
+
 class TodayView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -827,7 +1044,8 @@ class TodayView extends ItemView {
     root.createEl("h3", { text: "最近完成" });
     for (const run of runs.slice(0, 5)) {
       const card = root.createDiv({ cls: "knowledgeos-card" });
-      card.createDiv({ text: `${run.source_module} · ${run.run_id}` });
+      const button = card.createEl("button", { cls: "knowledgeos-link", text: `${run.source_module} · ${run.run_id}` });
+      button.onclick = () => this.plugin.activateSystem(run.run_id);
       card.createDiv({ cls: "knowledgeos-description", text: run.completed_at });
     }
   }
@@ -859,6 +1077,10 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
       .addToggle((toggle) => toggle.setValue(this.plugin.settings.autoRefresh).onChange(async (value) => {
         this.plugin.settings.autoRefresh = value; await this.plugin.saveSettings();
       }));
+    new Setting(containerEl).setName("开发者模式").setDesc("在 Run 详情中显示底层计划、事务和日志数据")
+      .addToggle((toggle) => toggle.setValue(this.plugin.settings.developerMode).onChange(async (value) => {
+        this.plugin.settings.developerMode = value; await this.plugin.saveSettings();
+      }));
     new Setting(containerEl).setName("测试连接").addButton((button) => button.setButtonText("测试").onClick(async () => {
       const result = await this.plugin.client.invoke("getModules", {});
       new Notice(result.ok ? "KnowledgeOS Core 连接正常" : result.error?.message || "连接失败");
@@ -874,14 +1096,17 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new TodayView(leaf, this));
     this.registerView(REVIEW_VIEW_TYPE, (leaf) => new ReviewCenterView(leaf, this));
     this.registerView(INBOX_VIEW_TYPE, (leaf) => new InboxCenterView(leaf, this));
+    this.registerView(SYSTEM_VIEW_TYPE, (leaf) => new SystemCenterView(leaf, this));
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
     this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
     this.addRibbonIcon("inbox", "打开 Inbox Center", () => this.activateInbox());
+    this.addRibbonIcon("activity", "打开 System Center", () => this.activateSystem());
     this.addCommand({ id: "open-today", name: "Open Today", callback: () => this.activateToday() });
     this.addCommand({ id: "quick-capture", name: "Quick Capture", callback: () => this.openCapture() });
     this.addCommand({ id: "open-reviews", name: "Open Review Center", callback: () => this.activateReviews() });
     this.addCommand({ id: "open-inbox", name: "Open Inbox Center", callback: () => this.activateInbox() });
+    this.addCommand({ id: "open-system", name: "Open System Center", callback: () => this.activateSystem() });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       menu.addItem((item) => item.setTitle("Quick Capture 到此上下文").setIcon("plus-circle")
         .onClick(() => this.openCapture(file.path)));
@@ -892,7 +1117,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       if (file.path === "Today.md") return;
       clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
-        for (const type of [VIEW_TYPE, INBOX_VIEW_TYPE]) {
+        for (const type of [VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE]) {
           for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.view.refresh();
         }
       }, 1500);
@@ -936,5 +1161,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     }
     this.app.workspace.revealLeaf(leaf);
     if (leaf.view?.refresh) await leaf.view.refresh();
+  }
+
+  async activateSystem(runId = null) {
+    let leaf = this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      await leaf.setViewState({ type: SYSTEM_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    if (leaf.view?.refresh) await leaf.view.refresh(runId);
   }
 };

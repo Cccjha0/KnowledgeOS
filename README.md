@@ -8,6 +8,7 @@ Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/COR
 Quick Capture 的用户流程、上下文推断与幂等规则见 `docs/QUICK_CAPTURE.md`。
 Review Center、目标字段对比和 Codex 结构化讨论回写见 `docs/REVIEW_CENTER.md`。
 Inbox Center 的受管扫描范围、路由预览、批量安全规则和失败恢复见 `docs/INBOX_CENTER.md`。
+System Center 的运行摘要、撤销安全分级和恢复审计见 `docs/SYSTEM_CENTER.md`。
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 
@@ -89,8 +90,9 @@ node dist/cli.js api getTodayItems `
 
 本地插件源码位于 `plugins/knowledgeos-obsidian/`。将该目录复制到目标 Vault 的
 `.obsidian/plugins/knowledgeos/` 后，在 Obsidian 中启用并配置 `dist/cli.js` 与 Vault 的绝对路径。
-当前交付完成 Today 侧边栏、Quick Capture、Inbox Center 和 Review Center。Inbox Center 支持
+当前交付完成 Today、Quick Capture、Inbox Center、Review Center 和 System Center。Inbox Center 支持
 执行前预览、显式路由、高置信度批量处理、延后/忽略/移出管理和失败重试；插件不会绕过 Core 直接读写文件。
+System Center 支持模块/实例状态、Recent Runs、用户可读 Run 详情以及经过文件冲突和后续依赖检查的安全撤销。
 
 ## 初始化或接入 Vault
 

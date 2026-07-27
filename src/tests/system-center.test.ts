@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { parseMarkdown } from "../core/bridge.js";
+import { writeRunLog } from "../core/logs.js";
+import { executeOperationPlan } from "../core/operationExecutor.js";
+import type { JsonObject, OperationPlan, RunLog } from "../core/types.js";
+import { initializeVault } from "../core/vault.js";
+import { invokeCommandApi } from "../platform/commandApi.js";
+
+async function executeLoggedPlan(vault: string, sequence: number, value: string): Promise<{ runId: string; plan: OperationPlan }> {
+  const suffix = String(sequence).padStart(6, "0");
+  const runId = `RUN-2026-${suffix}`;
+  const plan: OperationPlan = {
+    plan_id: `PLAN-2026-${suffix}`, task_id: `TASK-2026-${suffix}`,
+    source_module: "experience-log", instance_id: null, summary: `Set record value to ${value}`,
+    review_items: [], operations: [{
+      operation_id: "OP-001", type: "update-frontmatter", target: "record.md", risk: "green", confidence: 1,
+      idempotency_key: `system-center:${suffix}`, payload: { patch: { value } }, requires_review_id: null,
+    }],
+  };
+  const started = new Date(Date.now() + sequence * 1000).toISOString();
+  await fs.writeFile(path.join(vault, "90-System", "State", "Plans", `${plan.plan_id}.json`), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await executeOperationPlan(vault, plan, { gitSnapshot: "disabled" });
+  const log: RunLog = {
+    run_id: runId, task_id: plan.task_id, plan_id: plan.plan_id, source_module: "experience-log", instance_id: null,
+    review_id: null, status: "completed", git_snapshot: "disabled", started_at: started,
+    completed_at: new Date(Date.parse(started) + 100).toISOString(), schema_version: 1,
+  };
+  await writeRunLog(vault, log, `# ${runId}\n\n${plan.summary}.\n`);
+  return { runId, plan };
+}
+
+test("System Center run models are user-readable and expose safe rollback", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-run-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.writeFile(path.join(vault, "record.md"), "---\nvalue: old\n---\n", "utf8");
+    const { runId } = await executeLoggedPlan(vault, 1, "new");
+    await fs.writeFile(path.join(vault, "90-System", "Logs", "RUN-2026-999999.md"), [
+      "---", "run_id: RUN-2026-999999", "task_id: null", "plan_id: null",
+      "module: application-tracker", "instance: legacy-instance", "status: completed",
+      "git_snapshot: null", "started_at: '2025-01-01T00:00:00Z'", "completed_at: '2025-01-01T00:00:00Z'",
+      "schema_version: 1", "---", "", "# Legacy run", "",
+    ].join("\n"), "utf8");
+
+    const recent = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-RUNS", method: "getRecentRuns", params: {} });
+    assert.equal(recent.ok, true);
+    const summaries = recent.data as JsonObject[];
+    const summary = summaries.find((candidate) => candidate.run_id === runId)!;
+    assert.equal(summary.run_id, runId);
+    assert.equal(summary.modified_file_count, 1);
+    assert.equal((summary.rollback as JsonObject).level, "safe");
+    const legacy = summaries.find((candidate) => candidate.run_id === "RUN-2026-999999")!;
+    assert.equal(legacy.source_module, "application-tracker");
+    assert.equal(legacy.instance_id, "legacy-instance");
+
+    const details = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-DETAIL", method: "getRunDetails", params: { run_id: runId } });
+    assert.equal(details.ok, true);
+    const view = details.data as JsonObject;
+    assert.equal((view.operations as JsonObject[])[0]?.type, "update-frontmatter");
+    assert.equal((view.affected_files as JsonObject[])[0]?.path, "record.md");
+    assert.equal(view.developer, null);
+
+    const rolledBack = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-ROLLBACK", method: "rollbackRun", params: { run_id: runId } });
+    assert.equal(rolledBack.ok, true);
+    assert.equal((rolledBack.data as JsonObject).status, "rolled-back");
+    assert.match(String(parseMarkdown(vault, path.join(vault, "record.md")).data.value), /old/);
+    assert.equal(typeof (rolledBack.data as JsonObject).rollback_run_id, "string");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("rollback refuses changed files and requires confirmation for later overlapping runs", async () => {
+  const changedVault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-changed-"));
+  const dependentVault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-dependent-"));
+  try {
+    await initializeVault(changedVault, "disabled");
+    await fs.writeFile(path.join(changedVault, "record.md"), "---\nvalue: old\n---\n", "utf8");
+    const changed = await executeLoggedPlan(changedVault, 2, "system");
+    await fs.writeFile(path.join(changedVault, "record.md"), "---\nvalue: user-edit\n---\n", "utf8");
+    const refused = await invokeCommandApi({ vaultRoot: changedVault, requestId: "SYS-REFUSE", method: "rollbackRun", params: { run_id: changed.runId } });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.error?.code, "RUN_NOT_ROLLBACKABLE");
+    assert.match(await fs.readFile(path.join(changedVault, "record.md"), "utf8"), /user-edit/);
+
+    await initializeVault(dependentVault, "disabled");
+    await fs.writeFile(path.join(dependentVault, "record.md"), "---\nvalue: old\n---\n", "utf8");
+    const first = await executeLoggedPlan(dependentVault, 3, "same");
+    await executeLoggedPlan(dependentVault, 4, "same");
+    const needsConfirmation = await invokeCommandApi({ vaultRoot: dependentVault, requestId: "SYS-CONFIRM-1", method: "rollbackRun", params: { run_id: first.runId } });
+    assert.equal(needsConfirmation.ok, false);
+    assert.equal(needsConfirmation.error?.code, "ROLLBACK_CONFIRMATION_REQUIRED");
+    const confirmed = await invokeCommandApi({ vaultRoot: dependentVault, requestId: "SYS-CONFIRM-2", method: "rollbackRun", params: { run_id: first.runId, confirm: true } });
+    assert.equal(confirmed.ok, true);
+    assert.equal(parseMarkdown(dependentVault, path.join(dependentVault, "record.md")).data.value, "old");
+  } finally {
+    await fs.rm(changedVault, { recursive: true, force: true });
+    await fs.rm(dependentVault, { recursive: true, force: true });
+  }
+});

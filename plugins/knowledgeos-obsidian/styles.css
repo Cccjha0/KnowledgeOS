@@ -35,3 +35,17 @@
 .knowledgeos-inbox-preview div { margin-top: .3rem; }
 .knowledgeos-inbox-summary { cursor: pointer; display: block; text-align: left; width: 100%; }
 @media (max-width: 600px) { .knowledgeos-inbox-route { grid-template-columns: 1fr; } }
+.knowledgeos-system-health { background: var(--background-secondary); border-left: 3px solid var(--color-green); border-radius: 6px; margin: .75rem 0; padding: .7rem; }
+.knowledgeos-system-health div { color: var(--text-muted); margin-top: .3rem; }
+.knowledgeos-system-card button[disabled] { margin-top: .5rem; }
+.knowledgeos-run-card.run-failed { border-left: 3px solid var(--color-red); }
+.knowledgeos-rollback-inline { font-size: var(--font-ui-smaller); margin-top: .4rem; }
+.rollback-safe { color: var(--color-green); }
+.rollback-confirmation-required { color: var(--color-orange); }
+.rollback-unavailable { color: var(--text-muted); }
+.knowledgeos-run-modal { max-width: 52rem; }
+.knowledgeos-run-modal h4 { margin-bottom: .4rem; }
+.knowledgeos-run-file { display: block; margin: .25rem 0; }
+.knowledgeos-run-operation, .knowledgeos-rollback { background: var(--background-secondary); border-radius: 6px; margin: .4rem 0; padding: .55rem; }
+.knowledgeos-run-operation div, .knowledgeos-rollback div { margin-top: .25rem; }
+.knowledgeos-run-modal details pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; }

@@ -25,9 +25,9 @@ action.
 | `resolveReview` | direct decision or `prepare-discussion`, `apply-discussion-result`, `reconcile`, `retry`, `mark-resolved-by-user-edit` mode | persisted review result or minimal discussion context | available |
 | `getModules` | none | module summaries and active-instance counts | available |
 | `getInstances` | optional `module_id` | instance summaries | available |
-| `getRecentRuns` | optional `limit` (1–100), `status` | recent run summaries | available |
-| `getRunDetails` | `run_id` | run log, user summary and transaction record | available |
-| `rollbackRun` | `run_id` | rollback status and plan identity | available |
+| `getRecentRuns` | optional `limit` (1–100), `status` | user-facing counts, source action and rollback assessment | available |
+| `getRunDetails` | `run_id`, optional `developer_mode` | affected files, operation/review summary, error and rollback assessment | available |
+| `rollbackRun` | `run_id`, `confirm?: boolean` | rollback status, audit Run and original plan identity | available |
 
 Inbox processing never scans the whole Vault. `processInboxBatch` rejects an empty or implicit scope,
 and Core skips low-confidence and AI-dependent entries even when their IDs are supplied.
@@ -38,6 +38,10 @@ with the same ID returns the original result; reusing the ID with different cont
 
 Discussion preparation returns `state: waiting-for-ai` with `ok: true`. A discussion result must include
 the returned `context_token`; stale tokens are rejected before the decision workflow runs.
+
+Run rollback is assessed twice: when the Run view is built and immediately before execution. A changed
+target is unavailable; overlap with a later completed Run requires `confirm: true`. Successful rollback
+creates a separate audit Run and refreshes Today.
 
 ## Response and UI state
 

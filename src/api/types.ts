@@ -94,3 +94,13 @@ export interface ProcessInboxBatchParams {
   item_ids: string[];
   mode: "high-confidence";
 }
+
+export interface GetRunDetailsParams {
+  run_id: string;
+  developer_mode?: boolean;
+}
+
+export interface RollbackRunParams {
+  run_id: string;
+  confirm?: boolean;
+}

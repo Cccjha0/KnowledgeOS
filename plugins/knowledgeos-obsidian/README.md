@@ -17,3 +17,7 @@ Inbox Center is available from the ribbon, command palette, and Today Inbox summ
 Core routing explanations and execution previews, supports explicit module/instance overrides,
 high-confidence batch processing, defer/ignore/unmanage, and failed-item retry. AI-dependent items stay
 visible as waiting for Codex instead of being reported as completed.
+
+System Center shows Core connectivity, module and instance status, recent runs, affected files,
+operation summaries, errors, Git snapshots, and rollback safety. Rollback is revalidated by Core and
+creates a separate audit Run. Developer mode reveals the underlying Plan and transaction only on demand.
