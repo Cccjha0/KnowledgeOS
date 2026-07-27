@@ -1,4 +1,4 @@
-# KnowledgeOS Obsidian Plugin (F02 MVP)
+# KnowledgeOS Obsidian Plugin (Milestone F MVP)
 
 This desktop-only MVP renders Today, provides Quick Capture, and completes Review decisions through the
 Core Command API. It does not read or write KnowledgeOS business files, Review Queue files, transaction
@@ -25,3 +25,12 @@ creates a separate audit Run. Developer mode reveals the underlying Plan and tra
 Lifecycle controls use Core previews for module enable/disable/validation and instance creation,
 pause/resume/complete/archive. Instance forms come from module declarations, and archive keeps all user
 data while requiring confirmation when Inbox or Review work remains.
+
+## F07 daily-use conventions
+
+- Default shortcuts: `Ctrl/Cmd+Shift+C` opens Quick Capture and `Ctrl/Cmd+Shift+T` opens Today. They can be changed in Obsidian's Hotkeys settings.
+- Inbox and Review lists render 50 items at a time, with an explicit “加载更多” control.
+- Buttons, forms, focus outlines, live status regions, and theme colors use Obsidian-native controls and variables.
+- Completion notices are configurable. Failures and rollback results always surface immediately; new Inbox work and ordinary background refreshes stay in Today.
+- If Core is unavailable, forms retain user input and centers show a retry path. Today additionally opens the last generated `Today.md`, so persisted work remains usable offline.
+- The plugin does not keep a second business-state cache. Reloading the plugin reconstructs every view from Core and Vault state.

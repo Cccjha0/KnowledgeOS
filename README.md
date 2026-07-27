@@ -8,6 +8,8 @@ Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/COR
 Quick Capture 的用户流程、上下文推断与幂等规则见 `docs/QUICK_CAPTURE.md`。
 Review Center、目标字段对比和 Codex 结构化讨论回写见 `docs/REVIEW_CENTER.md`。
 Inbox Center 的受管扫描范围、路由预览、批量安全规则和失败恢复见 `docs/INBOX_CENTER.md`。
+
+Milestone F 的统一快捷键、加载/错误/通知规范、离线降级和完整用户旅程见 `docs/MILESTONE_F_DAILY_EXPERIENCE.md`。
 System Center 的运行摘要、撤销安全分级和恢复审计见 `docs/SYSTEM_CENTER.md`。
 模块启停、实例创建向导和实例状态机见 `docs/LIFECYCLE_MANAGEMENT.md`。
 
@@ -95,6 +97,7 @@ node dist/cli.js api getTodayItems `
 执行前预览、显式路由、高置信度批量处理、延后/忽略/移出管理和失败重试；插件不会绕过 Core 直接读写文件。
 System Center 支持模块/实例状态、Recent Runs、用户可读 Run 详情以及经过文件冲突和后续依赖检查的安全撤销。
 F06b 生命周期接口进一步支持模块启用/停用/验证，以及实例创建、暂停、恢复、完成和无数据删除的归档。
+F07 已统一默认快捷键、可访问状态、错误恢复、通知策略和长列表渐进加载；F16 的一周真实使用观察仍需在日常环境中完成。
 
 ## 初始化或接入 Vault
 
