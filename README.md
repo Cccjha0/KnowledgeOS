@@ -10,6 +10,8 @@ Review Center、目标字段对比和 Codex 结构化讨论回写见 `docs/REVIE
 Inbox Center 的受管扫描范围、路由预览、批量安全规则和失败恢复见 `docs/INBOX_CENTER.md`。
 
 Milestone F 的统一快捷键、加载/错误/通知规范、离线降级和完整用户旅程见 `docs/MILESTONE_F_DAILY_EXPERIENCE.md`。
+
+Milestone G 的持久任务运行器、调度补偿、资源等待、Task Center、CLI runner 和真实离线验收协议见 `docs/MILESTONE_G_TASK_RUNNER.md`。
 System Center 的运行摘要、撤销安全分级和恢复审计见 `docs/SYSTEM_CENTER.md`。
 模块启停、实例创建向导和实例状态机见 `docs/LIFECYCLE_MANAGEMENT.md`。
 

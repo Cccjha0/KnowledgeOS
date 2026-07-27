@@ -24,6 +24,7 @@ export async function evaluateResourceGate(vaultRoot: string, repository: Runtim
     codex: persisted.get("codex")?.status ?? "unknown",
     user: task.resources.user === "required" ? "waiting" : "not-required",
   };
+  if (task.payload.risk === "red") return { ready: false, waiting_status: "waiting-for-user", checked, reason: "Red-risk tasks require explicit user confirmation." };
   if (task.resources.filesystem === "required" && filesystem !== "available") {
     return { ready: false, waiting_status: "waiting-for-user", checked, reason: "Vault filesystem is unavailable or not writable." };
   }

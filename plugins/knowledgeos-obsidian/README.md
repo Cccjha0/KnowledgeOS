@@ -34,3 +34,5 @@ data while requiring confirmation when Inbox or Review work remains.
 - Completion notices are configurable. Failures and rollback results always surface immediately; new Inbox work and ordinary background refreshes stay in Today.
 - If Core is unavailable, forms retain user input and centers show a retry path. Today additionally opens the last generated `Today.md`, so persisted work remains usable offline.
 - The plugin does not keep a second business-state cache. Reloading the plugin reconstructs every view from Core and Vault state.
+
+Milestone G adds a Task Center inside System. Obsidian performs startup reconciliation and a one-minute local dispatch cycle; Active, Waiting, Scheduled, Failed, and History are projections of Core's durable SQLite queue. Task retry, defer, cancellation, resource status, and Runs always go through the Command API.

@@ -332,6 +332,11 @@ def dispatch(command, connection, payload):
         due = [row["task_id"] for row in connection.execute("SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"],))]
         connection.execute("UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"], payload["now"]))
         connection.commit(); return {"interrupted": interrupted, "deferred_requeued": due}
+    if command == "cleanup-history":
+        days = max(30, int(payload.get("retain_days", 90)))
+        cursor = connection.execute("""DELETE FROM task_runs WHERE status IN ('completed','cancelled')
+          AND ended_at IS NOT NULL AND ended_at < datetime('now', ?)""", (f"-{days} days",))
+        connection.commit(); return {"deleted_runs": cursor.rowcount, "retain_days": days}
     if command == "checkpoint":
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
     fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")
@@ -347,6 +352,9 @@ def main():
     try:
         connection = connect(database_path)
         emit(dispatch(command, connection, payload))
+    except sqlite3.OperationalError as error:
+        code = "RUNTIME_DB_LOCKED" if "locked" in str(error).lower() else "RUNTIME_DB_UNAVAILABLE"
+        fail(code, str(error))
     except sqlite3.DatabaseError as error:
         fail("RUNTIME_DB_CORRUPT", str(error))
     except KeyError as error:

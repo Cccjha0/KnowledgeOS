@@ -58,6 +58,9 @@ const REQUIRED_DIRECTORIES = [
 const GITIGNORE_ENTRIES = [
   "90-System/Cache/",
   "90-System/State/Locks/",
+  "90-System/State/runtime.db",
+  "90-System/State/runtime.db-wal",
+  "90-System/State/runtime.db-shm",
   "*.tmp-*",
   ".DS_Store",
   ".obsidian/workspace*.json",

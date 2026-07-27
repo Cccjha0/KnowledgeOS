@@ -25,6 +25,7 @@ import { reconcileStartup } from "../runtime/reconciler.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { evaluateScheduler } from "../runtime/scheduler.js";
 import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
+import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -202,7 +203,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   if (method === "runTaskCycle") {
     const jobs = await registerDeclaredJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
-    const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2 });
+    const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2, handlers: platformRuntimeHandlers });
     return { jobs_registered: jobs.length, startup, dispatch } as unknown as JsonValue;
   }
   if (method === "getModules") {

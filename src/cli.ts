@@ -22,6 +22,7 @@ import { registerDeclaredJobs } from "./runtime/jobRegistry.js";
 import { reconcileStartup } from "./runtime/reconciler.js";
 import { evaluateScheduler } from "./runtime/scheduler.js";
 import { dispatchOnce } from "./runtime/dispatcher.js";
+import { platformRuntimeHandlers } from "./platform/runtimeHandlers.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -309,7 +310,7 @@ async function main(): Promise<void> {
     const cycle = async (startup: boolean) => {
       const jobs = await registerDeclaredJobs(parsed.vault);
       const preparation = startup ? await reconcileStartup(parsed.vault) : { scheduler: await evaluateScheduler(parsed.vault) };
-      const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2 });
+      const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2, handlers: platformRuntimeHandlers });
       return { jobs_registered: jobs.length, preparation, dispatch };
     };
     if (subcommand === "startup") { console.log(JSON.stringify(await cycle(true), null, 2)); return; }

@@ -65,6 +65,15 @@ export class RuntimeRepository {
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
   listJobs(): JobDefinition[] { return this.call<JobDefinition[]>("list-jobs"); }
   createTask(input: CreateTaskInput): { task: RuntimeTask; deduplicated: boolean } {
+    const forbidden = new Set(["content", "body", "document_text", "email_body", "api_token", "api_key", "authorization"]);
+    const inspect = (value: unknown, trail = "payload"): void => {
+      if (!value || typeof value !== "object") return;
+      for (const [key, child] of Object.entries(value)) {
+        if (forbidden.has(key.toLowerCase())) throw new PkbError("TASK_PAYLOAD_SENSITIVE", `Task payload must reference source data instead of storing ${trail}.${key}.`);
+        inspect(child, `${trail}.${key}`);
+      }
+    };
+    inspect(input.payload ?? {});
     return this.call("create-task", input as unknown as JsonObject) as unknown as { task: RuntimeTask; deduplicated: boolean };
   }
   getTask(taskId: string): RuntimeTask | null { return this.call("get-task", { task_id: taskId }) as RuntimeTask | null; }
@@ -111,6 +120,7 @@ export class RuntimeRepository {
   reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
   cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
+  cleanupHistory(retainDays = 90): JsonObject { return this.call("cleanup-history", { retain_days: retainDays }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));
     this.call("checkpoint");

@@ -4,7 +4,6 @@ import type { JsonObject } from "../core/types.js";
 import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { doctorVault } from "../core/vault.js";
-import { syncDueResearchRequests } from "../platform/researchRequestWorkflow.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
 
@@ -17,7 +16,7 @@ export interface WorkerResult {
   metrics?: JsonObject;
 }
 
-export type RuntimeHandler = (context: { vaultRoot: string; task: RuntimeTask }) => Promise<WorkerResult>;
+export type RuntimeHandler = (context: { vaultRoot: string; task: RuntimeTask; checkpoint: () => void }) => Promise<WorkerResult>;
 
 const coreHandlers: Record<string, RuntimeHandler> = {
   "core:build-today": async ({ vaultRoot }) => {
@@ -34,16 +33,17 @@ const coreHandlers: Record<string, RuntimeHandler> = {
     if (failed.length) throw new PkbError("VAULT_AUDIT_FAILED", failed.map((check) => check.message).join("; "));
     return { completion_reason: "vault-audit-clean", metrics: { checks: report.checks.length } };
   },
-  "application:sync-due-research": async ({ vaultRoot }) => {
-    const result = await syncDueResearchRequests(vaultRoot);
-    return { completion_reason: result.created.length ? "research-requests-created" : "no-due-applications", operation_plan_id: result.planPath, git_snapshot_id: result.snapshot, output_files: result.created, metrics: { created: result.created.length, existing: result.existing.length } };
+  "core:cleanup-runtime": async ({ vaultRoot }) => {
+    const repository = await RuntimeRepository.open(vaultRoot);
+    try { return { completion_reason: "runtime-history-cleaned", metrics: repository.cleanupHistory(90) }; }
+    finally { repository.close(); }
   },
 };
 
 function runtimeError(error: unknown): RuntimeError {
   const code = error instanceof PkbError ? error.code : "WORKER_FAILED";
   return {
-    code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE"].includes(code),
+    code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE", "CODEX_OUTPUT_INVALID", "RUNTIME_DB_LOCKED"].includes(code),
     occurred_at: new Date().toISOString(), details: {},
   };
 }
@@ -52,21 +52,35 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
   const handler = handlers[task.workflow] ?? coreHandlers[task.workflow];
   const run = repository.startRun(task.task_id, workerId, resourcesChecked);
   const started = performance.now();
+  const checkpoint = () => {
+    const current = repository.getTask(task.task_id);
+    if (current?.cancel_requested) throw new PkbError("TASK_CANCELLED", "Task cancellation was requested.");
+    repository.heartbeatRun(run.run_id);
+  };
+  const heartbeat = setInterval(() => { try { repository.heartbeatRun(run.run_id); } catch { /* completion or next startup reconciliation owns recovery */ } }, 15_000);
   if (!handler) {
+    clearInterval(heartbeat);
     return repository.finishRun(run.run_id, {
       runStatus: "failed", taskStatus: "failed", error: runtimeError(new PkbError("WORKFLOW_NOT_FOUND", `No runtime handler is registered for ${task.workflow}.`)),
       metrics: { duration_ms: performance.now() - started }, completionReason: "workflow-not-found",
     }).task;
   }
   try {
-    const result = await handler({ vaultRoot, task });
+    checkpoint();
+    const result = await handler({ vaultRoot, task, checkpoint });
+    checkpoint();
+    clearInterval(heartbeat);
     return repository.finishRun(run.run_id, {
       runStatus: "completed", taskStatus: "completed", operationPlanId: result.operation_plan_id,
       gitSnapshotId: result.git_snapshot_id, inputFiles: result.input_files, outputFiles: result.output_files,
       metrics: { ...(result.metrics ?? {}), duration_ms: performance.now() - started }, completionReason: result.completion_reason,
     }).task;
   } catch (error) {
+    clearInterval(heartbeat);
     const classified = runtimeError(error);
+    if (classified.code === "TASK_CANCELLED") {
+      return repository.finishRun(run.run_id, { runStatus: "cancelled", taskStatus: "cancelled", error: classified, metrics: { duration_ms: performance.now() - started }, completionReason: "cooperative-cancelled" }).task;
+    }
     const attempt = run.attempt_number;
     const delays = [5, 15, 45];
     const retry = classified.retryable && attempt < task.max_attempts;

@@ -15,6 +15,7 @@ function coreJobs(now: string): JobDefinition[] {
   return [
     { ...base, job_id: "core.daily-today", workflow: "core:build-today", trigger: { type: "daily", at: "08:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest" }, concurrency: { policy: "replace", key: "core:today" } },
     { ...base, job_id: "core.weekly-vault-audit", workflow: "core:vault-audit", trigger: { type: "weekly", weekday: "Sun", at: "09:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:vault-audit" } },
+    { ...base, job_id: "core.monthly-runtime-cleanup", workflow: "core:cleanup-runtime", trigger: { type: "monthly", day: 1, at: "03:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 7 }, concurrency: { policy: "forbid", key: "core:runtime-cleanup" } },
   ];
 }
 
