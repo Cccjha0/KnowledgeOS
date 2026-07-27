@@ -61,3 +61,14 @@ export interface ResolveReviewParams {
   review_after?: string | null;
   modified_value?: JsonValue;
 }
+
+export interface CreateCaptureParams {
+  content?: string;
+  title?: string | null;
+  module_id?: string | null;
+  instance_id?: string | null;
+  content_type?: string | null;
+  attachments?: string[];
+  active_path?: string | null;
+  preview_only?: boolean;
+}

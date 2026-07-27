@@ -17,7 +17,7 @@ function item(id: number, overrides: Partial<DashboardItem> = {}): DashboardItem
     priority: "medium",
     title: `Item ${id}`,
     description: "Test item",
-    target: `20-Workspace/Inbox/item-${id}.md`,
+    target: `00-Inbox/item-${id}.md`,
     due_at: null,
     actions: ["open"],
     created_at: `2026-07-${String(id).padStart(2, "0")}T00:00:00Z`,
@@ -45,19 +45,19 @@ test("Today uses one ranked, deduplicated snapshot and preserves the user area",
     const second = await fs.readFile(today, "utf8");
     assert.match(second, /保留这句话/);
     assert.equal((second.match(/## 今日重点/g) ?? []).length, 1);
-    assert.equal((second.match(/\[\[20-Workspace\/Inbox\/item-1\]\]/g) ?? []).length, 1);
+    assert.equal((second.match(/\[\[00-Inbox\/item-1\]\]/g) ?? []).length, 1);
     assert.doesNotMatch(second, /## 异常与失败/);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
 });
 
-test("deferred API methods fail through the stable user-facing envelope", async () => {
+test("deferred Inbox processing fails through the stable user-facing envelope", async () => {
   const response = await invokeCommandApi({
     vaultRoot: "unused",
     requestId: "REQ-TEST",
-    method: "createCapture",
-    params: { content: "hello" },
+    method: "processInboxItem",
+    params: { item_id: "INBOX-TEST" },
   });
   assert.equal(response.ok, false);
   assert.equal(response.state, "failed");
@@ -71,4 +71,5 @@ test("Obsidian UI delegates data access to the Core API", async () => {
     assert.equal(plugin.includes(forbidden), false, `plugin contains forbidden access: ${forbidden}`);
   }
   assert.match(plugin, /invoke\("getTodayItems"/);
+  assert.match(plugin, /invoke\("createCapture"/);
 });

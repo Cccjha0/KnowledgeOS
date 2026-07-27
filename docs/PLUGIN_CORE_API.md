@@ -17,7 +17,7 @@ action.
 | Method | Input | Successful data | Delivery |
 |---|---|---|---|
 | `getTodayItems` | `refresh_markdown?: boolean` | `TodaySnapshot` | F02 |
-| `createCapture` | `content`, optional `title`, `module_id`, `instance_id`, `content_type`, `attachments` | capture path and routing summary | F03 contract; implementation pending |
+| `createCapture` | `content`, optional `title`, `module_id`, `instance_id`, `content_type`, `attachments`, `active_path`; `preview_only` for context preview | capture path and routing summary | available |
 | `listInboxItems` | optional `module_id`, `instance_id`, `state` | grouped Inbox items | F02 read model |
 | `processInboxItem` | `item_id`, optional routing override and `preview_only` | run summary or waiting state | F04 contract; implementation pending |
 | `processInboxBatch` | explicit `item_ids`, `mode: high-confidence`, optional module/instance filter | batch summary and per-item results | F04 contract; implementation pending |
@@ -30,7 +30,12 @@ action.
 | `rollbackRun` | `run_id` | rollback status and plan identity | available |
 
 An endpoint whose implementation belongs to a later F stage is callable and returns the stable
-`CAPABILITY_NOT_READY` error. This prevents clients from inventing temporary file-level fallbacks.
+`CAPABILITY_NOT_READY` error. This currently applies to Inbox processing and prevents clients from
+inventing temporary file-level fallbacks.
+
+`createCapture` uses the caller's `request_id` as its idempotency identity. Retrying the same content
+with the same ID returns the original result; reusing the ID with different content is rejected.
+`preview_only: true` performs routing inference without writing a receipt, file, plan, log, or counter.
 
 ## Response and UI state
 

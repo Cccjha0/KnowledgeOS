@@ -51,7 +51,7 @@ async function collectGenericInboxItems(vaultRoot: string, enabledModules: Set<s
     }
   };
 
-  await addDirectory("20-Workspace/Inbox", "core", null);
+  await addDirectory("00-Inbox", "core", null);
   for (const module of await discoverModules(ENGINE_ROOT)) {
     const moduleId = String(module.data.id);
     if (!enabledModules.has(moduleId)) continue;

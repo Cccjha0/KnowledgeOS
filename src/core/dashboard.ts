@@ -18,6 +18,10 @@ function itemKey(item: DashboardItem): string {
   return item.target ? `${item.source_module}:${item.target}:${item.category}` : `${item.source_module}:${item.item_id}`;
 }
 
+function isInboxTarget(target: string | null): boolean {
+  return Boolean(target && /(?:^|\/)(?:00-Inbox|Inbox)\//.test(target));
+}
+
 function uniqueItems(items: DashboardItem[]): DashboardItem[] {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -163,7 +167,7 @@ export async function buildTodaySnapshot(
   for (const item of all) validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
   const sorted = sortItems(all);
   const reviews = sorted.filter((item) => item.category === "review");
-  const inboxItems = sorted.filter((item) => item.category === "action" && Boolean(item.target?.includes("/Inbox/")));
+  const inboxItems = sorted.filter((item) => item.category === "action" && isInboxTarget(item.target));
   const failures = sorted.filter((item) => item.category === "system");
   const waitingExternal = sorted.filter((item) => item.category === "research" && item.actions.includes("run"));
   const due = sorted.filter((item) => item.category === "deadline" || Boolean(item.due_at));

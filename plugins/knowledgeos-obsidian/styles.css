@@ -8,3 +8,11 @@
 .knowledgeos-module { color: var(--text-faint); display: inline-block; font-size: var(--font-ui-small); margin-top: .35rem; }
 .priority-critical, .priority-high { border-left: 3px solid var(--color-orange); }
 .knowledgeos-empty, .knowledgeos-state { color: var(--text-muted); padding: 1rem 0; }
+.knowledgeos-capture label { display: flex; flex-direction: column; gap: .3rem; margin: .75rem 0; }
+.knowledgeos-capture input, .knowledgeos-capture select, .knowledgeos-capture textarea { width: 100%; }
+.knowledgeos-capture textarea { min-height: 10rem; resize: vertical; }
+.knowledgeos-capture-row { display: grid; gap: .6rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.knowledgeos-destination { background: var(--background-secondary); border-radius: 6px; padding: .55rem; }
+.knowledgeos-capture-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.knowledgeos-capture-status { color: var(--text-error); min-height: 1.5rem; }
+@media (max-width: 600px) { .knowledgeos-capture-row { grid-template-columns: 1fr; } }

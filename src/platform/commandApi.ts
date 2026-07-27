@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
+import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
 import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModules } from "../core/discovery.js";
@@ -10,12 +10,14 @@ import { rollbackTransaction } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, ReviewItem, RunLog } from "../core/types.js";
 import { decideReview } from "./reviewWorkflow.js";
 import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
+import { createCapture } from "./captureWorkflow.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
 
 interface CommandContext {
   vaultRoot: string;
+  requestId: string;
   method: CommandApiMethod;
   params: JsonObject;
 }
@@ -75,7 +77,7 @@ async function findRun(vaultRoot: string, runId: string): Promise<{ log: RunLog;
 }
 
 async function execute(context: CommandContext): Promise<JsonValue> {
-  const { vaultRoot, method, params } = context;
+  const { vaultRoot, requestId, method, params } = context;
   if (method === "getTodayItems") {
     const snapshot = await getTodaySnapshot(vaultRoot);
     if (params.refresh_markdown !== false) await writeTodayMarkdown(vaultRoot, snapshot);
@@ -136,7 +138,13 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     await rebuildTodayDashboard(vaultRoot);
     return { run_id: found.log.run_id, plan_id: found.log.plan_id, status };
   }
-  if (method === "createCapture") return capabilityNotReady(method, "F03");
+  if (method === "createCapture") {
+    return createCapture({
+      vaultRoot,
+      requestId,
+      params: params as unknown as CreateCaptureParams,
+    });
+  }
   if (method === "processInboxItem" || method === "processInboxBatch") return capabilityNotReady(method, "F04");
   throw new PkbError("METHOD_NOT_FOUND", `Unknown Core Command API method: ${method}`);
 }
@@ -149,6 +157,11 @@ function userFacingError(error: unknown): UserFacingError {
     INVALID_REQUEST: { impact: "请求未执行。", actions: ["检查输入后重试"], retryable: true },
     RUN_NOT_FOUND: { impact: "没有执行撤销或读取操作。", actions: ["刷新运行历史", "确认 Run ID"], retryable: true },
     RUN_NOT_ROLLBACKABLE: { impact: "现有文件保持不变。", actions: ["查看 Run 详情", "使用 Git 历史人工恢复"], retryable: false },
+    CAPTURE_CONTENT_REQUIRED: { impact: "没有创建 Capture 文件。", actions: ["输入内容后重新保存"], retryable: true },
+    CAPTURE_IN_PROGRESS: { impact: "系统没有创建重复文件。", actions: ["稍后刷新 Today", "若未出现则重试"], retryable: true },
+    IDEMPOTENCY_CONFLICT: { impact: "系统拒绝覆盖先前的 Capture 请求。", actions: ["保留输入并重新打开 Capture"], retryable: false },
+    ATTACHMENT_NOT_FOUND: { impact: "Capture 和附件均未修改。", actions: ["移除无效附件", "确认附件路径后重试"], retryable: true },
+    GIT_WORKTREE_DIRTY: { impact: "Capture 尚未写入，输入仍保留在表单中。", actions: ["提交或暂存现有 Vault 修改", "然后重试保存"], retryable: true },
   };
   const guidance = messages[code] ?? { impact: "操作未能完整完成，请查看详情确认文件状态。", actions: ["刷新页面", "查看运行日志", "修复问题后重试"], retryable: true };
   const message = error instanceof Error ? error.message : String(error);
@@ -170,7 +183,7 @@ export async function invokeCommandApi(options: {
   params?: JsonObject;
 }): Promise<CommandApiResponse> {
   try {
-    const data = await execute({ vaultRoot: options.vaultRoot, method: options.method, params: options.params ?? {} });
+    const data = await execute({ vaultRoot: options.vaultRoot, requestId: options.requestId, method: options.method, params: options.params ?? {} });
     return {
       api_version: COMMAND_API_VERSION,
       request_id: options.requestId,
