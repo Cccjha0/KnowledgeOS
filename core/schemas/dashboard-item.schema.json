@@ -93,6 +93,23 @@
           "retry"
         ]
       }
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "blocks_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "active_context": {
+      "type": "boolean"
     }
   }
 }

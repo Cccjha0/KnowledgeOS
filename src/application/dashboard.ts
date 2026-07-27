@@ -23,7 +23,8 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
       items.push({
         item_id: nextId("INBOX"), source_module: "application-tracker", instance_id: null,
         category: "action", priority: "medium", title: "Process application Inbox item",
-        description: path.basename(file), target: toVaultPath(vaultRoot, file), due_at: null, actions: ["open", "run"],
+        description: path.basename(file), target: toVaultPath(vaultRoot, file), due_at: null,
+        created_at: null, blocks_count: 0, active_context: true, actions: ["open", "run"],
       });
     } else if (document.data.type === "application-record") {
       records.push({ file, data: document.data as unknown as ApplicationRecord });
@@ -71,6 +72,9 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
       ].join(" | "),
       target: recordPath,
       due_at: record.monitoring.next_check,
+      created_at: record.created,
+      blocks_count: reviewCount,
+      active_context: true,
       actions: due && !openRequest ? ["open", "generate"] : ["open"],
     });
   }
@@ -84,6 +88,9 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
         ? `More evidence is required. Reports received: ${request.report_ids.length}.`
         : `Verify: ${request.requested_fields.join(", ")}`,
       target: toVaultPath(vaultRoot, file), due_at: request.next_action_at, actions: ["open", "run"],
+      created_at: request.created_at,
+      blocks_count: 0,
+      active_context: true,
     });
   }
   return items;

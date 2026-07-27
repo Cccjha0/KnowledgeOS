@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -15,6 +16,8 @@ import { applyMigration, planMigrations } from "./core/migrations.js";
 import { recoverInterruptedTransactions, rollbackTransaction } from "./core/operationExecutor.js";
 import { createVaultBackup, restoreVaultBackup, verifyVaultBackup } from "./core/backup.js";
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
+import { invokeCommandApi } from "./platform/commandApi.js";
+import type { CommandApiMethod } from "./api/types.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -25,6 +28,8 @@ interface ParsedArgs {
   userComment: string;
   reviewAfter: string | null;
   modifiedValue: JsonValue | undefined;
+  apiInput: Record<string, JsonValue>;
+  requestId: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -36,6 +41,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   let userComment = "";
   let reviewAfter: string | null = null;
   let modifiedValue: JsonValue | undefined;
+  let apiInput: Record<string, JsonValue> = {};
+  let requestId = `REQ-${randomUUID()}`;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]!;
     if (value === "--vault") {
@@ -76,6 +83,20 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       modifiedValue = JSON.parse(next) as JsonValue;
       index += 1;
+    } else if (value === "--input") {
+      const next = argv[index + 1];
+      if (next === undefined) throw new Error("--input requires a JSON object");
+      const parsedInput = JSON.parse(next) as unknown;
+      if (!parsedInput || typeof parsedInput !== "object" || Array.isArray(parsedInput)) {
+        throw new Error("--input must be a JSON object");
+      }
+      apiInput = parsedInput as Record<string, JsonValue>;
+      index += 1;
+    } else if (value === "--request-id") {
+      const next = argv[index + 1];
+      if (!next) throw new Error("--request-id requires a value");
+      requestId = next;
+      index += 1;
     } else {
       positional.push(value);
     }
@@ -89,11 +110,13 @@ function parseArgs(argv: string[]): ParsedArgs {
     userComment,
     reviewAfter,
     modifiedValue,
+    apiInput,
+    requestId,
   };
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan [--vault PATH]\n  pkb migration apply MIGRATION_RUN_ID [--vault PATH]\n  pkb transaction recover [--vault PATH]\n  pkb transaction rollback PLAN_ID [--vault PATH]\n  pkb backup create DESTINATION [--vault PATH]\n  pkb backup verify ARCHIVE\n  pkb backup restore ARCHIVE TARGET\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan [--vault PATH]\n  pkb migration apply MIGRATION_RUN_ID [--vault PATH]\n  pkb transaction recover [--vault PATH]\n  pkb transaction rollback PLAN_ID [--vault PATH]\n  pkb backup create DESTINATION [--vault PATH]\n  pkb backup verify ARCHIVE\n  pkb backup restore ARCHIVE TARGET\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -102,6 +125,19 @@ async function main(): Promise<void> {
 
   if (!command || command === "help" || command === "--help") {
     printHelp();
+    return;
+  }
+
+  if (command === "api") {
+    if (!subcommand) throw new Error("api requires METHOD");
+    const response = await invokeCommandApi({
+      vaultRoot: parsed.vault,
+      requestId: parsed.requestId,
+      method: subcommand as CommandApiMethod,
+      params: parsed.apiInput,
+    });
+    console.log(JSON.stringify(response, null, 2));
+    process.exitCode = response.ok ? 0 : 1;
     return;
   }
 

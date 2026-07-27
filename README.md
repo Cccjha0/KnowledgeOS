@@ -4,6 +4,7 @@ Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/COR
 申请模块的日常使用状态机、字段风险、Research Request 和 Dashboard 约定见 `docs/APPLICATION_TRACKER_DAILY.md`。
 第二模块 experience-log 的范围、接入方式和 Core 修改审计见 `docs/EXPERIENCE_LOG_VALIDATION.md`。
 生产目录边界、事务恢复、Schema 迁移和三层备份策略见 `docs/PRODUCTION_STABILITY.md`。
+插件/Core v1 契约和 Today 单一数据模型见 `docs/PLUGIN_CORE_API.md` 与 `docs/TODAY_ARCHITECTURE.md`。
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 
@@ -23,6 +24,7 @@ knowledgeos-engine/
 ├── tools/                         Python 桥接和验证工具
 ├── examples/                      测试 Fixture
 ├── docs/                          实现说明与系统规范
+├── plugins/knowledgeos-obsidian/ Obsidian 交互层
 └── dist/                          已编译 CLI
 ```
 
@@ -71,6 +73,21 @@ node --test dist/tests/*.test.js
 ```
 
 当前自动化测试覆盖确定性比较、Vault/Git 初始化，以及批准、修改后批准、拒绝、延后、讨论和用户直接修改对账。
+
+## Obsidian Today MVP
+
+Milestone F 的首个插件视图只调用 Core Command API，不直接读取 Vault 内部状态：
+
+```powershell
+node dist/cli.js api getTodayItems `
+  --vault ../knowledgeos-vault `
+  --request-id REQ-MANUAL-001
+```
+
+本地插件源码位于 `plugins/knowledgeos-obsidian/`。将该目录复制到目标 Vault 的
+`.obsidian/plugins/knowledgeos/` 后，在 Obsidian 中启用并配置 `dist/cli.js` 与 Vault 的绝对路径。
+当前交付完成 Today 侧边栏；Capture 与 Inbox 写操作已冻结接口，但会明确返回
+`CAPABILITY_NOT_READY`，分别在 F03、F04 启用，插件不会绕过 Core 临时读写文件。
 
 ## 初始化或接入 Vault
 

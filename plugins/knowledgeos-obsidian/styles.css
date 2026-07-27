@@ -1,0 +1,10 @@
+.knowledgeos-header { display: flex; align-items: center; gap: .5rem; }
+.knowledgeos-header h2 { flex: 1; margin: .5rem 0; }
+.knowledgeos-counts { display: flex; flex-wrap: wrap; gap: .4rem; margin: .75rem 0; }
+.knowledgeos-count { background: var(--background-modifier-hover); border-radius: 999px; padding: .2rem .55rem; }
+.knowledgeos-card { border: 1px solid var(--background-modifier-border); border-radius: 8px; margin: .45rem 0; padding: .6rem; }
+.knowledgeos-link { background: none; border: 0; color: var(--text-accent); cursor: pointer; font-weight: 600; padding: 0; text-align: left; }
+.knowledgeos-description, .knowledgeos-impact { color: var(--text-muted); font-size: var(--font-ui-smaller); margin-top: .25rem; }
+.knowledgeos-module { color: var(--text-faint); display: inline-block; font-size: var(--font-ui-small); margin-top: .35rem; }
+.priority-critical, .priority-high { border-left: 3px solid var(--color-orange); }
+.knowledgeos-empty, .knowledgeos-state { color: var(--text-muted); padding: 1rem 0; }

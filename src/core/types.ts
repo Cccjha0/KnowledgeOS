@@ -36,6 +36,48 @@ export interface DashboardItem extends JsonObject {
   target: string | null;
   due_at: string | null;
   actions: string[];
+  created_at: string | null;
+  blocks_count: number;
+  active_context: boolean;
+}
+
+export interface TodayInboxGroup extends JsonObject {
+  group_id: string;
+  scope: "global" | "module" | "instance";
+  label: string;
+  source_module: string | null;
+  instance_id: string | null;
+  count: number;
+  oldest_created_at: string | null;
+  unroutable_count: number;
+  failed_count: number;
+  items: DashboardItem[];
+}
+
+export interface RecentRunSummary extends JsonObject {
+  run_id: string;
+  source_module: string;
+  instance_id: string | null;
+  status: "completed" | "failed";
+  completed_at: string;
+  plan_id: string | null;
+  review_id: string | null;
+  target: string;
+  can_rollback: boolean;
+}
+
+export interface TodaySnapshot extends JsonObject {
+  schema_version: 1;
+  generated_at: string;
+  focus: DashboardItem[];
+  reviews: DashboardItem[];
+  inbox: TodayInboxGroup[];
+  due: DashboardItem[];
+  waiting_external: DashboardItem[];
+  failures: DashboardItem[];
+  recent_completed: RecentRunSummary[];
+  module_summaries: DashboardItem[];
+  counts: JsonObject;
 }
 
 export interface RunLog extends JsonObject {
