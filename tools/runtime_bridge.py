@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -50,6 +50,7 @@ def migrate(connection):
     """)
     row = connection.execute("SELECT value FROM runtime_metadata WHERE key='schema_version'").fetchone()
     current = int(row[0]) if row else 0
+    original_version = current
     if current > SCHEMA_VERSION:
         fail("RUNTIME_DB_TOO_NEW", f"runtime.db schema {current} is newer than supported {SCHEMA_VERSION}.")
     if current < 1:
@@ -97,6 +98,36 @@ def migrate(connection):
           INSERT INTO runtime_metadata(key,value) VALUES('schema_version','1');
           COMMIT;
         """)
+        current = 1
+    if current < 2:
+        if original_version > 0:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE TABLE runtime_events (
+            event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, module TEXT NOT NULL, instance_id TEXT,
+            occurred_at TEXT NOT NULL, payload_json TEXT NOT NULL, tasks_created_json TEXT NOT NULL
+          );
+          CREATE TABLE codex_invocations (
+            invocation_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id), run_id TEXT,
+            prompt_id TEXT NOT NULL, prompt_version TEXT NOT NULL, adapter TEXT NOT NULL, model TEXT,
+            output_schema TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL,
+            error_json TEXT, token_usage_json TEXT NOT NULL, attempt_number INTEGER NOT NULL
+          );
+          CREATE INDEX idx_events_type_time ON runtime_events(event_type, occurred_at);
+          CREATE INDEX idx_codex_task ON codex_invocations(task_id, started_at DESC);
+          UPDATE runtime_metadata SET value='2' WHERE key='schema_version';
+          COMMIT;
+        """)
 
 
 def decode_json(value, fallback):
@@ -134,12 +165,38 @@ def allocate_id(connection, prefix):
     return f"{prefix}-{year}-{value:06d}"
 
 
+def increment_metric(connection, key):
+    connection.execute("""INSERT INTO runtime_metadata(key,value) VALUES(?, '1')
+      ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1""", (key,))
+
+
 def create_task(connection, payload):
     connection.execute("BEGIN IMMEDIATE")
     duplicate = connection.execute("SELECT * FROM tasks WHERE idempotency_key=?", (payload["idempotency_key"],)).fetchone()
     if duplicate:
+        increment_metric(connection, "metric.idempotency_deduplicated")
         connection.commit()
         return {"task": task_dict(duplicate), "deduplicated": True}
+    concurrency_key = payload.get("concurrency_key")
+    concurrency_policy = payload.get("concurrency_policy", "forbid")
+    if concurrency_key and concurrency_policy == "merge":
+        existing = connection.execute("""SELECT * FROM tasks WHERE concurrency_key=?
+          AND status NOT IN ('completed','failed','cancelled') ORDER BY created_at LIMIT 1""", (concurrency_key,)).fetchone()
+        if existing:
+            increment_metric(connection, "metric.tasks_merged")
+            current_payload = decode_json(existing["payload_json"], {})
+            requests = current_payload.get("merged_requests", [])
+            requests.append(payload.get("payload") or {})
+            current_payload["merged_requests"] = requests
+            connection.execute("UPDATE tasks SET payload_json=?,updated_at=? WHERE task_id=?", (json.dumps(current_payload), now_iso(), existing["task_id"]))
+            merged = connection.execute("SELECT * FROM tasks WHERE task_id=?", (existing["task_id"],)).fetchone()
+            connection.commit(); return {"task": task_dict(merged), "deduplicated": True, "merged": True}
+    if concurrency_key and concurrency_policy == "replace":
+        now = now_iso()
+        connection.execute("""UPDATE tasks SET status='cancelled',completed_at=?,updated_at=?,completion_reason='replaced'
+          WHERE concurrency_key=? AND status IN ('queued','waiting-for-network','waiting-for-ai','waiting-for-user','deferred','interrupted','failed')""",
+          (now, now, concurrency_key))
+        connection.execute("UPDATE tasks SET cancel_requested=1,updated_at=? WHERE concurrency_key=? AND status='running'", (now, concurrency_key))
     now = now_iso()
     task_id = allocate_id(connection, "TASK")
     scheduled = payload.get("scheduled_for") or now
@@ -259,6 +316,16 @@ def dispatch(command, connection, payload):
     migrate(connection)
     if command == "integrity-check": return connection.execute("PRAGMA integrity_check").fetchone()[0]
     if command == "schema-version": return int(connection.execute("SELECT value FROM runtime_metadata WHERE key='schema_version'").fetchone()[0])
+    if command == "runtime-stats":
+        counts = {row["status"]: row["count"] for row in connection.execute("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status")}
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        recent = {row["status"]: row["count"] for row in connection.execute("SELECT status,COUNT(*) AS count FROM task_runs WHERE started_at>=? GROUP BY status", (cutoff,))}
+        oldest = connection.execute("""SELECT task_id,status,updated_at FROM tasks WHERE status IN
+          ('waiting-for-network','waiting-for-ai','waiting-for-user','deferred') ORDER BY updated_at LIMIT 1""").fetchone()
+        metrics = {row["key"].removeprefix("metric."): int(row["value"]) for row in connection.execute("SELECT key,value FROM runtime_metadata WHERE key LIKE 'metric.%'")}
+        retries = connection.execute("SELECT COALESCE(SUM(CASE WHEN attempt_count>1 THEN attempt_count-1 ELSE 0 END),0) FROM tasks").fetchone()[0]
+        return {"counts": counts, "queue_length": counts.get("queued", 0), "recent_24h_runs": recent,
+                "oldest_waiting": dict(oldest) if oldest else None, "retry_count": retries, "metrics": metrics}
     if command == "register-job":
         connection.execute("""INSERT INTO job_definitions(job_id,source,module,scope,enabled,definition_json,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(job_id) DO UPDATE SET source=excluded.source,module=excluded.module,scope=excluded.scope,enabled=excluded.enabled,
@@ -306,6 +373,31 @@ def dispatch(command, connection, payload):
         connection.commit(); return {"job_id": payload["job_id"]}
     if command == "get-checkpoints":
         return [dict(row) for row in connection.execute("SELECT * FROM scheduler_checkpoints ORDER BY job_id")]
+    if command == "set-priority":
+        if payload["priority"] not in {"critical", "high", "normal", "low"}: fail("TASK_PRIORITY_INVALID", "Invalid task priority.")
+        cursor = connection.execute("UPDATE tasks SET priority=?,updated_at=? WHERE task_id=? AND status NOT IN ('completed','cancelled')", (payload["priority"], now_iso(), payload["task_id"]))
+        connection.commit()
+        if cursor.rowcount != 1: fail("TASK_PRIORITY_INVALID", "Task priority cannot be changed.")
+        return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
+    if command == "record-event":
+        connection.execute("INSERT OR IGNORE INTO runtime_events(event_id,event_type,module,instance_id,occurred_at,payload_json,tasks_created_json) VALUES(?,?,?,?,?,?,?)",
+          (payload["event_id"], payload["event_type"], payload["module"], payload.get("instance_id"), payload["occurred_at"], json.dumps(payload.get("payload") or {}), json.dumps(payload.get("tasks_created") or [])))
+        connection.commit(); return payload
+    if command == "list-events":
+        return [{**dict(row), "payload": decode_json(row["payload_json"], {}), "tasks_created": decode_json(row["tasks_created_json"], [])}
+          for row in connection.execute("SELECT * FROM runtime_events ORDER BY occurred_at DESC LIMIT ?", (int(payload.get("limit", 100)),))]
+    if command == "start-codex-invocation":
+        connection.execute("""INSERT INTO codex_invocations(invocation_id,task_id,run_id,prompt_id,prompt_version,adapter,model,output_schema,
+          started_at,ended_at,status,error_json,token_usage_json,attempt_number) VALUES(?,?,?,?,?,?,?,?,?,NULL,'running',NULL,'{}',?)""",
+          (payload["invocation_id"], payload["task_id"], payload.get("run_id"), payload["prompt_id"], payload["prompt_version"], payload["adapter"], payload.get("model"), payload["output_schema"], payload["started_at"], payload["attempt_number"]))
+        connection.commit(); return payload
+    if command == "finish-codex-invocation":
+        connection.execute("UPDATE codex_invocations SET ended_at=?,status=?,error_json=?,token_usage_json=? WHERE invocation_id=?",
+          (payload["ended_at"], payload["status"], json.dumps(payload.get("error")) if payload.get("error") else None, json.dumps(payload.get("token_usage") or {}), payload["invocation_id"]))
+        connection.commit(); return payload
+    if command == "list-codex-invocations":
+        return [{**dict(row), "error": decode_json(row["error_json"], None), "token_usage": decode_json(row["token_usage_json"], {})}
+          for row in connection.execute("SELECT * FROM codex_invocations WHERE task_id=? ORDER BY started_at", (payload["task_id"],))]
     if command == "retry-task":
         row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
         if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")

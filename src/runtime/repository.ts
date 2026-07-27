@@ -62,6 +62,7 @@ export class RuntimeRepository {
   close(): void { this.closed = true; }
   integrityCheck(): string { return this.call<string>("integrity-check"); }
   schemaVersion(): number { return this.call<number>("schema-version"); }
+  runtimeStats(): JsonObject { return this.call<JsonObject>("runtime-stats"); }
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
   listJobs(): JobDefinition[] { return this.call<JobDefinition[]>("list-jobs"); }
   createTask(input: CreateTaskInput): { task: RuntimeTask; deduplicated: boolean } {
@@ -120,6 +121,12 @@ export class RuntimeRepository {
   reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
   cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
+  setTaskPriority(taskId: string, priority: RuntimeTask["priority"]): RuntimeTask { return this.call("set-priority", { task_id: taskId, priority }); }
+  recordEvent(event: JsonObject): void { this.call("record-event", event); }
+  listEvents(limit = 100): JsonObject[] { return this.call("list-events", { limit }); }
+  startCodexInvocation(invocation: JsonObject): void { this.call("start-codex-invocation", invocation); }
+  finishCodexInvocation(invocation: JsonObject): void { this.call("finish-codex-invocation", invocation); }
+  listCodexInvocations(taskId: string): JsonObject[] { return this.call("list-codex-invocations", { task_id: taskId }); }
   cleanupHistory(retainDays = 90): JsonObject { return this.call("cleanup-history", { retain_days: retainDays }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));

@@ -43,7 +43,7 @@ const coreHandlers: Record<string, RuntimeHandler> = {
 function runtimeError(error: unknown): RuntimeError {
   const code = error instanceof PkbError ? error.code : "WORKER_FAILED";
   return {
-    code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE", "CODEX_OUTPUT_INVALID", "RUNTIME_DB_LOCKED"].includes(code),
+    code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE", "CODEX_CONNECTION_FAILED", "CODEX_RATE_LIMITED", "CODEX_OUTPUT_INVALID", "RUNTIME_DB_LOCKED"].includes(code),
     occurred_at: new Date().toISOString(), details: {},
   };
 }

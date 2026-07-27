@@ -34,7 +34,10 @@ export async function dispatchOnce(options: {
         if (task.dependency_policy === "any-success") return dependencies.some((item) => item.status === "completed");
         return dependencies.every((item) => item.status === "completed");
       })
-      .sort((left, right) => PRIORITY[left.priority] - PRIORITY[right.priority] || Date.parse(left.scheduled_for) - Date.parse(right.scheduled_for))
+      .sort((left, right) => {
+        const ageBoost = (task: RuntimeTask) => Math.min(2, Math.floor((now - Date.parse(task.created_at)) / 86_400_000));
+        return (PRIORITY[left.priority] - ageBoost(left)) - (PRIORITY[right.priority] - ageBoost(right)) || Date.parse(left.scheduled_for) - Date.parse(right.scheduled_for);
+      })
       .slice(0, options.limit ?? 2);
     for (const task of candidates) {
       summary.considered += 1;

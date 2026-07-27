@@ -1036,11 +1036,21 @@ class TaskDetailsModal extends Modal {
     root.createDiv({ text: `计划：${task.scheduled_for} · 尝试 ${task.attempt_count}/${task.max_attempts}` });
     root.createDiv({ text: `资源：filesystem ${task.resources.filesystem} · network ${task.resources.network} · codex ${task.resources.codex} · user ${task.resources.user}` });
     if (task.last_error) root.createDiv({ cls: "knowledgeos-review-warning", text: `${task.last_error.code}：${task.last_error.message}` });
+    if (task.payload?.source_file) {
+      const source = root.createEl("button", { cls: "knowledgeos-link", text: `打开关联文件：${task.payload.source_file}` });
+      source.onclick = () => this.app.workspace.openLinkText(task.payload.source_file, "", false);
+    }
     root.createEl("h4", { text: `运行历史 (${response.data.runs.length})` });
     for (const run of response.data.runs) root.createDiv({ cls: "knowledgeos-run-operation", text: `第 ${run.attempt_number} 次 · ${run.status} · ${run.started_at}` });
+    if (response.data.codex_invocations?.length) {
+      root.createEl("h4", { text: `Codex 调用 (${response.data.codex_invocations.length})` });
+      for (const call of response.data.codex_invocations) root.createDiv({ cls: "knowledgeos-run-operation", text: `${call.prompt_id}@${call.prompt_version} · ${call.model || call.adapter} · ${call.status}` });
+    }
     const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
     if (["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) this.actionButton(actions, "重试", "retry");
     if (!["completed", "cancelled"].includes(task.status)) {
+      if (task.priority !== "high") this.actionButton(actions, "提升为高优先级", "set-priority", { priority: "high" });
+      if (task.priority !== "normal") this.actionButton(actions, "恢复普通优先级", "set-priority", { priority: "normal" });
       this.actionButton(actions, "延后一天", "defer", { defer_until: new Date(Date.now() + 86_400_000).toISOString() });
       this.actionButton(actions, task.status === "running" ? "请求取消" : "取消", "cancel");
     }
@@ -1140,6 +1150,24 @@ class SystemCenterView extends ItemView {
         open.onclick = () => new TaskDetailsModal(this.app, this.plugin, task.task_id, () => this.refresh()).open();
         card.createDiv({ cls: "knowledgeos-review-meta", text: `${task.module}${task.instance_id ? ` / ${task.instance_id}` : ""} · ${task.scheduled_for} · 尝试 ${task.attempt_count}/${task.max_attempts}` });
         if (task.last_error) card.createDiv({ cls: "knowledgeos-description", text: task.last_error.message });
+      }
+    }
+
+    const scheduledJobs = (this.data.runtime.jobs || []).filter((job) => job.enabled && job.trigger?.type !== "startup");
+    if (scheduledJobs.length) {
+      root.createEl("h4", { text: `已注册计划 (${scheduledJobs.length})` });
+      for (const job of scheduledJobs) {
+        const card = root.createDiv({ cls: "knowledgeos-card knowledgeos-task-card" });
+        card.createEl("strong", { text: job.job_id });
+        card.createDiv({ cls: "knowledgeos-review-meta", text: `${job.trigger.type} · ${job.workflow} · ${job.priority}` });
+        const run = card.createEl("button", { text: "立即运行" });
+        run.onclick = async () => {
+          run.disabled = true;
+          const response = await this.plugin.client.invoke("enqueueTask", { job_id: job.job_id });
+          if (!response.ok) this.plugin.notify(response.error?.message || "任务创建失败", { error: true });
+          else this.plugin.notify(response.data.deduplicated ? "任务已在队列中" : "任务已加入队列");
+          await this.refresh();
+        };
       }
     }
 

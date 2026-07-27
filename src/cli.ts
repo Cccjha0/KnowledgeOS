@@ -23,6 +23,9 @@ import { reconcileStartup } from "./runtime/reconciler.js";
 import { evaluateScheduler } from "./runtime/scheduler.js";
 import { dispatchOnce } from "./runtime/dispatcher.js";
 import { platformRuntimeHandlers } from "./platform/runtimeHandlers.js";
+import { probeRuntimeResources } from "./runtime/resourceMonitor.js";
+import { materializeFieldDueJobs, materializeStartupJobs } from "./runtime/triggers.js";
+import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -121,7 +124,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -306,12 +309,34 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "runtime" && subcommand === "backup") {
+    if (!value) throw new Error("runtime backup requires DESTINATION");
+    const repository = await RuntimeRepository.open(parsed.vault);
+    try { await repository.backup(path.resolve(value)); } finally { repository.close(); }
+    console.log(JSON.stringify({ backup: path.resolve(value) }, null, 2)); return;
+  }
+
+  if (command === "runtime" && subcommand === "restore") {
+    if (!value) throw new Error("runtime restore requires BACKUP");
+    await restoreRuntimeDatabase(parsed.vault, path.resolve(value));
+    const repository = await RuntimeRepository.open(parsed.vault);
+    try { console.log(JSON.stringify({ restored: path.resolve(value), integrity: repository.integrityCheck(), schema_version: repository.schemaVersion() }, null, 2)); }
+    finally { repository.close(); }
+    return;
+  }
+
   if (command === "runtime" && ["startup", "run-once", "watch"].includes(subcommand ?? "")) {
     const cycle = async (startup: boolean) => {
       const jobs = await registerDeclaredJobs(parsed.vault);
+      const resources = await probeRuntimeResources(parsed.vault, {
+        networkProbeUrl: process.env.KNOWLEDGEOS_NETWORK_PROBE_URL,
+        codexExecutable: process.env.KNOWLEDGEOS_CODEX_EXECUTABLE,
+      });
+      const startupTask = startup ? await materializeStartupJobs(parsed.vault) : null;
+      const fieldDue = await materializeFieldDueJobs(parsed.vault);
       const preparation = startup ? await reconcileStartup(parsed.vault) : { scheduler: await evaluateScheduler(parsed.vault) };
       const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2, handlers: platformRuntimeHandlers });
-      return { jobs_registered: jobs.length, preparation, dispatch };
+      return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fieldDue, preparation, dispatch };
     };
     if (subcommand === "startup") { console.log(JSON.stringify(await cycle(true), null, 2)); return; }
     if (subcommand === "run-once") { console.log(JSON.stringify(await cycle(false), null, 2)); return; }

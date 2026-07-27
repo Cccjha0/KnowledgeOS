@@ -26,6 +26,8 @@ import { RuntimeRepository } from "../runtime/repository.js";
 import { evaluateScheduler } from "../runtime/scheduler.js";
 import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
 import { platformRuntimeHandlers } from "./runtimeHandlers.js";
+import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
+import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -166,7 +168,24 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return listInbox(vaultRoot, params);
   }
   if (method === "listReviewItems") return listReviews(vaultRoot, params);
-  if (method === "resolveReview") return resolveReviewCommand(vaultRoot, params);
+  if (method === "resolveReview") {
+    const before = await locateReviewItem(vaultRoot, stringParam(params, "review_id"));
+    const result = await resolveReviewCommand(vaultRoot, params);
+    const resultObject = result && typeof result === "object" && !Array.isArray(result) ? result : {};
+    const status = typeof resultObject.status === "string" ? resultObject.status : before.item.status;
+    if (["approved", "approved-with-modification", "rejected", "resolved-by-user-edit"].includes(status)) {
+      const originTaskId = before.item.origin_task_id;
+      if (typeof originTaskId === "string") {
+        const repository = await RuntimeRepository.open(vaultRoot);
+        try {
+          const task = repository.getTask(originTaskId);
+          if (task?.status === "waiting-for-user") repository.retryTask(originTaskId);
+        } finally { repository.close(); }
+      }
+      await publishRuntimeEvent(vaultRoot, { type: "review.resolved", event_id: `EVT-review-${before.item.review_id}-${status}`, module: before.item.source_module, instance_id: before.item.instance_id, payload: { review_id: before.item.review_id, status } });
+    }
+    return result;
+  }
   if (["listTasks", "getTaskDetails", "manageTask", "getTaskRuntimeStatus"].includes(method)) {
     const repository = await RuntimeRepository.open(vaultRoot);
     try {
@@ -177,18 +196,23 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       if (method === "getTaskDetails") {
         const task = repository.getTask(stringParam(params, "task_id"));
         if (!task) throw new PkbError("TASK_NOT_FOUND", `Task ${String(params.task_id)} was not found.`);
-        return { task, runs: repository.getRuns(task.task_id) };
+        return { task, runs: repository.getRuns(task.task_id), codex_invocations: repository.listCodexInvocations(task.task_id) };
       }
       if (method === "getTaskRuntimeStatus") {
         const tasks = repository.listTasks();
         const counts: Record<string, number> = {};
         for (const task of tasks) counts[task.status] = (counts[task.status] ?? 0) + 1;
-        return { integrity: repository.integrityCheck(), counts, resources: repository.getResourceStatuses(), jobs: repository.listJobs(), checkpoints: repository.getCheckpoints() };
+        return { integrity: repository.integrityCheck(), schema_version: repository.schemaVersion(), counts, resources: repository.getResourceStatuses(), jobs: repository.listJobs(), checkpoints: repository.getCheckpoints(), observability: repository.runtimeStats() };
       }
       const taskId = stringParam(params, "task_id");
       const action = stringParam(params, "action");
       if (action === "retry" || action === "run-now") return repository.retryTask(taskId);
       if (action === "cancel") return repository.cancelTask(taskId);
+      if (action === "set-priority") {
+        const priority = stringParam(params, "priority");
+        if (!["critical", "high", "normal", "low"].includes(priority)) throw new PkbError("INVALID_REQUEST", "priority is invalid.");
+        return repository.setTaskPriority(taskId, priority as "critical" | "high" | "normal" | "low");
+      }
       if (action === "defer") {
         const until = stringParam(params, "defer_until");
         if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= Date.now()) throw new PkbError("INVALID_REQUEST", "defer_until must be a future date-time.");
@@ -200,11 +224,21 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       throw new PkbError("INVALID_REQUEST", `Unknown task action: ${action}`);
     } finally { repository.close(); }
   }
+  if (method === "enqueueTask") {
+    await registerDeclaredJobs(vaultRoot);
+    return enqueueManualTask(vaultRoot, stringParam(params, "job_id"), (params.payload && typeof params.payload === "object" && !Array.isArray(params.payload) ? params.payload : {}) as JsonObject, params.force === true);
+  }
   if (method === "runTaskCycle") {
     const jobs = await registerDeclaredJobs(vaultRoot);
+    const resources = await probeRuntimeResources(vaultRoot, {
+      networkProbeUrl: typeof params.network_probe_url === "string" ? params.network_probe_url : undefined,
+      codexExecutable: typeof params.codex_executable === "string" ? params.codex_executable : undefined,
+    });
+    const startupTask = params.startup === true ? await materializeStartupJobs(vaultRoot) : null;
+    const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
     const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2, handlers: platformRuntimeHandlers });
-    return { jobs_registered: jobs.length, startup, dispatch } as unknown as JsonValue;
+    return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
   }
   if (method === "getModules") {
     const instances = await discoverInstances(vaultRoot);
@@ -268,11 +302,13 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return { run_id: found.log.run_id, rollback_run_id: rollbackRunId, plan_id: found.log.plan_id, status, assessment, warnings };
   }
   if (method === "createCapture") {
-    return createCapture({
+    const result = await createCapture({
       vaultRoot,
       requestId,
       params: params as unknown as CreateCaptureParams,
     });
+    await publishRuntimeEvent(vaultRoot, { type: "capture.created", event_id: `EVT-capture-${requestId}`, module: typeof result.source_module === "string" ? result.source_module : "core", instance_id: typeof result.instance_id === "string" ? result.instance_id : null, payload: { capture_id: result.capture_id ?? null, path: result.path ?? null } });
+    return result;
   }
   if (method === "processInboxItem") return processInboxItem(vaultRoot, params as unknown as ProcessInboxItemParams);
   if (method === "processInboxBatch") return processInboxBatch(vaultRoot, params as unknown as ProcessInboxBatchParams);

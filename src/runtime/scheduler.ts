@@ -16,7 +16,7 @@ function matches(job: JobDefinition, date: Date): { matches: boolean; window: st
   const type = String(trigger.type);
   const at = String(trigger.at ?? "00:00");
   const [hour, minute] = at.split(":").map(Number);
-  if (Number(parts.hour) !== hour || Number(parts.minute) !== minute) return { matches: false, window };
+  if (type !== "cron" && (Number(parts.hour) !== hour || Number(parts.minute) !== minute)) return { matches: false, window };
   if (type === "daily") return { matches: true, window };
   if (type === "weekly") return { matches: String(trigger.weekday ?? "Sun").slice(0, 3) === parts.weekday, window };
   if (type === "monthly") return { matches: Number(parts.day) === Number(trigger.day ?? 1), window };
@@ -24,9 +24,23 @@ function matches(job: JobDefinition, date: Date): { matches: boolean; window: st
     const fields = String(trigger.expression ?? "").trim().split(/\s+/);
     if (fields.length !== 5) return { matches: false, window };
     const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(parts.weekday ?? "");
-    return { matches: (fields[0] === "*" || Number(fields[0]) === Number(parts.minute)) && (fields[1] === "*" || Number(fields[1]) === Number(parts.hour)) && (fields[4] === "*" || Number(fields[4]) === weekday), window };
+    return { matches: cronField(fields[0]!, Number(parts.minute), 0, 59) && cronField(fields[1]!, Number(parts.hour), 0, 23) && cronField(fields[2]!, Number(parts.day), 1, 31) && cronField(fields[3]!, Number(parts.month), 1, 12) && cronField(fields[4]!, weekday, 0, 6), window };
   }
   return { matches: false, window };
+}
+
+function cronField(expression: string, value: number, minimum: number, maximum: number): boolean {
+  return expression.split(",").some((part) => {
+    const [rangePart, stepText] = part.split("/");
+    const step = stepText ? Number(stepText) : 1;
+    if (!Number.isInteger(step) || step < 1) return false;
+    let start = minimum; let end = maximum;
+    if (rangePart !== "*") {
+      const bounds = rangePart!.split("-").map(Number);
+      start = bounds[0]!; end = bounds.length === 2 ? bounds[1]! : start;
+    }
+    return Number.isInteger(start) && Number.isInteger(end) && start >= minimum && end <= maximum && start <= value && value <= end && (value - start) % step === 0;
+  });
 }
 
 function windowsFor(job: JobDefinition, from: Date, to: Date): Array<{ at: Date; window: string }> {

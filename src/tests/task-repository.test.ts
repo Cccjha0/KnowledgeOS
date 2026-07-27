@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import type { JobDefinition, TaskResources } from "../runtime/domain.js";
 import { RuntimeRepository, restoreRuntimeDatabase } from "../runtime/repository.js";
 
@@ -22,7 +23,7 @@ test("runtime repository persists Tasks and deduplicates one business window", a
   try {
     const now = new Date().toISOString();
     let repository = await RuntimeRepository.open(vault);
-    assert.equal(repository.schemaVersion(), 1);
+    assert.equal(repository.schemaVersion(), 2);
     assert.equal(repository.integrityCheck(), "ok");
     repository.registerJob(job(now));
     const input = {
@@ -36,6 +37,7 @@ test("runtime repository persists Tasks and deduplicates one business window", a
     assert.equal(duplicate.deduplicated, true);
     assert.equal(duplicate.task.task_id, first.task.task_id);
     assert.equal(repository.listTasks(["queued"]).length, 1);
+    assert.equal((repository.runtimeStats().metrics as Record<string, number>).idempotency_deduplicated, 1);
     repository.close();
 
     repository = await RuntimeRepository.open(vault);
@@ -81,5 +83,35 @@ test("runtime database backup can restore durable queue state", async () => {
     assert.equal(restored.integrityCheck(), "ok");
     assert.equal(restored.getTask(task.task_id)?.idempotency_key, "scan:startup:1");
     restored.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("replace and merge concurrency policies have deterministic queue semantics", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-concurrency-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    const input = { job_id: "core.refresh", module: "core", task_type: "core-operation" as const, workflow: "core:test", resources: localResources, trigger: { type: "manual" }, catch_up_policy: "none" as const, concurrency_key: "refresh" };
+    const old = repository.createTask({ ...input, concurrency_policy: "replace", idempotency_key: "refresh:old" }).task;
+    const replacement = repository.createTask({ ...input, concurrency_policy: "replace", idempotency_key: "refresh:new" }).task;
+    assert.equal(repository.getTask(old.task_id)?.completion_reason, "replaced");
+    assert.equal(replacement.status, "queued");
+    const merged = repository.createTask({ ...input, concurrency_key: "merge", concurrency_policy: "merge", idempotency_key: "merge:1", payload: { source_file: "a.md" } }).task;
+    const same = repository.createTask({ ...input, concurrency_key: "merge", concurrency_policy: "merge", idempotency_key: "merge:2", payload: { source_file: "b.md" } });
+    assert.equal(same.task.task_id, merged.task_id); assert.equal(same.deduplicated, true);
+    assert.equal((same.task.payload.merged_requests as unknown[]).length, 1);
+    repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("opening a v1 runtime database creates a pre-migration snapshot", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-migrate-"));
+  try {
+    const repository = await RuntimeRepository.open(vault); const database = repository.databasePath; repository.close();
+    const script = "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('DROP TABLE codex_invocations'); c.execute('DROP TABLE runtime_events'); c.execute(\"UPDATE runtime_metadata SET value='1' WHERE key='schema_version'\"); c.commit(); c.close()";
+    const downgraded = spawnSync("python", ["-c", script, database], { encoding: "utf8", windowsHide: true });
+    assert.equal(downgraded.status, 0, downgraded.stderr);
+    const migrated = await RuntimeRepository.open(vault); assert.equal(migrated.schemaVersion(), 2); migrated.close();
+    const backups = await fs.readdir(path.join(vault, "90-System", "Backups"));
+    assert.equal(backups.some((name) => name.startsWith("runtime-schema-v1-") && name.endsWith(".db")), true);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

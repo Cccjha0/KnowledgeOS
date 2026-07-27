@@ -45,6 +45,19 @@ test("Scheduler applies latest, all, and aggregate catch-up without duplicate wi
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("cron matching honors all five fields, lists, ranges, and steps", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-cron-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    const job: JobDefinition = { ...scheduledJob("all"), job_id: "core.cron", trigger: { type: "cron", expression: "*/15 8-10 28 7 2", timezone: "UTC" }, concurrency: { policy: "forbid", key: "cron" } };
+    repository.registerJob(job);
+    repository.setCheckpoint({ job_id: job.job_id, last_evaluated_at: "2026-07-28T07:59:00.000Z", last_created_window: null, next_evaluation_at: null });
+    repository.close();
+    const result = await evaluateScheduler(vault, new Date("2026-07-28T10:01:00.000Z"));
+    assert.equal(result.created.length, 9);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Startup reconciles stale running and due deferred Tasks", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-reconcile-"));
   try {

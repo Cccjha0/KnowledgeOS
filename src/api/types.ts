@@ -33,6 +33,7 @@ export type CommandApiMethod =
   | "getTaskDetails"
   | "manageTask"
   | "getTaskRuntimeStatus"
+  | "enqueueTask"
   | "runTaskCycle";
 
 export interface CommandApiRequest extends JsonObject {

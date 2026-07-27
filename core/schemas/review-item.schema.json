@@ -25,6 +25,10 @@
       "type": "string",
       "pattern": "^REV-\\d{4}-\\d{6,}$"
     },
+    "origin_task_id": {
+      "type": ["string", "null"],
+      "pattern": "^TASK-\\d{4}-\\d{6,}$"
+    },
     "schema_version": {
       "type": "integer",
       "minimum": 1
