@@ -339,6 +339,7 @@ export async function processApplicationReport(
     allowedTypes: ["update-frontmatter", "append-section", "move-file"],
     allowedTargets: [target.relative, toVaultPath(vaultRoot, reportAbsolute), ...(requestTarget ? [requestTarget] : [])],
     requiredReviewId: null,
+    gitSnapshot: snapshot,
   });
   const reviewPaths = await writeReviewItems(vaultRoot, update.review_items);
 

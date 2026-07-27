@@ -24,7 +24,8 @@ test("vault init is additive and idempotent", async () => {
     assert.equal(await fs.readFile(path.join(vault, "Today.md"), "utf8"), "# My existing dashboard\n");
     const ignore = await fs.readFile(path.join(vault, ".gitignore"), "utf8");
     assert.match(ignore, /^private\/$/m);
-    assert.match(ignore, /^90-System\/State\/\.transactions\/$/m);
+    assert.match(ignore, /^90-System\/Cache\/$/m);
+    assert.match(ignore, /^90-System\/State\/Locks\/$/m);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

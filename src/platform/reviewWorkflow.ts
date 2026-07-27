@@ -387,6 +387,7 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
       allowedTypes: ["update-frontmatter", "append-section"],
       allowedTargets: [located.item.target],
       requiredReviewId: located.item.review_id,
+      gitSnapshot: snapshot,
     });
     const status: ReviewStatus = decision.decision === "approve"
       ? "approved"

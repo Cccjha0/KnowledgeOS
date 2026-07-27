@@ -1,31 +1,66 @@
 import { promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { JsonObject, MarkdownDocument, Operation, OperationPlan } from "./types.js";
 import { parseMarkdown, validateSchema, writeMarkdown } from "./bridge.js";
 import { PkbError } from "./errors.js";
-import { deepMerge, ensureDir, exists, fromVaultPath } from "./files.js";
+import { deepMerge, ensureDir, exists, fromVaultPath, readJson, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import { appendToSection } from "./markdown.js";
 
 const PLAN_SCHEMA = "https://pkb.local/schemas/core/operation-plan.schema.json";
-const SUPPORTED_TYPES = new Set(["create-file", "update-frontmatter", "append-section", "move-file"]);
+const SUPPORTED_TYPES = new Set(["create-file", "update-frontmatter", "append-section", "move-file", "migrate-frontmatter"]);
+
+export type TransactionStatus = "not-started" | "in-progress" | "completed" | "partially-failed" | "rolled-back" | "manual-action-required";
+type OperationStatus = "pending" | "in-progress" | "completed" | "skipped" | "failed";
 
 export interface ExecutionPolicy {
   allowedTypes?: readonly string[];
   allowedTargets?: readonly string[];
   requiredReviewId?: string | null;
+  gitSnapshot?: string | null;
 }
 
-interface FileSnapshot {
-  path: string;
+interface DurableSnapshot {
+  vault_path: string;
   existed: boolean;
-  content: Buffer | null;
+  backup_path: string | null;
+  after_existed: boolean | null;
+  after_sha256: string | null;
+}
+
+interface TransactionRecord {
+  transaction_id: string;
+  plan_id: string;
+  status: TransactionStatus;
+  git_snapshot: string | null;
+  created_at: string;
+  updated_at: string;
+  error: string | null;
+  snapshots: DurableSnapshot[];
+  operations: Array<{ operation_id: string; idempotency_key: string; status: OperationStatus; error: string | null }>;
+}
+
+interface IdempotencyLedger {
+  completed: Record<string, { plan_id: string; completed_at: string }>;
+}
+
+function transactionDirectory(vaultRoot: string, planId: string): string {
+  return path.join(vaultRoot, "90-System", "State", "Transactions", planId);
+}
+
+function transactionPath(vaultRoot: string, planId: string): string {
+  return path.join(transactionDirectory(vaultRoot, planId), "transaction.json");
+}
+
+function lockPath(vaultRoot: string): string {
+  return path.join(vaultRoot, "90-System", "State", "Locks", "operation-plan.lock.json");
 }
 
 function resolveVaultPath(vaultRoot: string, vaultPath: string): string {
   const absolute = fromVaultPath(vaultRoot, vaultPath);
   const relative = path.relative(vaultRoot, absolute);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new PkbError("PERMISSION_DENIED", "Operation Plan 指向 Vault 之外。", vaultPath);
+    throw new PkbError("PERMISSION_DENIED", "Operation Plan points outside the Vault.", vaultPath);
   }
   return absolute;
 }
@@ -35,134 +70,315 @@ function checkPermissions(plan: OperationPlan, policy: ExecutionPolicy): void {
   const allowedTargets = policy.allowedTargets ? new Set(policy.allowedTargets) : null;
   for (const operation of plan.operations) {
     if (!SUPPORTED_TYPES.has(operation.type) || !allowedTypes.has(operation.type)) {
-      throw new PkbError("OPERATION_NOT_ALLOWED", `不允许执行操作：${operation.type}`, operation);
+      throw new PkbError("OPERATION_NOT_ALLOWED", `Operation type is not allowed: ${operation.type}`, operation);
     }
     if (!operation.target || (allowedTargets && !allowedTargets.has(operation.target))) {
-      throw new PkbError("TARGET_NOT_ALLOWED", "Operation Plan 目标不在授权范围内。", operation);
+      throw new PkbError("TARGET_NOT_ALLOWED", "Operation target is outside the authorized set.", operation);
     }
     if (policy.requiredReviewId !== undefined && operation.requires_review_id !== policy.requiredReviewId) {
-      throw new PkbError("REVIEW_AUTHORIZATION_MISMATCH", "操作的审核授权不匹配。", operation);
+      throw new PkbError("REVIEW_AUTHORIZATION_MISMATCH", "Operation review authorization does not match.", operation);
     }
-  }
-}
-
-async function snapshotFile(filePath: string): Promise<FileSnapshot> {
-  const present = await exists(filePath);
-  return { path: filePath, existed: present, content: present ? await fs.readFile(filePath) : null };
-}
-
-async function restoreSnapshots(snapshots: Map<string, FileSnapshot>): Promise<void> {
-  for (const snapshot of [...snapshots.values()].reverse()) {
-    if (snapshot.existed && snapshot.content) {
-      await ensureDir(path.dirname(snapshot.path));
-      await fs.writeFile(snapshot.path, snapshot.content);
-    } else if (await exists(snapshot.path)) {
-      await fs.unlink(snapshot.path);
-    }
-  }
-}
-
-async function capture(
-  snapshots: Map<string, FileSnapshot>,
-  filePath: string,
-): Promise<void> {
-  if (!snapshots.has(filePath)) {
-    snapshots.set(filePath, await snapshotFile(filePath));
   }
 }
 
 function requireObject(value: unknown, operation: Operation, label: string): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new PkbError("INVALID_OPERATION", `${label} 必须是对象。`, operation);
+    throw new PkbError("INVALID_OPERATION", `${label} must be an object.`, operation);
   }
   return value as JsonObject;
 }
 
-async function executeOperation(
-  vaultRoot: string,
-  operation: Operation,
-  snapshots: Map<string, FileSnapshot>,
-): Promise<void> {
-  const target = resolveVaultPath(vaultRoot, operation.target!);
-  await capture(snapshots, target);
+async function writeTransaction(vaultRoot: string, record: TransactionRecord): Promise<void> {
+  record.updated_at = new Date().toISOString();
+  await writeJsonAtomic(transactionPath(vaultRoot, record.plan_id), record);
+  await writeJsonAtomic(path.join(vaultRoot, "90-System", "Logs", "Transactions", `${record.plan_id}.json`), record);
+}
 
-  if (operation.type === "create-file") {
-    if (await exists(target)) {
-      throw new PkbError("TARGET_EXISTS", "create-file target already exists.", operation.target);
-    }
-    const document = requireObject(operation.payload.document, operation, "document");
-    const data = requireObject(document.data, operation, "document.data");
-    const content = document.content;
-    if (typeof content !== "string") {
-      throw new PkbError("INVALID_OPERATION", "document.content must be a string.", operation);
-    }
-    const schemaId = operation.payload.schema_id;
-    if (typeof schemaId === "string") validateSchema(vaultRoot, schemaId, data);
-    await ensureDir(path.dirname(target));
-    writeMarkdown(vaultRoot, target, { data, content });
-    return;
+async function snapshotPaths(vaultRoot: string, plan: OperationPlan, record: TransactionRecord): Promise<void> {
+  const paths: string[] = [];
+  for (const operation of plan.operations) {
+    if (operation.target) paths.push(operation.target);
+    if (operation.type === "move-file" && typeof operation.payload.destination === "string") paths.push(operation.payload.destination);
   }
-
-  if (operation.type === "update-frontmatter") {
-    const document = parseMarkdown(vaultRoot, target);
-    const patch = requireObject(operation.payload.patch, operation, "patch");
-    const updated: MarkdownDocument = {
-      data: deepMerge(document.data, patch),
-      content: document.content,
-    };
-    const schemaId = operation.payload.schema_id;
-    if (typeof schemaId === "string") {
-      validateSchema(vaultRoot, schemaId, updated.data);
-    }
-    writeMarkdown(vaultRoot, target, updated);
-    return;
-  }
-
-  if (operation.type === "append-section") {
-    const document = parseMarkdown(vaultRoot, target);
-    const updated: MarkdownDocument = {
-      data: document.data,
-      content: appendToSection(
-        document.content,
-        String(operation.payload.section ?? "Changes"),
-        String(operation.payload.content ?? ""),
-        String(operation.payload.marker ?? operation.idempotency_key),
-      ),
-    };
-    writeMarkdown(vaultRoot, target, updated);
-    return;
-  }
-
-  if (operation.type === "move-file") {
-    const destinationValue = operation.payload.destination;
-    if (typeof destinationValue !== "string") {
-      throw new PkbError("INVALID_OPERATION", "move-file 缺少 Vault 相对 destination。", operation);
-    }
-    const destination = resolveVaultPath(vaultRoot, destinationValue);
-    await capture(snapshots, destination);
-    if (await exists(destination)) {
-      throw new PkbError("DESTINATION_EXISTS", "移动目标已存在。", destinationValue);
-    }
-    await ensureDir(path.dirname(destination));
-    await fs.rename(target, destination);
-    return;
+  const unique = [...new Set(paths)];
+  const backupRoot = path.join(transactionDirectory(vaultRoot, plan.plan_id), "backups");
+  await ensureDir(backupRoot);
+  for (const [index, vaultPath] of unique.entries()) {
+    const absolute = resolveVaultPath(vaultRoot, vaultPath);
+    const present = await exists(absolute);
+    const backup = present ? path.join(backupRoot, `${String(index).padStart(4, "0")}.bin`) : null;
+    if (backup) await fs.copyFile(absolute, backup);
+    record.snapshots.push({
+      vault_path: vaultPath,
+      existed: present,
+      backup_path: backup ? toVaultPath(vaultRoot, backup) : null,
+      after_existed: null,
+      after_sha256: null,
+    });
+    await writeTransaction(vaultRoot, record);
   }
 }
 
-export async function executeOperationPlan(
-  vaultRoot: string,
-  plan: OperationPlan,
-  policy: ExecutionPolicy = {},
-): Promise<void> {
+async function recordResultHashes(vaultRoot: string, record: TransactionRecord): Promise<void> {
+  for (const snapshot of record.snapshots) {
+    const target = resolveVaultPath(vaultRoot, snapshot.vault_path);
+    snapshot.after_existed = await exists(target);
+    snapshot.after_sha256 = snapshot.after_existed ? await sha256File(target) : null;
+  }
+  await writeTransaction(vaultRoot, record);
+}
+
+async function restoreTransaction(vaultRoot: string, record: TransactionRecord): Promise<void> {
+  const errors: string[] = [];
+  if (record.status === "completed") {
+    for (const snapshot of record.snapshots) {
+      if (snapshot.after_existed === null || snapshot.after_existed === undefined) continue;
+      const target = resolveVaultPath(vaultRoot, snapshot.vault_path);
+      const present = await exists(target);
+      const hash = present ? await sha256File(target) : null;
+      if (present !== snapshot.after_existed || hash !== snapshot.after_sha256) {
+        errors.push(`${snapshot.vault_path}: changed after transaction completion`);
+      }
+    }
+    if (errors.length > 0) {
+      record.status = "manual-action-required";
+      record.error = errors.join("; ");
+      await writeTransaction(vaultRoot, record);
+      throw new PkbError("ROLLBACK_CONFLICT", "Rollback would overwrite newer changes.", errors);
+    }
+  }
+  for (const snapshot of [...record.snapshots].reverse()) {
+    const target = resolveVaultPath(vaultRoot, snapshot.vault_path);
+    try {
+      if (snapshot.existed && snapshot.backup_path) {
+        await ensureDir(path.dirname(target));
+        await fs.copyFile(resolveVaultPath(vaultRoot, snapshot.backup_path), target);
+      } else if (await exists(target)) {
+        await fs.unlink(target);
+      }
+    } catch (error) {
+      errors.push(`${snapshot.vault_path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  record.status = errors.length === 0 ? "rolled-back" : "manual-action-required";
+  record.error = errors.length === 0 ? record.error : errors.join("; ");
+  await writeTransaction(vaultRoot, record);
+  if (errors.length > 0) throw new PkbError("ROLLBACK_INCOMPLETE", "Rollback requires manual intervention.", errors);
+}
+
+async function removeIdempotencyEntries(vaultRoot: string, record: TransactionRecord): Promise<void> {
+  const ledgerPath = path.join(vaultRoot, "90-System", "State", "idempotency.json");
+  const ledger = await readJson<IdempotencyLedger>(ledgerPath, { completed: {} });
+  for (const operation of record.operations) {
+    if (ledger.completed[operation.idempotency_key]?.plan_id === record.plan_id) delete ledger.completed[operation.idempotency_key];
+  }
+  await writeJsonAtomic(ledgerPath, ledger);
+}
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function acquireLock(vaultRoot: string, planId: string): Promise<FileHandle> {
+  const file = lockPath(vaultRoot);
+  await ensureDir(path.dirname(file));
+  try {
+    const handle = await fs.open(file, "wx");
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, plan_id: planId, acquired_at: new Date().toISOString() })}\n`, "utf8");
+    return handle;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const lock = await readJson<{ pid?: number; plan_id?: string }>(file, {});
+    if (typeof lock.pid === "number" && processAlive(lock.pid)) {
+      throw new PkbError("EXECUTION_LOCKED", `Another Operation Plan is running in process ${lock.pid}.`, lock);
+    }
+    await recoverInterruptedTransactions(vaultRoot);
+    await fs.unlink(file).catch(() => undefined);
+    const handle = await fs.open(file, "wx");
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid, plan_id: planId, acquired_at: new Date().toISOString() })}\n`, "utf8");
+    return handle;
+  }
+}
+
+async function releaseLock(vaultRoot: string, handle: FileHandle): Promise<void> {
+  await handle.close().catch(() => undefined);
+  await fs.unlink(lockPath(vaultRoot)).catch(() => undefined);
+}
+
+function setNested(target: JsonObject, dottedPath: string, value: unknown): void {
+  const parts = dottedPath.split(".");
+  let current: JsonObject = target;
+  for (const part of parts.slice(0, -1)) {
+    const next = current[part];
+    if (!next || typeof next !== "object" || Array.isArray(next)) current[part] = {};
+    current = current[part] as JsonObject;
+  }
+  current[parts.at(-1)!] = structuredClone(value) as JsonObject[string];
+}
+
+function deleteNested(target: JsonObject, dottedPath: string): void {
+  const parts = dottedPath.split(".");
+  let current: JsonObject = target;
+  for (const part of parts.slice(0, -1)) {
+    const next = current[part];
+    if (!next || typeof next !== "object" || Array.isArray(next)) return;
+    current = next as JsonObject;
+  }
+  delete current[parts.at(-1)!];
+}
+
+async function executeOperation(vaultRoot: string, operation: Operation): Promise<void> {
+  const target = resolveVaultPath(vaultRoot, operation.target!);
+  if (operation.type === "create-file") {
+    if (await exists(target)) throw new PkbError("TARGET_EXISTS", "create-file target already exists.", operation.target);
+    const document = requireObject(operation.payload.document, operation, "document");
+    const data = requireObject(document.data, operation, "document.data");
+    if (typeof document.content !== "string") throw new PkbError("INVALID_OPERATION", "document.content must be a string.", operation);
+    if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
+    await ensureDir(path.dirname(target));
+    writeMarkdown(vaultRoot, target, { data, content: document.content });
+    return;
+  }
+  if (operation.type === "update-frontmatter") {
+    const document = parseMarkdown(vaultRoot, target);
+    const updated: MarkdownDocument = { data: deepMerge(document.data, requireObject(operation.payload.patch, operation, "patch")), content: document.content };
+    if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, updated.data);
+    writeMarkdown(vaultRoot, target, updated);
+    return;
+  }
+  if (operation.type === "migrate-frontmatter") {
+    const document = parseMarkdown(vaultRoot, target);
+    const fromVersion = Number(operation.payload.from_version);
+    const toVersion = Number(operation.payload.to_version);
+    if (document.data.schema_version !== fromVersion) throw new PkbError("MIGRATION_VERSION_MISMATCH", `Expected schema_version ${fromVersion}.`, operation);
+    const steps = operation.payload.steps;
+    if (!Array.isArray(steps)) throw new PkbError("INVALID_OPERATION", "Migration steps must be an array.", operation);
+    const data = structuredClone(document.data);
+    for (const raw of steps) {
+      const step = requireObject(raw, operation, "migration step");
+      const field = String(step.path ?? "");
+      if (!field) throw new PkbError("INVALID_OPERATION", "Migration step path is required.", step);
+      if (step.op === "set") setNested(data, field, step.value);
+      else if (step.op === "remove") deleteNested(data, field);
+      else if (step.op === "rename") {
+        const destination = String(step.to ?? "");
+        const value = field.split(".").reduce<unknown>((current, part) => current && typeof current === "object" ? (current as Record<string, unknown>)[part] : undefined, data);
+        if (value !== undefined) { setNested(data, destination, value); deleteNested(data, field); }
+      } else throw new PkbError("INVALID_OPERATION", `Unsupported migration step: ${String(step.op)}`, step);
+    }
+    data.schema_version = toVersion;
+    if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
+    writeMarkdown(vaultRoot, target, { data, content: document.content });
+    return;
+  }
+  if (operation.type === "append-section") {
+    const document = parseMarkdown(vaultRoot, target);
+    writeMarkdown(vaultRoot, target, {
+      data: document.data,
+      content: appendToSection(document.content, String(operation.payload.section ?? "Changes"), String(operation.payload.content ?? ""), String(operation.payload.marker ?? operation.idempotency_key)),
+    });
+    return;
+  }
+  if (operation.type === "move-file") {
+    if (typeof operation.payload.destination !== "string") throw new PkbError("INVALID_OPERATION", "move-file requires a Vault-relative destination.", operation);
+    const destination = resolveVaultPath(vaultRoot, operation.payload.destination);
+    if (await exists(destination)) throw new PkbError("DESTINATION_EXISTS", "Move destination already exists.", operation.payload.destination);
+    await ensureDir(path.dirname(destination));
+    await fs.rename(target, destination);
+  }
+}
+
+export async function recoverInterruptedTransactions(vaultRoot: string): Promise<string[]> {
+  const root = path.join(vaultRoot, "90-System", "State", "Transactions");
+  const recovered: string[] = [];
+  if (!(await exists(root))) return recovered;
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const file = path.join(root, entry.name, "transaction.json");
+    if (!(await exists(file))) continue;
+    const record = await readJson<TransactionRecord | null>(file, null);
+    if (!record || !["in-progress", "partially-failed"].includes(record.status)) continue;
+    await restoreTransaction(vaultRoot, record);
+    await removeIdempotencyEntries(vaultRoot, record);
+    recovered.push(record.plan_id);
+  }
+  return recovered;
+}
+
+export async function rollbackTransaction(vaultRoot: string, planId: string): Promise<TransactionStatus> {
+  const record = await readJson<TransactionRecord | null>(transactionPath(vaultRoot, planId), null);
+  if (!record) throw new PkbError("TRANSACTION_NOT_FOUND", `Transaction ${planId} was not found.`);
+  if (record.status === "rolled-back") return record.status;
+  await restoreTransaction(vaultRoot, record);
+  await removeIdempotencyEntries(vaultRoot, record);
+  const migrationRoot = path.join(vaultRoot, "90-System", "State", "Migrations");
+  if (await exists(migrationRoot)) {
+    for (const file of await fs.readdir(migrationRoot)) {
+      if (!file.endsWith(".json")) continue;
+      const migration = await readJson<Record<string, unknown> | null>(path.join(migrationRoot, file), null);
+      const plan = migration?.plan;
+      if (plan && typeof plan === "object" && (plan as Record<string, unknown>).plan_id === planId) {
+        migration!.status = "rolled-back";
+        migration!.updated_at = new Date().toISOString();
+        await writeJsonAtomic(path.join(migrationRoot, file), migration);
+      }
+    }
+  }
+  return record.status;
+}
+
+export async function executeOperationPlan(vaultRoot: string, plan: OperationPlan, policy: ExecutionPolicy = {}): Promise<void> {
   validateSchema(vaultRoot, PLAN_SCHEMA, plan);
   checkPermissions(plan, policy);
-  const snapshots = new Map<string, FileSnapshot>();
+  const existing = await readJson<TransactionRecord | null>(transactionPath(vaultRoot, plan.plan_id), null);
+  if (existing?.status === "completed") return;
+  if (existing) throw new PkbError("TRANSACTION_REQUIRES_NEW_PLAN", `Plan ${plan.plan_id} already has transaction status ${existing.status}.`);
+  const lock = await acquireLock(vaultRoot, plan.plan_id);
+  const now = new Date().toISOString();
+  const record: TransactionRecord = {
+    transaction_id: `TX-${plan.plan_id}`, plan_id: plan.plan_id, status: "not-started",
+    git_snapshot: policy.gitSnapshot ?? null, created_at: now, updated_at: now, error: null, snapshots: [],
+    operations: plan.operations.map((operation) => ({ operation_id: operation.operation_id, idempotency_key: operation.idempotency_key, status: "pending", error: null })),
+  };
   try {
-    for (const operation of plan.operations) {
-      await executeOperation(vaultRoot, operation, snapshots);
+    await writeTransaction(vaultRoot, record);
+    await snapshotPaths(vaultRoot, plan, record);
+    record.status = "in-progress";
+    await writeTransaction(vaultRoot, record);
+    const ledgerPath = path.join(vaultRoot, "90-System", "State", "idempotency.json");
+    const ledger = await readJson<IdempotencyLedger>(ledgerPath, { completed: {} });
+    for (const [index, operation] of plan.operations.entries()) {
+      const state = record.operations[index]!;
+      if (ledger.completed[operation.idempotency_key]) {
+        state.status = "skipped";
+        await writeTransaction(vaultRoot, record);
+        continue;
+      }
+      state.status = "in-progress";
+      await writeTransaction(vaultRoot, record);
+      try {
+        await executeOperation(vaultRoot, operation);
+        state.status = "completed";
+      } catch (error) {
+        state.status = "failed";
+        state.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+      await writeTransaction(vaultRoot, record);
     }
+    const completedAt = new Date().toISOString();
+    await recordResultHashes(vaultRoot, record);
+    for (const operation of plan.operations) ledger.completed[operation.idempotency_key] = { plan_id: plan.plan_id, completed_at: completedAt };
+    await writeJsonAtomic(ledgerPath, ledger);
+    record.status = "completed";
+    await writeTransaction(vaultRoot, record);
   } catch (error) {
-    await restoreSnapshots(snapshots);
+    record.status = "partially-failed";
+    record.error = error instanceof Error ? error.message : String(error);
+    await writeTransaction(vaultRoot, record).catch(() => undefined);
+    await restoreTransaction(vaultRoot, record);
     throw error;
+  } finally {
+    await releaseLock(vaultRoot, lock);
   }
 }

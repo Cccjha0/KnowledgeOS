@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { PkbError } from "./errors.js";
-import { exists, readJson, writeJsonAtomic } from "./files.js";
+import { exists, listFilesRecursive, readJson, writeJsonAtomic } from "./files.js";
 
 export type GitMode = "initialize" | "existing" | "disabled";
 
@@ -36,17 +36,27 @@ export interface VaultDoctorResult {
 
 const REQUIRED_DIRECTORIES = [
   "00-Inbox",
+  "20-Workspace",
+  "30-Knowledge",
+  "90-System/Core",
+  "90-System/Modules",
+  "90-System/Components",
   "90-System/Instances",
   "90-System/Logs",
+  "90-System/Cache",
   "90-System/Review Queue/Pending",
   "90-System/Review Queue/Deferred",
   "90-System/Review Queue/Closed",
   "90-System/Review Queue/Error",
   "90-System/State/Plans",
+  "90-System/State/Transactions",
+  "90-System/State/Migrations",
+  "90-System/State/Locks",
 ] as const;
 
 const GITIGNORE_ENTRIES = [
-  "90-System/State/.transactions/",
+  "90-System/Cache/",
+  "90-System/State/Locks/",
   "*.tmp-*",
   ".DS_Store",
   ".obsidian/workspace*.json",
@@ -154,6 +164,16 @@ export async function initializeVault(
   await mergeGitignore(vaultRoot, createdFiles);
   await writeIfMissing(vaultRoot, "90-System/State/id-counters.json", "{\n  \"counters\": {}\n}\n", createdFiles);
   await writeIfMissing(vaultRoot, "90-System/State/processed-reports.json", "{\n  \"reports\": {}\n}\n", createdFiles);
+  await writeIfMissing(vaultRoot, "90-System/State/idempotency.json", "{\n  \"completed\": {}\n}\n", createdFiles);
+  await writeIfMissing(
+    vaultRoot,
+    "90-System/Core/backup-policy.json",
+    "{\n  \"schema_version\": 1,\n  \"local_compressed_backup\": \"weekly\",\n  \"offsite_backup\": \"required\",\n  \"include_attachments\": true,\n  \"exclude\": [\".git\", \"90-System/Cache\"]\n}\n",
+    createdFiles,
+  );
+  await writeIfMissing(vaultRoot, "90-System/Core/engine.json", "{\n  \"schema_version\": 1,\n  \"engine\": \"knowledgeos-engine\",\n  \"version\": null,\n  \"repository\": null,\n  \"synced_at\": null\n}\n", createdFiles);
+  await writeIfMissing(vaultRoot, "90-System/Modules/installed.json", "{\n  \"schema_version\": 1,\n  \"modules\": []\n}\n", createdFiles);
+  await writeIfMissing(vaultRoot, "90-System/Components/installed.json", "{\n  \"schema_version\": 1,\n  \"components\": []\n}\n", createdFiles);
   await writeIfMissing(
     vaultRoot,
     "Today.md",
@@ -228,6 +248,30 @@ export async function doctorVault(
     const present = await exists(path.join(vaultRoot, ...directory.split("/")));
     checks.push({ name: `directory:${directory}`, ok: present, message: present ? "目录存在。" : "目录缺失。" });
   }
+
+  for (const configFile of [
+    "90-System/Core/engine.json",
+    "90-System/Core/backup-policy.json",
+    "90-System/Modules/installed.json",
+    "90-System/Components/installed.json",
+  ]) {
+    const present = await exists(path.join(vaultRoot, ...configFile.split("/")));
+    checks.push({ name: `configuration:${configFile}`, ok: present, message: present ? "Configuration is present." : "Configuration is missing." });
+  }
+
+  const transactionFiles = await listFilesRecursive(path.join(vaultRoot, "90-System", "State", "Transactions"), "transaction.json");
+  const unhealthy: string[] = [];
+  for (const transactionFile of transactionFiles) {
+    const transaction = await readJson<{ plan_id?: string; status?: string }>(transactionFile, {});
+    if (["not-started", "in-progress", "partially-failed", "manual-action-required"].includes(transaction.status ?? "")) {
+      unhealthy.push(`${transaction.plan_id ?? path.basename(path.dirname(transactionFile))}:${transaction.status}`);
+    }
+  }
+  checks.push({
+    name: "transactions",
+    ok: unhealthy.length === 0,
+    message: unhealthy.length === 0 ? "No unfinished transactions." : `Transactions require recovery: ${unhealthy.join(", ")}`,
+  });
 
   const hasGit = await exists(path.join(vaultRoot, ".git"));
   const gitOk = gitMode === "disabled" || hasGit;

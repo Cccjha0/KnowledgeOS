@@ -8,8 +8,12 @@ import { processApplicationReport } from "./platform/applicationWorkflow.js";
 import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
 import { rebuildTodayDashboard } from "./platform/dashboard.js";
 import { startResearchRequest, syncDueResearchRequests } from "./platform/researchRequestWorkflow.js";
+import { syncInstalledConfiguration } from "./platform/configuration.js";
 import { PkbError } from "./core/errors.js";
 import { doctorVault, initializeVault, type GitMode } from "./core/vault.js";
+import { applyMigration, planMigrations } from "./core/migrations.js";
+import { recoverInterruptedTransactions, rollbackTransaction } from "./core/operationExecutor.js";
+import { createVaultBackup, restoreVaultBackup, verifyVaultBackup } from "./core/backup.js";
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
 
 interface ParsedArgs {
@@ -89,7 +93,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan [--vault PATH]\n  pkb migration apply MIGRATION_RUN_ID [--vault PATH]\n  pkb transaction recover [--vault PATH]\n  pkb transaction rollback PLAN_ID [--vault PATH]\n  pkb backup create DESTINATION [--vault PATH]\n  pkb backup verify ARCHIVE\n  pkb backup restore ARCHIVE TARGET\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -110,7 +114,55 @@ async function main(): Promise<void> {
       parsed.gitMode,
       APPLICATION_VAULT_DIRECTORIES,
     );
+    await syncInstalledConfiguration(result.vault);
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "config" && subcommand === "sync") {
+    console.log(JSON.stringify(await syncInstalledConfiguration(parsed.vault), null, 2));
+    return;
+  }
+
+  if (command === "migration" && subcommand === "plan") {
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await planMigrations(parsed.vault, engineRoot), null, 2));
+    return;
+  }
+
+  if (command === "migration" && subcommand === "apply") {
+    if (!value) throw new Error("migration apply requires MIGRATION_RUN_ID");
+    console.log(JSON.stringify(await applyMigration(parsed.vault, value), null, 2));
+    return;
+  }
+
+  if (command === "transaction" && subcommand === "recover") {
+    console.log(JSON.stringify({ recovered: await recoverInterruptedTransactions(parsed.vault) }, null, 2));
+    return;
+  }
+
+  if (command === "transaction" && subcommand === "rollback") {
+    if (!value) throw new Error("transaction rollback requires PLAN_ID");
+    console.log(JSON.stringify({ plan_id: value, status: await rollbackTransaction(parsed.vault, value) }, null, 2));
+    return;
+  }
+
+  if (command === "backup" && subcommand === "create") {
+    if (!value) throw new Error("backup create requires DESTINATION");
+    console.log(JSON.stringify(createVaultBackup(parsed.vault, value), null, 2));
+    return;
+  }
+
+  if (command === "backup" && subcommand === "verify") {
+    if (!value) throw new Error("backup verify requires ARCHIVE");
+    console.log(JSON.stringify(verifyVaultBackup(value), null, 2));
+    return;
+  }
+
+  if (command === "backup" && subcommand === "restore") {
+    const target = parsed.positional[3];
+    if (!value || !target) throw new Error("backup restore requires ARCHIVE and TARGET");
+    console.log(JSON.stringify(restoreVaultBackup(value, target), null, 2));
     return;
   }
 

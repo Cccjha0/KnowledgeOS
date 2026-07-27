@@ -74,6 +74,7 @@
             "update-file",
             "append-section",
             "update-frontmatter",
+            "migrate-frontmatter",
             "rename-file",
             "move-file",
             "create-directory",

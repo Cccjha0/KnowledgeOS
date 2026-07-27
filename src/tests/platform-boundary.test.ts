@@ -66,6 +66,9 @@ test("Core executes an authorized plan and rolls back a failed plan", async () =
       requiredReviewId: null,
     });
     assert.match(await fs.readFile(target, "utf8"), /status: new/);
+    const completedJournal = JSON.parse(await fs.readFile(path.join(vault, "90-System", "State", "Transactions", plan.plan_id, "transaction.json"), "utf8")) as { status: string };
+    assert.equal(completedJournal.status, "completed");
+    assert.equal((await fs.stat(path.join(vault, "90-System", "Logs", "Transactions", `${plan.plan_id}.json`))).isFile(), true);
 
     await fs.writeFile(target, original, "utf8");
     await fs.writeFile(path.join(vault, "occupied.md"), "occupied", "utf8");
@@ -92,6 +95,8 @@ test("Core executes an authorized plan and rolls back a failed plan", async () =
       requiredReviewId: null,
     }));
     assert.equal(await fs.readFile(target, "utf8"), original);
+    const failedJournal = JSON.parse(await fs.readFile(path.join(vault, "90-System", "State", "Transactions", failing.plan_id, "transaction.json"), "utf8")) as { status: string };
+    assert.equal(failedJournal.status, "rolled-back");
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

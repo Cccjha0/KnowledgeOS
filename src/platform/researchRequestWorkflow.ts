@@ -120,6 +120,7 @@ export async function syncDueResearchRequests(vaultRoot: string, now = new Date(
     allowedTypes: ["create-file"],
     allowedTargets: operations.map((operation) => operation.target!),
     requiredReviewId: null,
+    gitSnapshot: snapshot,
   });
   await writeRunLog(vaultRoot, {
     run_id: runId, task_id: taskId, plan_id: planId, source_module: "application-tracker", instance_id: null,
@@ -161,7 +162,7 @@ export async function startResearchRequest(vaultRoot: string, requestId: string,
   const planAbsolute = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
   await writeJsonAtomic(planAbsolute, plan);
   const snapshot = await createGitSnapshot(vaultRoot, runId);
-  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["update-frontmatter"], allowedTargets: [target], requiredReviewId: null });
+  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["update-frontmatter"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
   await writeRunLog(vaultRoot, {
     run_id: runId, task_id: taskId, plan_id: planId, source_module: "application-tracker", instance_id: request.instance_id,
     review_id: null, status: "completed", git_snapshot: snapshot, started_at: now,
