@@ -72,4 +72,6 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   }
   assert.match(plugin, /invoke\("getTodayItems"/);
   assert.match(plugin, /invoke\("createCapture"/);
+  assert.match(plugin, /class ReviewCenterView/);
+  assert.match(plugin, /invoke\("resolveReview"/);
 });

@@ -21,8 +21,8 @@ action.
 | `listInboxItems` | optional `module_id`, `instance_id`, `state` | grouped Inbox items | F02 read model |
 | `processInboxItem` | `item_id`, optional routing override and `preview_only` | run summary or waiting state | F04 contract; implementation pending |
 | `processInboxBatch` | explicit `item_ids`, `mode: high-confidence`, optional module/instance filter | batch summary and per-item results | F04 contract; implementation pending |
-| `listReviewItems` | optional `statuses`, module/instance/priority filters | Review Items with Vault-relative paths | available |
-| `resolveReview` | `review_id`, `decision`, `user_comment?`, `modified_value?`, `review_after?` | persisted review execution result | available |
+| `listReviewItems` | optional status, priority, module, instance, action, creation/deferred-date filters | Review View models with current/suggested values and impact | available |
+| `resolveReview` | direct decision or `prepare-discussion`, `apply-discussion-result`, `reconcile`, `retry`, `mark-resolved-by-user-edit` mode | persisted review result or minimal discussion context | available |
 | `getModules` | none | module summaries and active-instance counts | available |
 | `getInstances` | optional `module_id` | instance summaries | available |
 | `getRecentRuns` | optional `limit` (1–100), `status` | recent run summaries | available |
@@ -36,6 +36,9 @@ inventing temporary file-level fallbacks.
 `createCapture` uses the caller's `request_id` as its idempotency identity. Retrying the same content
 with the same ID returns the original result; reusing the ID with different content is rejected.
 `preview_only: true` performs routing inference without writing a receipt, file, plan, log, or counter.
+
+Discussion preparation returns `state: waiting-for-ai` with `ok: true`. A discussion result must include
+the returned `context_token`; stale tokens are rejected before the decision workflow runs.
 
 ## Response and UI state
 

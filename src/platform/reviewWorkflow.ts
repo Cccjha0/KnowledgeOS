@@ -1,4 +1,6 @@
 import path from "node:path";
+import { promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import type {
   ApplicationFact,
   ApplicationRecord,
@@ -18,8 +20,11 @@ import { rebuildTodayDashboard } from "./dashboard.js";
 import { PkbError } from "../core/errors.js";
 import {
   deepEqual,
+  ensureDir,
+  exists,
   fromVaultPath,
   listFilesRecursive,
+  readJson,
   toVaultPath,
   uniqueJsonValues,
   writeJsonAtomic,
@@ -313,7 +318,7 @@ function withDecision(item: ReviewItem, decision: ReviewDecision, status: Review
   };
 }
 
-export async function decideReview(options: DecideReviewOptions): Promise<ReviewActionResult> {
+async function decideReviewUnlocked(options: DecideReviewOptions): Promise<ReviewActionResult> {
   const vaultRoot = path.resolve(options.vaultRoot);
   const decidedAt = options.now ?? new Date().toISOString();
   await requeueDueReviews(vaultRoot, new Date(decidedAt));
@@ -423,6 +428,40 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
   }
 }
 
+function reviewLockPath(vaultRoot: string, reviewId: string): string {
+  return path.join(vaultRoot, "90-System", "State", "Locks", `review-${reviewId}.lock.json`);
+}
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+async function acquireReviewLock(vaultRoot: string, reviewId: string): Promise<FileHandle> {
+  const lockPath = reviewLockPath(vaultRoot, reviewId);
+  await ensureDir(path.dirname(lockPath));
+  if (await exists(lockPath)) {
+    const lock = await readJson<{ pid?: number }>(lockPath, {});
+    if (typeof lock.pid === "number" && processAlive(lock.pid)) {
+      throw new PkbError("REVIEW_IN_PROGRESS", `审核 ${reviewId} 正在由另一个请求处理。`);
+    }
+    await fs.unlink(lockPath).catch(() => undefined);
+  }
+  const handle = await fs.open(lockPath, "wx");
+  await handle.writeFile(`${JSON.stringify({ pid: process.pid, review_id: reviewId, acquired_at: new Date().toISOString() })}\n`, "utf8");
+  return handle;
+}
+
+export async function decideReview(options: DecideReviewOptions): Promise<ReviewActionResult> {
+  const vaultRoot = path.resolve(options.vaultRoot);
+  const lock = await acquireReviewLock(vaultRoot, options.reviewId);
+  try {
+    return await decideReviewUnlocked({ ...options, vaultRoot });
+  } finally {
+    await lock.close().catch(() => undefined);
+    await fs.unlink(reviewLockPath(vaultRoot, options.reviewId)).catch(() => undefined);
+  }
+}
+
 function observationFor(item: ReviewItem, record: ApplicationRecord, now: string): ReviewTargetObservation {
   const proposed = proposedObject(item);
   const field = fieldFromReview(item);
@@ -506,6 +545,36 @@ export async function retryReview(vaultPath: string, reviewId: string): Promise<
   const todayPath = await rebuildTodayDashboard(vaultRoot);
   return {
     status: "pending",
+    reviewId,
+    runId: null,
+    planPath: null,
+    snapshot: null,
+    reviewPath: toVaultPath(vaultRoot, reviewPath),
+    todayPath: toVaultPath(vaultRoot, todayPath),
+  };
+}
+
+export async function resolveReviewByUserEdit(
+  vaultPath: string,
+  reviewId: string,
+  userComment = "",
+): Promise<ReviewActionResult> {
+  const vaultRoot = path.resolve(vaultPath);
+  const located = await locateReviewItem(vaultRoot, reviewId);
+  if (located.item.status !== "pending") {
+    throw new PkbError("REVIEW_ALREADY_PROCESSED", `审核项状态为 ${located.item.status}，不能标记为用户编辑解决。`);
+  }
+  const item: ReviewItem = {
+    ...located.item,
+    status: "resolved-by-user-edit",
+    decision: null,
+    review_after: null,
+    resolution: `用户确认目标文件中的直接编辑已解决此审核。${userComment ? ` 备注：${userComment}` : ""}`,
+  };
+  const reviewPath = await persistReviewItem(vaultRoot, located, item);
+  const todayPath = await rebuildTodayDashboard(vaultRoot);
+  return {
+    status: item.status,
     reviewId,
     runId: null,
     planPath: null,

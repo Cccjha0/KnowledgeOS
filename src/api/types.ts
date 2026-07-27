@@ -56,10 +56,17 @@ export interface CommandApiResponse<T extends JsonValue = JsonValue> extends Jso
 
 export interface ResolveReviewParams {
   review_id: string;
-  decision: ReviewDecisionKind;
+  mode?: "decide" | "prepare-discussion" | "apply-discussion-result" | "reconcile" | "retry" | "mark-resolved-by-user-edit";
+  decision?: ReviewDecisionKind;
   user_comment?: string;
   review_after?: string | null;
   modified_value?: JsonValue;
+  context_token?: string;
+  discussion_result?: {
+    outcome: "approve" | "approve-with-modification" | "reject" | "continue-waiting" | "needs-more-information";
+    user_comment: string;
+    modified_value?: JsonValue;
+  };
 }
 
 export interface CreateCaptureParams {

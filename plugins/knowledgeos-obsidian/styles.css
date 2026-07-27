@@ -16,3 +16,13 @@
 .knowledgeos-capture-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
 .knowledgeos-capture-status { color: var(--text-error); min-height: 1.5rem; }
 @media (max-width: 600px) { .knowledgeos-capture-row { grid-template-columns: 1fr; } }
+.knowledgeos-review-filters { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .75rem; }
+.knowledgeos-review-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); margin: .3rem 0; }
+.knowledgeos-review-section { border-bottom: 1px solid var(--background-modifier-border); padding: .4rem 0; }
+.knowledgeos-review-section pre { background: var(--background-secondary); max-height: 14rem; overflow: auto; padding: .6rem; white-space: pre-wrap; }
+.knowledgeos-review-actions, .knowledgeos-review-presets { display: flex; flex-wrap: wrap; gap: .45rem; margin: .75rem 0; }
+.knowledgeos-review-warning { background: rgba(var(--color-orange-rgb), .12); border-left: 3px solid var(--color-orange); margin: .75rem 0; padding: .7rem; }
+.knowledgeos-review-warning button { margin: .5rem .5rem 0 0; }
+.knowledgeos-review-context { background: var(--background-secondary); border-radius: 6px; margin: .75rem 0; padding: .7rem; }
+.knowledgeos-review-modal label { display: flex; flex-direction: column; gap: .3rem; margin: .75rem 0; }
+.knowledgeos-review-modal textarea, .knowledgeos-review-modal select, .knowledgeos-review-modal input { width: 100%; }

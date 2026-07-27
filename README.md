@@ -6,6 +6,7 @@ Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/COR
 生产目录边界、事务恢复、Schema 迁移和三层备份策略见 `docs/PRODUCTION_STABILITY.md`。
 插件/Core v1 契约和 Today 单一数据模型见 `docs/PLUGIN_CORE_API.md` 与 `docs/TODAY_ARCHITECTURE.md`。
 Quick Capture 的用户流程、上下文推断与幂等规则见 `docs/QUICK_CAPTURE.md`。
+Review Center、目标字段对比和 Codex 结构化讨论回写见 `docs/REVIEW_CENTER.md`。
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 
@@ -87,7 +88,7 @@ node dist/cli.js api getTodayItems `
 
 本地插件源码位于 `plugins/knowledgeos-obsidian/`。将该目录复制到目标 Vault 的
 `.obsidian/plugins/knowledgeos/` 后，在 Obsidian 中启用并配置 `dist/cli.js` 与 Vault 的绝对路径。
-当前交付完成 Today 侧边栏和 Quick Capture。Inbox 处理写接口仍会明确返回
+当前交付完成 Today 侧边栏、Quick Capture 和 Review Center。Inbox 处理写接口仍会明确返回
 `CAPABILITY_NOT_READY`，将在 F04 启用，插件不会绕过 Core 临时读写文件。
 
 ## 初始化或接入 Vault

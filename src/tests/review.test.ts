@@ -7,7 +7,8 @@ import { decideReview, reconcileReviews } from "../platform/reviewWorkflow.js";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { writeReviewItems } from "../core/reviews.js";
 import { initializeVault } from "../core/vault.js";
-import type { ApplicationRecord, JsonValue, ReviewItem } from "../types.js";
+import type { ApplicationRecord, JsonObject, JsonValue, ReviewItem } from "../types.js";
+import { invokeCommandApi } from "../platform/commandApi.js";
 
 const TARGET = "20-Workspace/Applications/test/Records/Test.md";
 
@@ -235,5 +236,116 @@ test("direct YAML edits close exact matches and warn on ambiguous changes", asyn
     );
   } finally {
     await fs.rm(warningVault, { recursive: true, force: true });
+  }
+});
+
+test("Review Center API exposes current value, suggestion, impact, and active actions", async () => {
+  const id = "REV-2026-000007";
+  const vault = await fixture(reviewItem(id, "application_open", false, true));
+  try {
+    const response = await invokeCommandApi({
+      vaultRoot: vault, requestId: "REVIEW-LIST-001", method: "listReviewItems", params: {},
+    });
+    assert.equal(response.ok, true);
+    const views = response.data as JsonObject[];
+    assert.equal(views.length, 1);
+    assert.equal(views[0]?.current_value, false);
+    assert.equal(views[0]?.suggested_value, true);
+    assert.equal((views[0]?.impact as JsonObject).estimated_operations, 2);
+    assert.equal((views[0]?.available_actions as JsonValue[]).includes("discuss"), true);
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("Codex discussion uses minimal versioned context and rejects stale conclusions", async () => {
+  const id = "REV-2026-000008";
+  const vault = await fixture(reviewItem(id, "application_open", false, true));
+  try {
+    const prepared = await invokeCommandApi({
+      vaultRoot: vault, requestId: "DISCUSS-PREPARE-001", method: "resolveReview",
+      params: { mode: "prepare-discussion", review_id: id },
+    });
+    assert.equal(prepared.ok, true);
+    assert.equal(prepared.state, "waiting-for-ai");
+    const context = prepared.data as JsonObject;
+    assert.equal(context.protocol_version, 1);
+    assert.equal((context.target_excerpt as JsonObject).current_value, false);
+    assert.equal("content" in context, false);
+
+    const targetPath = path.join(vault, ...TARGET.split("/"));
+    const document = parseMarkdown(vault, targetPath);
+    const data = document.data as unknown as ApplicationRecord;
+    data.facts.application_open!.value = true;
+    data.application_status = "open";
+    writeMarkdown(vault, targetPath, { data, content: document.content });
+
+    const stale = await invokeCommandApi({
+      vaultRoot: vault, requestId: "DISCUSS-APPLY-STALE", method: "resolveReview",
+      params: {
+        mode: "apply-discussion-result", review_id: id, context_token: String(context.context_token),
+        discussion_result: { outcome: "reject", user_comment: "The evidence is still insufficient." },
+      },
+    });
+    assert.equal(stale.ok, false);
+    assert.equal(stale.error?.code, "DISCUSSION_CONTEXT_STALE");
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("structured discussion results are persisted and always update the Review Item", async () => {
+  const id = "REV-2026-000009";
+  const vault = await fixture(reviewItem(id, "application_open", false, true));
+  try {
+    const prepared = await invokeCommandApi({
+      vaultRoot: vault, requestId: "DISCUSS-PREPARE-002", method: "resolveReview",
+      params: { mode: "prepare-discussion", review_id: id },
+    });
+    const context = prepared.data as JsonObject;
+    const waiting = await invokeCommandApi({
+      vaultRoot: vault, requestId: "DISCUSS-APPLY-002", method: "resolveReview",
+      params: {
+        mode: "apply-discussion-result", review_id: id, context_token: String(context.context_token),
+        discussion_result: { outcome: "needs-more-information", user_comment: "Need a second official source." },
+      },
+    });
+    assert.equal(waiting.ok, true);
+    assert.equal((waiting.data as JsonObject).status, "pending");
+    const discussionPath = path.join(vault, ...String((waiting.data as JsonObject).discussion_record).split("/"));
+    const discussion = JSON.parse(await fs.readFile(discussionPath, "utf8")) as JsonObject;
+    assert.equal(discussion.outcome, "needs-more-information");
+    assert.equal((discussion.execution_result as JsonObject).status, "pending");
+
+    const located = parseMarkdown(vault, path.join(vault, "90-System", "Review Queue", "Pending", `${id}.md`)).data as unknown as ReviewItem;
+    assert.equal(located.decision_history.at(-1)?.decision, "discuss");
+    assert.match(located.decision_history.at(-1)?.user_comment ?? "", /needs-more-information/);
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("Review Center can explicitly close a changed YAML field as resolved by user edit", async () => {
+  const id = "REV-2026-000010";
+  const vault = await fixture(reviewItem(id, "tuition", null, 50000));
+  try {
+    const targetPath = path.join(vault, ...TARGET.split("/"));
+    const document = parseMarkdown(vault, targetPath);
+    const data = document.data as unknown as ApplicationRecord;
+    data.facts.tuition!.value = 47000;
+    writeMarkdown(vault, targetPath, { data, content: document.content });
+    const listed = await invokeCommandApi({
+      vaultRoot: vault, requestId: "REVIEW-CHANGED-001", method: "listReviewItems", params: {},
+    });
+    assert.equal(((listed.data as JsonObject[])[0]?.target_state), "changed");
+    const resolved = await invokeCommandApi({
+      vaultRoot: vault, requestId: "REVIEW-CHANGED-002", method: "resolveReview",
+      params: { mode: "mark-resolved-by-user-edit", review_id: id, user_comment: "My edit is final." },
+    });
+    assert.equal(resolved.ok, true);
+    assert.equal((resolved.data as JsonObject).status, "resolved-by-user-edit");
+    assert.equal(readRecord(vault).facts.tuition?.value, 47000);
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
   }
 });

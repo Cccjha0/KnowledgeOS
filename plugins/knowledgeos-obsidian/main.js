@@ -2,6 +2,7 @@ const { ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting } = require("
 const { execFile } = require("node:child_process");
 
 const VIEW_TYPE = "knowledgeos-today";
+const REVIEW_VIEW_TYPE = "knowledgeos-reviews";
 const DEFAULT_SETTINGS = {
   coreCliPath: "",
   nodePath: "node",
@@ -229,6 +230,353 @@ class QuickCaptureModal extends Modal {
   }
 }
 
+function displayJson(value) {
+  if (value === null || value === undefined) return "—";
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+class ReviewActionModal extends Modal {
+  constructor(app, plugin, review, decision, onComplete) {
+    super(app);
+    this.plugin = plugin;
+    this.review = review;
+    this.decision = decision;
+    this.onComplete = onComplete;
+  }
+
+  onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-review-modal");
+    const labels = {
+      approve: "接受建议",
+      "approve-with-modification": "修改后接受",
+      reject: "拒绝建议",
+      defer: "延后审核",
+    };
+    root.createEl("h2", { text: labels[this.decision] });
+    root.createEl("p", { text: this.review.title });
+    if (this.decision === "approve-with-modification") {
+      const valueLabel = root.createEl("label", { text: "最终值（JSON）" });
+      this.valueInput = valueLabel.createEl("textarea");
+      this.valueInput.value = JSON.stringify(this.review.suggested_value, null, 2);
+      this.valueInput.rows = 5;
+    }
+    if (this.decision === "defer") {
+      const dateLabel = root.createEl("label", { text: "提醒时间" });
+      this.dateInput = dateLabel.createEl("input", { type: "datetime-local" });
+      const tomorrow = new Date(Date.now() + 86_400_000);
+      this.dateInput.value = new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+      const presets = root.createDiv({ cls: "knowledgeos-review-presets" });
+      for (const [label, days] of [["明天", 1], ["三天后", 3], ["一周后", 7]]) {
+        const button = presets.createEl("button", { text: label });
+        button.onclick = () => {
+          const date = new Date(Date.now() + days * 86_400_000);
+          this.dateInput.value = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+        };
+      }
+    }
+    const commentLabel = root.createEl("label", { text: this.decision === "reject" ? "拒绝原因" : "备注（可选）" });
+    this.commentInput = commentLabel.createEl("textarea", { placeholder: "记录判断依据…" });
+    this.commentInput.rows = 3;
+    this.statusEl = root.createDiv({ cls: "knowledgeos-capture-status" });
+    const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
+    this.submitButton = actions.createEl("button", { cls: "mod-cta", text: "确认" });
+    this.submitButton.onclick = () => this.submit();
+    const cancel = actions.createEl("button", { text: "取消" });
+    cancel.onclick = () => this.close();
+  }
+
+  async submit() {
+    if (this.decision === "reject" && !this.commentInput.value.trim()) {
+      this.statusEl.setText("请填写拒绝原因。");
+      return;
+    }
+    const params = {
+      mode: "decide",
+      review_id: this.review.review_id,
+      decision: this.decision,
+      user_comment: this.commentInput.value,
+    };
+    if (this.decision === "approve-with-modification") {
+      try { params.modified_value = JSON.parse(this.valueInput.value); }
+      catch { this.statusEl.setText("最终值不是有效 JSON。"); return; }
+    }
+    if (this.decision === "defer") {
+      if (!this.dateInput.value) { this.statusEl.setText("请选择提醒时间。"); return; }
+      params.review_after = new Date(this.dateInput.value).toISOString();
+    }
+    this.submitButton.disabled = true;
+    this.statusEl.setText("Core 正在执行审核决定…");
+    const response = await this.plugin.client.invoke("resolveReview", params);
+    this.submitButton.disabled = false;
+    if (!response.ok) {
+      this.statusEl.setText(response.error?.message || "审核处理失败。");
+      return;
+    }
+    new Notice(`审核已更新为 ${response.data.status}`);
+    this.close();
+    await this.onComplete();
+  }
+}
+
+class ReviewDiscussionModal extends Modal {
+  constructor(app, plugin, review, onComplete) {
+    super(app);
+    this.plugin = plugin;
+    this.review = review;
+    this.onComplete = onComplete;
+  }
+
+  async onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-review-modal");
+    root.createEl("h2", { text: "与 Codex 讨论" });
+    this.statusEl = root.createDiv({ cls: "knowledgeos-state", text: "正在构建最小上下文…" });
+    const response = await this.plugin.client.invoke("resolveReview", {
+      mode: "prepare-discussion",
+      review_id: this.review.review_id,
+    });
+    if (!response.ok) { this.statusEl.setText(response.error?.message || "无法构建讨论上下文。"); return; }
+    this.context = response.data;
+    this.statusEl.setText("上下文已准备；Core 正在等待讨论结论，不会执行文件修改。");
+    const summary = root.createDiv({ cls: "knowledgeos-review-context" });
+    summary.createEl("strong", { text: this.review.title });
+    summary.createEl("div", { text: `当前值：${displayJson(this.review.current_value)}` });
+    summary.createEl("div", { text: `建议值：${displayJson(this.review.suggested_value)}` });
+    summary.createEl("div", { text: `依据：${this.review.evidence.join("、") || "无"}` });
+    const copy = root.createEl("button", { text: "复制最小上下文给 Codex" });
+    copy.onclick = async () => {
+      await navigator.clipboard.writeText(JSON.stringify(this.context, null, 2));
+      new Notice("讨论上下文已复制；请粘贴到 Codex。结论必须回到此窗口提交。");
+    };
+
+    const outcomeLabel = root.createEl("label", { text: "Codex 讨论结论" });
+    this.outcomeSelect = outcomeLabel.createEl("select");
+    for (const [value, label] of [
+      ["approve", "接受"],
+      ["approve-with-modification", "修改后接受"],
+      ["reject", "拒绝"],
+      ["continue-waiting", "继续等待"],
+      ["needs-more-information", "需要更多信息"],
+    ]) this.outcomeSelect.createEl("option", { value, text: label });
+    this.outcomeSelect.onchange = () => this.updateModifiedValue();
+
+    this.modifiedLabel = root.createEl("label", { text: "最终值（JSON）" });
+    this.modifiedInput = this.modifiedLabel.createEl("textarea");
+    this.modifiedInput.value = JSON.stringify(this.review.suggested_value, null, 2);
+    this.modifiedInput.rows = 4;
+    const commentLabel = root.createEl("label", { text: "结构化结论与理由" });
+    this.commentInput = commentLabel.createEl("textarea", { placeholder: "粘贴或整理 Codex 的结论依据…" });
+    this.commentInput.rows = 4;
+    this.errorEl = root.createDiv({ cls: "knowledgeos-capture-status" });
+    const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
+    this.submitButton = actions.createEl("button", { cls: "mod-cta", text: "提交结构化结论" });
+    this.submitButton.onclick = () => this.submit();
+    const close = actions.createEl("button", { text: "稍后处理" });
+    close.onclick = () => this.close();
+    this.updateModifiedValue();
+  }
+
+  updateModifiedValue() {
+    this.modifiedLabel.style.display = this.outcomeSelect.value === "approve-with-modification" ? "flex" : "none";
+  }
+
+  async submit() {
+    if (!this.commentInput.value.trim()) { this.errorEl.setText("请填写讨论结论与理由。"); return; }
+    const discussionResult = {
+      outcome: this.outcomeSelect.value,
+      user_comment: this.commentInput.value,
+    };
+    if (discussionResult.outcome === "approve-with-modification") {
+      try { discussionResult.modified_value = JSON.parse(this.modifiedInput.value); }
+      catch { this.errorEl.setText("最终值不是有效 JSON。"); return; }
+    }
+    this.submitButton.disabled = true;
+    this.errorEl.setText("正在验证上下文并执行结论…");
+    const response = await this.plugin.client.invoke("resolveReview", {
+      mode: "apply-discussion-result",
+      review_id: this.review.review_id,
+      context_token: this.context.context_token,
+      discussion_result: discussionResult,
+    });
+    this.submitButton.disabled = false;
+    if (!response.ok) { this.errorEl.setText(response.error?.message || "讨论结论提交失败。"); return; }
+    new Notice(`讨论结论已回写：${response.data.status}`);
+    this.close();
+    await this.onComplete();
+  }
+}
+
+class ReviewCenterView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
+  getViewType() { return REVIEW_VIEW_TYPE; }
+  getDisplayText() { return "KnowledgeOS Reviews"; }
+  getIcon() { return "clipboard-check"; }
+  async onOpen() { await this.renderShell(); }
+
+  async renderShell(selectedReviewId = null) {
+    const root = this.contentEl;
+    root.empty();
+    const header = root.createDiv({ cls: "knowledgeos-header" });
+    header.createEl("h2", { text: "Reviews" });
+    const refresh = header.createEl("button", { text: "刷新" });
+    refresh.onclick = () => this.loadReviews();
+    const filters = root.createDiv({ cls: "knowledgeos-review-filters" });
+    this.statusFilter = filters.createEl("select");
+    for (const [value, label] of [["active", "待处理"], ["pending", "Pending"], ["error", "Error"], ["deferred", "Deferred"], ["all", "全部状态"]]) {
+      this.statusFilter.createEl("option", { value, text: label });
+    }
+    this.priorityFilter = filters.createEl("select");
+    for (const [value, label] of [["", "全部优先级"], ["critical", "Critical"], ["high", "High"], ["medium", "Medium"], ["low", "Low"]]) {
+      this.priorityFilter.createEl("option", { value, text: label });
+    }
+    this.moduleFilter = filters.createEl("select");
+    this.moduleFilter.createEl("option", { value: "", text: "全部模块" });
+    const [modules, instances] = await Promise.all([
+      this.plugin.client.invoke("getModules", {}),
+      this.plugin.client.invoke("getInstances", {}),
+    ]);
+    if (modules.ok) for (const module of modules.data) this.moduleFilter.createEl("option", { value: module.id, text: module.name });
+    this.instanceFilter = filters.createEl("select");
+    this.instanceFilter.createEl("option", { value: "", text: "全部实例" });
+    if (instances.ok) for (const instance of instances.data) this.instanceFilter.createEl("option", { value: instance.instance_id, text: instance.display_name });
+    this.actionFilter = filters.createEl("select");
+    this.actionFilter.createEl("option", { value: "", text: "全部操作" });
+    this.knownActions = new Set();
+    const createdLabel = filters.createEl("label", { text: "创建日期" });
+    this.createdFilter = createdLabel.createEl("input", { type: "date" });
+    const deferredLabel = filters.createEl("label", { text: "延后日期" });
+    this.deferredFilter = deferredLabel.createEl("input", { type: "date" });
+    for (const select of [this.statusFilter, this.priorityFilter, this.moduleFilter, this.instanceFilter, this.actionFilter]) {
+      select.onchange = () => this.loadReviews();
+    }
+    this.createdFilter.onchange = () => this.loadReviews();
+    this.deferredFilter.onchange = () => this.loadReviews();
+    this.listEl = root.createDiv({ cls: "knowledgeos-review-list" });
+    await this.loadReviews(selectedReviewId);
+  }
+
+  async loadReviews(selectedReviewId = null) {
+    this.listEl.empty();
+    this.listEl.createDiv({ cls: "knowledgeos-state", text: "正在加载审核事项…" });
+    const params = {};
+    const status = this.statusFilter.value;
+    if (status !== "active") params.statuses = status === "all"
+      ? ["pending", "approved", "approved-with-modification", "rejected", "deferred", "resolved-by-user-edit", "error"]
+      : [status];
+    if (this.priorityFilter.value) params.priority = this.priorityFilter.value;
+    if (this.moduleFilter.value) params.module_id = this.moduleFilter.value;
+    if (this.instanceFilter.value) params.instance_id = this.instanceFilter.value;
+    if (this.actionFilter.value) params.action = this.actionFilter.value;
+    if (this.createdFilter.value) {
+      params.created_from = new Date(`${this.createdFilter.value}T00:00:00`).toISOString();
+      params.created_to = new Date(`${this.createdFilter.value}T23:59:59.999`).toISOString();
+    }
+    if (this.deferredFilter.value) {
+      params.review_after_from = new Date(`${this.deferredFilter.value}T00:00:00`).toISOString();
+      params.review_after_to = new Date(`${this.deferredFilter.value}T23:59:59.999`).toISOString();
+    }
+    const response = await this.plugin.client.invoke("listReviewItems", params);
+    this.listEl.empty();
+    if (!response.ok) { this.listEl.createEl("p", { text: response.error?.message || "审核列表加载失败。" }); return; }
+    this.reviews = response.data;
+    let actionOptionsChanged = false;
+    for (const review of this.reviews) {
+      if (!this.knownActions.has(review.action)) { this.knownActions.add(review.action); actionOptionsChanged = true; }
+    }
+    if (actionOptionsChanged) {
+      const selectedAction = this.actionFilter.value;
+      this.actionFilter.empty();
+      this.actionFilter.createEl("option", { value: "", text: "全部操作" });
+      for (const action of [...this.knownActions].sort()) this.actionFilter.createEl("option", { value: action, text: action });
+      this.actionFilter.value = selectedAction;
+    }
+    if (!this.reviews.length) { this.listEl.createDiv({ cls: "knowledgeos-empty", text: "当前没有符合条件的审核事项。" }); return; }
+    if (selectedReviewId) {
+      const selected = this.reviews.find((review) => review.review_id === selectedReviewId);
+      if (selected) { this.renderDetail(selected); return; }
+    }
+    for (const review of this.reviews) {
+      const card = this.listEl.createDiv({ cls: `knowledgeos-card priority-${review.priority}` });
+      const title = card.createEl("button", { cls: "knowledgeos-link", text: review.title });
+      title.onclick = () => this.renderDetail(review);
+      card.createDiv({ cls: "knowledgeos-review-meta", text: `${review.source_module} · ${review.status} · 置信度 ${Math.round(review.confidence * 100)}%` });
+      card.createDiv({ cls: "knowledgeos-description", text: `${review.target} · ${review.action}` });
+    }
+  }
+
+  section(root, title, value) {
+    const section = root.createDiv({ cls: "knowledgeos-review-section" });
+    section.createEl("h3", { text: title });
+    section.createEl("pre", { text: displayJson(value) });
+  }
+
+  renderDetail(review) {
+    const root = this.listEl;
+    root.empty();
+    const back = root.createEl("button", { text: "← 返回审核列表" });
+    back.onclick = () => this.loadReviews();
+    root.createEl("h2", { text: review.title });
+    root.createDiv({ cls: "knowledgeos-review-meta", text: `${review.review_id} · ${review.source_module} · ${review.priority}` });
+    const open = root.createEl("button", { text: "打开目标文件" });
+    open.onclick = () => this.app.workspace.openLinkText(review.target, "", false);
+    if (review.target_state === "changed") {
+      const warning = root.createDiv({ cls: "knowledgeos-review-warning" });
+      warning.createEl("strong", { text: "目标文件已发生变化" });
+      warning.createDiv({ text: "请重新比较、确认直接编辑已解决，或保留审核。" });
+      const compare = warning.createEl("button", { text: "重新比较" });
+      compare.onclick = () => this.simpleAction(review, "reconcile");
+      const resolved = warning.createEl("button", { text: "视为已解决" });
+      resolved.onclick = () => this.simpleAction(review, "mark-resolved-by-user-edit");
+      const retain = warning.createEl("button", { text: "保留审核" });
+      retain.onclick = () => this.loadReviews();
+    } else if (review.target_state === "matches-suggestion") {
+      const notice = root.createDiv({ cls: "knowledgeos-review-warning" });
+      notice.createEl("strong", { text: "目标字段已经与建议值一致" });
+      const reconcile = notice.createEl("button", { text: "重新比较并关闭" });
+      reconcile.onclick = () => this.simpleAction(review, "reconcile");
+    } else if (review.target_state === "unavailable") {
+      const warning = root.createDiv({ cls: "knowledgeos-review-warning" });
+      warning.createEl("strong", { text: "无法读取目标字段" });
+      warning.createDiv({ text: review.target_error || "请检查目标文件后重试。" });
+    }
+    this.section(root, "当前值", review.current_value);
+    this.section(root, "建议值", review.suggested_value);
+    this.section(root, "判断依据", review.evidence);
+    this.section(root, "不确定原因", review.why_uncertain);
+    this.section(root, "影响范围", review.impact);
+    if (review.decision_history?.length) this.section(root, "历史决定", review.decision_history);
+    if (!review.available_actions.length) return;
+    const actions = root.createDiv({ cls: "knowledgeos-review-actions" });
+    if (review.available_actions.includes("approve")) this.actionButton(actions, "接受", review, "approve", true);
+    if (review.available_actions.includes("approve-with-modification")) this.actionButton(actions, "修改后接受", review, "approve-with-modification");
+    if (review.available_actions.includes("reject")) this.actionButton(actions, "拒绝", review, "reject");
+    if (review.available_actions.includes("defer")) this.actionButton(actions, "延后", review, "defer");
+    if (review.available_actions.includes("discuss")) {
+      const discuss = actions.createEl("button", { text: "与 Codex 讨论" });
+      discuss.onclick = () => new ReviewDiscussionModal(this.app, this.plugin, review, () => this.loadReviews()).open();
+    }
+    if (review.available_actions.includes("retry")) {
+      const retry = actions.createEl("button", { text: "重试" });
+      retry.onclick = () => this.simpleAction(review, "retry");
+    }
+  }
+
+  actionButton(root, label, review, decision, primary = false) {
+    const button = root.createEl("button", { text: label, cls: primary ? "mod-cta" : "" });
+    button.onclick = () => new ReviewActionModal(this.app, this.plugin, review, decision, () => this.loadReviews()).open();
+  }
+
+  async simpleAction(review, mode) {
+    const response = await this.plugin.client.invoke("resolveReview", { mode, review_id: review.review_id });
+    if (!response.ok) { new Notice(response.error?.message || "审核操作失败"); return; }
+    new Notice("审核状态已更新");
+    await this.loadReviews();
+  }
+}
+
 class TodayView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -311,7 +659,9 @@ class TodayView extends ItemView {
     for (const item of visible) {
       const card = list.createDiv({ cls: `knowledgeos-card priority-${item.priority}` });
       const button = card.createEl("button", { cls: "knowledgeos-link", text: item.title });
-      button.onclick = () => item.target && this.app.workspace.openLinkText(item.target, "", false);
+      button.onclick = () => item.category === "review"
+        ? this.plugin.activateReviews(item.item_id.replace("DSH-REVIEW-", ""))
+        : item.target && this.app.workspace.openLinkText(item.target, "", false);
       if (item.description) card.createDiv({ cls: "knowledgeos-description", text: item.description });
       card.createSpan({ cls: "knowledgeos-module", text: item.source_module });
     }
@@ -375,10 +725,13 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
     this.client = new CoreCommandClient(this.settings);
     this.registerView(VIEW_TYPE, (leaf) => new TodayView(leaf, this));
+    this.registerView(REVIEW_VIEW_TYPE, (leaf) => new ReviewCenterView(leaf, this));
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
+    this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
     this.addCommand({ id: "open-today", name: "Open Today", callback: () => this.activateToday() });
     this.addCommand({ id: "quick-capture", name: "Quick Capture", callback: () => this.openCapture() });
+    this.addCommand({ id: "open-reviews", name: "Open Review Center", callback: () => this.activateReviews() });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       menu.addItem((item) => item.setTitle("Quick Capture 到此上下文").setIcon("plus-circle")
         .onClick(() => this.openCapture(file.path)));
@@ -411,5 +764,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
 
   openCapture(contextPath = null) {
     new QuickCaptureModal(this.app, this, contextPath).open();
+  }
+
+  async activateReviews(reviewId = null) {
+    let leaf = this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      await leaf.setViewState({ type: REVIEW_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    if (leaf.view?.renderShell) await leaf.view.renderShell(reviewId);
   }
 };
