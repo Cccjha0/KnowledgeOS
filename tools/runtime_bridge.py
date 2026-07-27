@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+from datetime import datetime, timezone
+from pathlib import Path
+import json
+import sqlite3
+import sys
+
+SCHEMA_VERSION = 1
+
+TRANSITIONS = {
+    "queued": {"running", "deferred", "cancelled", "waiting-for-user"},
+    "running": {"completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"},
+    "waiting-for-network": {"queued", "cancelled", "failed"},
+    "waiting-for-ai": {"queued", "cancelled", "failed"},
+    "waiting-for-user": {"queued", "completed", "cancelled", "failed"},
+    "deferred": {"queued", "cancelled"},
+    "interrupted": {"queued", "waiting-for-user", "failed", "cancelled"},
+    "completed": set(),
+    "failed": {"queued", "cancelled"},
+    "cancelled": set(),
+}
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def emit(data):
+    print(json.dumps({"ok": True, "data": data}, ensure_ascii=False))
+
+
+def fail(code, message, details=None):
+    print(json.dumps({"ok": False, "code": code, "message": message, "details": details}, ensure_ascii=False))
+    raise SystemExit(2)
+
+
+def connect(database_path):
+    connection = sqlite3.connect(database_path, timeout=5.0)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA busy_timeout=5000")
+    return connection
+
+
+def migrate(connection):
+    connection.executescript("""
+      CREATE TABLE IF NOT EXISTS runtime_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS runtime_counters (prefix TEXT NOT NULL, year INTEGER NOT NULL, value INTEGER NOT NULL, PRIMARY KEY(prefix, year));
+    """)
+    row = connection.execute("SELECT value FROM runtime_metadata WHERE key='schema_version'").fetchone()
+    current = int(row[0]) if row else 0
+    if current > SCHEMA_VERSION:
+        fail("RUNTIME_DB_TOO_NEW", f"runtime.db schema {current} is newer than supported {SCHEMA_VERSION}.")
+    if current < 1:
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE TABLE job_definitions (
+            job_id TEXT PRIMARY KEY, source TEXT NOT NULL, module TEXT NOT NULL, scope TEXT NOT NULL, enabled INTEGER NOT NULL,
+            definition_json TEXT NOT NULL, updated_at TEXT NOT NULL
+          );
+          CREATE TABLE tasks (
+            task_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, module TEXT NOT NULL, instance_id TEXT, task_type TEXT NOT NULL,
+            workflow TEXT NOT NULL, status TEXT NOT NULL, priority TEXT NOT NULL, scheduled_for TEXT NOT NULL, available_after TEXT NOT NULL,
+            deadline TEXT, defer_until TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
+            resources_json TEXT NOT NULL, trigger_json TEXT NOT NULL, catch_up_policy TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+            max_attempts INTEGER NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 0, next_retry_at TEXT, payload_json TEXT NOT NULL,
+            parent_task_id TEXT, dependency_task_ids_json TEXT NOT NULL, dependency_policy TEXT NOT NULL,
+            concurrency_key TEXT, concurrency_policy TEXT NOT NULL, cancel_requested INTEGER NOT NULL DEFAULT 0,
+            last_error_json TEXT, completion_reason TEXT
+          );
+          CREATE TABLE task_runs (
+            run_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id), attempt_number INTEGER NOT NULL,
+            status TEXT NOT NULL, worker_id TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, heartbeat_at TEXT NOT NULL,
+            resources_checked_json TEXT NOT NULL, operation_plan_id TEXT, git_snapshot_id TEXT,
+            input_files_json TEXT NOT NULL, output_files_json TEXT NOT NULL, error_json TEXT, metrics_json TEXT NOT NULL,
+            UNIQUE(task_id, attempt_number)
+          );
+          CREATE TABLE task_dependencies (
+            task_id TEXT NOT NULL REFERENCES tasks(task_id), depends_on_task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            policy TEXT NOT NULL, PRIMARY KEY(task_id, depends_on_task_id)
+          );
+          CREATE TABLE resource_status (
+            resource TEXT PRIMARY KEY, status TEXT NOT NULL, reason TEXT, checked_at TEXT NOT NULL, details_json TEXT NOT NULL
+          );
+          CREATE TABLE scheduler_checkpoints (
+            job_id TEXT PRIMARY KEY REFERENCES job_definitions(job_id), last_evaluated_at TEXT,
+            last_created_window TEXT, next_evaluation_at TEXT
+          );
+          CREATE TABLE task_locks (
+            lock_key TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id), worker_id TEXT NOT NULL,
+            acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL
+          );
+          CREATE INDEX idx_tasks_dispatch ON tasks(status, available_after, next_retry_at, priority, scheduled_for);
+          CREATE INDEX idx_tasks_instance ON tasks(module, instance_id, status);
+          CREATE INDEX idx_runs_task ON task_runs(task_id, attempt_number DESC);
+          INSERT INTO runtime_metadata(key,value) VALUES('schema_version','1');
+          COMMIT;
+        """)
+
+
+def decode_json(value, fallback):
+    return json.loads(value) if value else fallback
+
+
+def task_dict(row):
+    if row is None:
+        return None
+    item = dict(row)
+    for source, target, fallback in [
+        ("resources_json", "resources", {}), ("trigger_json", "trigger", {}), ("payload_json", "payload", {}),
+        ("dependency_task_ids_json", "dependency_task_ids", []), ("last_error_json", "last_error", None),
+    ]:
+        item[target] = decode_json(item.pop(source), fallback)
+    item["cancel_requested"] = bool(item["cancel_requested"])
+    return item
+
+
+def run_dict(row):
+    item = dict(row)
+    for source, target, fallback in [
+        ("resources_checked_json", "resources_checked", {}), ("input_files_json", "input_files", []),
+        ("output_files_json", "output_files", []), ("error_json", "error", None), ("metrics_json", "metrics", {}),
+    ]:
+        item[target] = decode_json(item.pop(source), fallback)
+    return item
+
+
+def allocate_id(connection, prefix):
+    year = datetime.now(timezone.utc).year
+    connection.execute("""INSERT INTO runtime_counters(prefix,year,value) VALUES(?,?,1)
+        ON CONFLICT(prefix,year) DO UPDATE SET value=value+1""", (prefix, year))
+    value = connection.execute("SELECT value FROM runtime_counters WHERE prefix=? AND year=?", (prefix, year)).fetchone()[0]
+    return f"{prefix}-{year}-{value:06d}"
+
+
+def create_task(connection, payload):
+    connection.execute("BEGIN IMMEDIATE")
+    duplicate = connection.execute("SELECT * FROM tasks WHERE idempotency_key=?", (payload["idempotency_key"],)).fetchone()
+    if duplicate:
+        connection.commit()
+        return {"task": task_dict(duplicate), "deduplicated": True}
+    now = now_iso()
+    task_id = allocate_id(connection, "TASK")
+    scheduled = payload.get("scheduled_for") or now
+    available = payload.get("available_after") or scheduled
+    dependencies = payload.get("dependency_task_ids") or []
+    values = (
+        task_id, payload["job_id"], payload["module"], payload.get("instance_id"), payload["task_type"], payload["workflow"],
+        payload.get("priority", "normal"), scheduled, available, payload.get("deadline"), now, now,
+        json.dumps(payload["resources"]), json.dumps(payload["trigger"]), payload["catch_up_policy"], payload["idempotency_key"],
+        payload.get("max_attempts", 3), json.dumps(payload.get("payload") or {}), payload.get("parent_task_id"), json.dumps(dependencies),
+        payload.get("dependency_policy", "all-success"), payload.get("concurrency_key"), payload.get("concurrency_policy", "forbid"),
+    )
+    connection.execute("""INSERT INTO tasks(
+      task_id,job_id,module,instance_id,task_type,workflow,status,priority,scheduled_for,available_after,deadline,defer_until,
+      created_at,updated_at,completed_at,resources_json,trigger_json,catch_up_policy,idempotency_key,max_attempts,attempt_count,
+      next_retry_at,payload_json,parent_task_id,dependency_task_ids_json,dependency_policy,concurrency_key,concurrency_policy,
+      cancel_requested,last_error_json,completion_reason
+    ) VALUES(?,?,?,?,?,?,'queued',?,?,?,?,NULL,?,?,NULL,?,?,?,?,?,0,NULL,?,?,?,?,?,?,0,NULL,NULL)""", values)
+    for dependency in dependencies:
+        connection.execute("INSERT INTO task_dependencies(task_id,depends_on_task_id,policy) VALUES(?,?,?)",
+                           (task_id, dependency, payload.get("dependency_policy", "all-success")))
+    row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    connection.commit()
+    return {"task": task_dict(row), "deduplicated": False}
+
+
+def transition_task(connection, payload):
+    connection.execute("BEGIN IMMEDIATE")
+    row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+    if not row:
+        connection.rollback(); fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
+    old = task_dict(row)
+    target = payload["to"]
+    if target not in TRANSITIONS[old["status"]]:
+        connection.rollback(); fail("TASK_TRANSITION_INVALID", f"Invalid task transition: {old['status']} -> {target}")
+    completed_at = now_iso() if target in {"completed", "failed", "cancelled"} else None
+    error = payload.get("error") if payload.get("error_supplied") else old["last_error"]
+    defer_until = payload.get("defer_until") if payload.get("defer_until_supplied") else old["defer_until"]
+    next_retry = payload.get("next_retry_at") if payload.get("next_retry_at_supplied") else old["next_retry_at"]
+    reason = payload.get("completion_reason") if payload.get("completion_reason_supplied") else old["completion_reason"]
+    cursor = connection.execute("""UPDATE tasks SET status=?,updated_at=?,completed_at=?,defer_until=?,next_retry_at=?,
+      last_error_json=?,completion_reason=? WHERE task_id=? AND status=?""",
+      (target, now_iso(), completed_at, defer_until, next_retry, json.dumps(error) if error else None, reason, payload["task_id"], old["status"]))
+    if cursor.rowcount != 1:
+        connection.rollback(); fail("TASK_STATE_CONFLICT", "Task state changed concurrently.")
+    updated = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+    connection.commit()
+    return task_dict(updated)
+
+
+def start_run(connection, payload):
+    connection.execute("BEGIN IMMEDIATE")
+    row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+    if not row:
+        connection.rollback(); fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
+    task = task_dict(row)
+    if task["status"] != "queued":
+        connection.rollback(); fail("TASK_NOT_QUEUED", f"Task {payload['task_id']} is {task['status']}.")
+    now = now_iso()
+    run_id = allocate_id(connection, "RUN")
+    attempt = task["attempt_count"] + 1
+    cursor = connection.execute("UPDATE tasks SET status='running',attempt_count=?,updated_at=? WHERE task_id=? AND status='queued'",
+                                (attempt, now, task["task_id"]))
+    if cursor.rowcount != 1:
+        connection.rollback(); fail("TASK_STATE_CONFLICT", "Task was claimed by another worker.")
+    connection.execute("""INSERT INTO task_runs(run_id,task_id,attempt_number,status,worker_id,started_at,ended_at,heartbeat_at,
+      resources_checked_json,operation_plan_id,git_snapshot_id,input_files_json,output_files_json,error_json,metrics_json)
+      VALUES(?,?,?,'running',?,?,NULL,?,?,NULL,NULL,'[]','[]',NULL,'{}')""",
+      (run_id, task["task_id"], attempt, payload["worker_id"], now, now, json.dumps(payload.get("resources_checked") or {})))
+    run = connection.execute("SELECT * FROM task_runs WHERE run_id=?", (run_id,)).fetchone()
+    connection.commit()
+    return run_dict(run)
+
+
+def dispatch(command, connection, payload):
+    if command == "init":
+        migrate(connection); return {"schema_version": SCHEMA_VERSION}
+    migrate(connection)
+    if command == "integrity-check": return connection.execute("PRAGMA integrity_check").fetchone()[0]
+    if command == "schema-version": return int(connection.execute("SELECT value FROM runtime_metadata WHERE key='schema_version'").fetchone()[0])
+    if command == "register-job":
+        connection.execute("""INSERT INTO job_definitions(job_id,source,module,scope,enabled,definition_json,updated_at) VALUES(?,?,?,?,?,?,?)
+          ON CONFLICT(job_id) DO UPDATE SET source=excluded.source,module=excluded.module,scope=excluded.scope,enabled=excluded.enabled,
+          definition_json=excluded.definition_json,updated_at=excluded.updated_at""",
+          (payload["job_id"], payload["source"], payload["module"], payload["scope"], int(payload["enabled"]), json.dumps(payload), payload["updated_at"]))
+        connection.commit(); return {"job_id": payload["job_id"]}
+    if command == "list-jobs": return [json.loads(row[0]) for row in connection.execute("SELECT definition_json FROM job_definitions ORDER BY job_id")]
+    if command == "create-task": return create_task(connection, payload)
+    if command == "get-task": return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
+    if command == "list-tasks":
+        statuses = payload.get("statuses") or []
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            rows = connection.execute(f"SELECT * FROM tasks WHERE status IN ({marks}) ORDER BY created_at DESC", statuses)
+        else: rows = connection.execute("SELECT * FROM tasks ORDER BY created_at DESC")
+        return [task_dict(row) for row in rows]
+    if command == "transition-task": return transition_task(connection, payload)
+    if command == "start-run": return start_run(connection, payload)
+    if command == "get-runs": return [run_dict(row) for row in connection.execute("SELECT * FROM task_runs WHERE task_id=? ORDER BY attempt_number DESC", (payload["task_id"],))]
+    if command == "set-resource-status":
+        connection.execute("""INSERT INTO resource_status(resource,status,reason,checked_at,details_json) VALUES(?,?,?,?,?)
+          ON CONFLICT(resource) DO UPDATE SET status=excluded.status,reason=excluded.reason,checked_at=excluded.checked_at,details_json=excluded.details_json""",
+          (payload["resource"], payload["status"], payload.get("reason"), payload["checked_at"], json.dumps(payload.get("details") or {})))
+        connection.commit(); return {"resource": payload["resource"]}
+    if command == "get-resource-statuses":
+        return [{"resource": row["resource"], "status": row["status"], "reason": row["reason"], "checked_at": row["checked_at"], "details": decode_json(row["details_json"], {})}
+                for row in connection.execute("SELECT * FROM resource_status ORDER BY resource")]
+    if command == "set-checkpoint":
+        connection.execute("""INSERT INTO scheduler_checkpoints(job_id,last_evaluated_at,last_created_window,next_evaluation_at) VALUES(?,?,?,?)
+          ON CONFLICT(job_id) DO UPDATE SET last_evaluated_at=excluded.last_evaluated_at,last_created_window=excluded.last_created_window,next_evaluation_at=excluded.next_evaluation_at""",
+          (payload["job_id"], payload.get("last_evaluated_at"), payload.get("last_created_window"), payload.get("next_evaluation_at")))
+        connection.commit(); return {"job_id": payload["job_id"]}
+    if command == "checkpoint":
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
+    fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")
+
+
+def main():
+    if len(sys.argv) != 3:
+        fail("RUNTIME_ARGUMENTS_INVALID", "Expected command and database path.")
+    command, database_path = sys.argv[1], Path(sys.argv[2])
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+    connection = None
+    try:
+        connection = connect(database_path)
+        emit(dispatch(command, connection, payload))
+    except sqlite3.DatabaseError as error:
+        fail("RUNTIME_DB_CORRUPT", str(error))
+    except KeyError as error:
+        fail("RUNTIME_INPUT_INVALID", f"Missing required field: {error.args[0]}")
+    except Exception as error:
+        fail("RUNTIME_DB_FAILED", str(error))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+if __name__ == "__main__":
+    main()
