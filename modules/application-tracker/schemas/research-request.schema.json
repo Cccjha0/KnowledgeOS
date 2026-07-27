@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/research-request.schema.json",
+  "title": "Application Research Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "type", "instance_id", "application_id", "record_path", "status", "reason", "requested_fields", "report_ids", "idempotency_key", "created_at", "updated_at", "completed_at", "next_action_at", "schema_version"],
+  "properties": {
+    "request_id": { "type": "string", "pattern": "^REQ-\\d{4}-\\d{6,}$" },
+    "type": { "const": "research-request" },
+    "instance_id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId" },
+    "application_id": { "type": "string", "pattern": "^APP-\\d{4}-\\d{4,}$" },
+    "record_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "status": { "type": "string", "enum": ["pending", "in-progress", "needs-more-information", "completed", "cancelled"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "requested_fields": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "report_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^RPT-\\d{4}-\\d{6,}$" } },
+    "idempotency_key": { "type": "string", "minLength": 8 },
+    "created_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "updated_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "completed_at": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }, { "type": "null" }] },
+    "next_action_at": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }, { "type": "null" }] },
+    "schema_version": { "const": 1 }
+  }
+}

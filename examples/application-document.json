@@ -1,0 +1,17 @@
+{
+  "document_id": "DOC-2026-000001",
+  "type": "application-document",
+  "instance_id": "australia-masters-2027",
+  "application_id": "APP-2026-0001",
+  "document_type": "academic-transcript",
+  "status": "ready",
+  "path": "20-Workspace/Applications/australia-masters-2027/Documents/transcript.pdf",
+  "requested_at": null,
+  "due_at": null,
+  "submitted_at": null,
+  "source_refs": [],
+  "notes": "",
+  "created": "2026-07-27T00:00:00Z",
+  "updated": "2026-07-27T00:00:00Z",
+  "schema_version": 1
+}

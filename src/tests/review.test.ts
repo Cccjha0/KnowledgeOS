@@ -14,8 +14,8 @@ const TARGET = "20-Workspace/Applications/test/Records/Test.md";
 function record(): ApplicationRecord {
   return {
     id: "APP-2026-0001",
-    module: "application-tracker",
-    module_instance: "test-instance",
+  source_module: "application-tracker",
+  instance_id: "test-instance",
     type: "application-record",
     institution: "Test University",
     program_name: "Test Program",
@@ -28,6 +28,7 @@ function record(): ApplicationRecord {
       check_interval_days: 7,
       last_checked: null,
       next_check: "2099-01-01T00:00:00Z",
+      stopped: [],
     },
     facts: {
       application_open: {

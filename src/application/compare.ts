@@ -10,15 +10,7 @@ import type {
   UpdateResult,
 } from "../types.js";
 import { deepEqual, uniqueJsonValues } from "../core/files.js";
-
-const CRITICAL_FIELDS = new Set([
-  "application_status",
-  "application_open",
-  "deadline",
-  "tuition",
-  "academic_requirement",
-  "english_requirement",
-]);
+import { fieldRisk } from "./fieldPolicy.js";
 
 export interface CompareOptions {
   targetRecordPath: string;
@@ -80,13 +72,16 @@ export async function compareApplicationUpdate(
   report: ResearchReport,
   options: CompareOptions,
 ): Promise<UpdateResult> {
-  const nextCheck = addDays(report.checked_at, record.monitoring.check_interval_days);
+  const nextCheck = report.unresolved.length > 0
+    ? record.monitoring.next_check ?? report.checked_at
+    : addDays(report.checked_at, record.monitoring.check_interval_days);
   const facts: Record<string, ApplicationFact> = structuredClone(record.facts);
   const fieldChanges: FieldChange[] = [];
   const reviewItems: ReviewItem[] = [];
   let materialChange = false;
 
   for (const [field, finding] of Object.entries(report.findings)) {
+    const risk = fieldRisk(field);
     const current = facts[field];
     const oldValue = current?.value ?? null;
     const sameValue = deepEqual(oldValue, finding.value);
@@ -100,6 +95,47 @@ export async function compareApplicationUpdate(
         confidence: finding.confidence,
         action: "ignore",
         reason: "新报告未确认该字段，保留现有值。",
+        source_ids: sourceIds,
+      });
+      continue;
+    }
+
+    if (risk === "prior-confirmation") {
+      const reviewId = await options.allocateReviewId();
+      reviewItems.push({
+        review_id: reviewId,
+        schema_version: 1,
+        source_module: "application-tracker",
+        instance_id: report.instance_id,
+        target: options.targetRecordPath,
+        action: "confirm-user-action",
+        proposed_value: {
+          field,
+          old_value: structuredClone(oldValue),
+          new_value: structuredClone(finding.value),
+          finding_status: finding.status,
+          source_ids: sourceIds,
+          report_id: report.report_id,
+        },
+        confidence: finding.confidence,
+        priority: "high",
+        status: "pending",
+        reason: `Research observed ${field}, but only the user can confirm that this action actually occurred.`,
+        evidence: [options.reportReference, ...sourceIds],
+        created: options.now,
+        review_after: null,
+        decision: null,
+        decision_history: [],
+        target_observation: null,
+        resolution: null,
+      });
+      fieldChanges.push({
+        field,
+        old_value: structuredClone(oldValue),
+        new_value: structuredClone(finding.value),
+        confidence: finding.confidence,
+        action: "user-confirmation-required",
+        reason: `Field ${field} records a real user action and cannot be inferred from research.`,
         source_ids: sourceIds,
       });
       continue;
@@ -121,7 +157,7 @@ export async function compareApplicationUpdate(
 
     materialChange = true;
     const requiresReview =
-      CRITICAL_FIELDS.has(field) ||
+      risk !== "automatic" ||
       finding.status !== "confirmed" ||
       finding.confidence < 0.95;
 
@@ -149,9 +185,9 @@ export async function compareApplicationUpdate(
         action: "change-critical-field",
         proposed_value: proposedValue,
         confidence: finding.confidence,
-        priority: CRITICAL_FIELDS.has(field) ? "high" : "medium",
+        priority: risk === "review-required" ? "high" : "medium",
         status: "pending",
-        reason: CRITICAL_FIELDS.has(field)
+        reason: risk === "review-required"
           ? `关键字段 ${field} 发生变化，必须由用户确认。`
           : `字段 ${field} 的来源状态或置信度不足以自动覆盖。`,
         evidence: [options.reportReference, ...sourceIds],

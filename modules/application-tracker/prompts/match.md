@@ -5,7 +5,7 @@
 # 优先依据
 
 1. 文件所在路径；
-2. YAML 中的 type、module、module_instance；
+2. YAML 中的 type、source_module、instance_id；
 3. 文件名；
 4. 前 800 字符文本预览；
 5. 当前活跃申请实例。

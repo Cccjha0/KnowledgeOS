@@ -6,8 +6,8 @@
   "additionalProperties": false,
   "required": [
     "id",
-    "module",
-    "module_instance",
+    "source_module",
+    "instance_id",
     "type",
     "institution",
     "program_name",
@@ -16,6 +16,7 @@
     "application_status",
     "monitoring",
     "facts",
+    "source_files",
     "created",
     "updated",
     "schema_version"
@@ -25,10 +26,10 @@
       "type": "string",
       "pattern": "^APP-\\d{4}-\\d{4,}$"
     },
-    "module": {
+    "source_module": {
       "const": "application-tracker"
     },
-    "module_instance": {
+    "instance_id": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
     },
     "type": {
@@ -79,7 +80,8 @@
         "active",
         "check_interval_days",
         "last_checked",
-        "next_check"
+        "next_check",
+        "stopped"
       ],
       "properties": {
         "active": {
@@ -109,6 +111,11 @@
               "type": "null"
             }
           ]
+        },
+        "stopped": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
         }
       }
     },

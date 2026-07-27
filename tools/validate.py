@@ -128,4 +128,22 @@ ok &= validate(
     "examples/run-log.json"
 )
 
+application_document = json.loads(
+    (ENGINE_ROOT / "examples/application-document.json").read_text(encoding="utf-8")
+)
+ok &= validate(
+    "https://pkb.local/schemas/application-tracker/application-document.schema.json",
+    application_document,
+    "examples/application-document.json"
+)
+
+research_request = json.loads(
+    (ENGINE_ROOT / "examples/research-request.json").read_text(encoding="utf-8")
+)
+ok &= validate(
+    "https://pkb.local/schemas/application-tracker/research-request.schema.json",
+    research_request,
+    "examples/research-request.json"
+)
+
 sys.exit(0 if ok else 1)

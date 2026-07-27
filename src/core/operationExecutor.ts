@@ -7,7 +7,7 @@ import { deepMerge, ensureDir, exists, fromVaultPath } from "./files.js";
 import { appendToSection } from "./markdown.js";
 
 const PLAN_SCHEMA = "https://pkb.local/schemas/core/operation-plan.schema.json";
-const SUPPORTED_TYPES = new Set(["update-frontmatter", "append-section", "move-file"]);
+const SUPPORTED_TYPES = new Set(["create-file", "update-frontmatter", "append-section", "move-file"]);
 
 export interface ExecutionPolicy {
   allowedTypes?: readonly string[];
@@ -85,6 +85,23 @@ async function executeOperation(
 ): Promise<void> {
   const target = resolveVaultPath(vaultRoot, operation.target!);
   await capture(snapshots, target);
+
+  if (operation.type === "create-file") {
+    if (await exists(target)) {
+      throw new PkbError("TARGET_EXISTS", "create-file target already exists.", operation.target);
+    }
+    const document = requireObject(operation.payload.document, operation, "document");
+    const data = requireObject(document.data, operation, "document.data");
+    const content = document.content;
+    if (typeof content !== "string") {
+      throw new PkbError("INVALID_OPERATION", "document.content must be a string.", operation);
+    }
+    const schemaId = operation.payload.schema_id;
+    if (typeof schemaId === "string") validateSchema(vaultRoot, schemaId, data);
+    await ensureDir(path.dirname(target));
+    writeMarkdown(vaultRoot, target, { data, content });
+    return;
+  }
 
   if (operation.type === "update-frontmatter") {
     const document = parseMarkdown(vaultRoot, target);

@@ -7,6 +7,7 @@ import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
 import { processApplicationReport } from "./platform/applicationWorkflow.js";
 import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
 import { rebuildTodayDashboard } from "./platform/dashboard.js";
+import { startResearchRequest, syncDueResearchRequests } from "./platform/researchRequestWorkflow.js";
 import { PkbError } from "./core/errors.js";
 import { doctorVault, initializeVault, type GitMode } from "./core/vault.js";
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
@@ -88,7 +89,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -191,6 +192,18 @@ async function main(): Promise<void> {
       dryRun: parsed.dryRun,
     });
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "application" && subcommand === "research-sync") {
+    const result = await syncDueResearchRequests(parsed.vault);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "application" && subcommand === "research-start") {
+    if (!value) throw new Error("application research-start requires REQUEST_ID");
+    console.log(JSON.stringify(await startResearchRequest(parsed.vault, value), null, 2));
     return;
   }
 

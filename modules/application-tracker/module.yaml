@@ -52,12 +52,15 @@ schemas:
   instance: schemas/application-instance.schema.json
   application_record: schemas/application-record.schema.json
   research_report: schemas/research-report.schema.json
+  application_document: schemas/application-document.schema.json
+  research_request: schemas/research-request.schema.json
   update_result: schemas/update-result.schema.json
 
 rules:
   paths: rules/paths.yaml
   review: rules/review-policy.yaml
   reading: rules/reading-policy.yaml
+  application_state_machine: rules/application-state-machine.yaml
 
 dashboard:
   provider: dashboard/today-provider.yaml

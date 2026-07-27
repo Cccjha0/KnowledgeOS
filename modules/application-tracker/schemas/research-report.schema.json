@@ -7,6 +7,7 @@
   "required": [
     "report_id",
     "research_type",
+    "request_id",
     "instance_id",
     "institution",
     "program_name",
@@ -26,6 +27,12 @@
     },
     "research_type": {
       "const": "application-update"
+    },
+    "request_id": {
+      "anyOf": [
+        { "type": "string", "pattern": "^REQ-\\d{4}-\\d{6,}$" },
+        { "type": "null" }
+      ]
     },
     "instance_id": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

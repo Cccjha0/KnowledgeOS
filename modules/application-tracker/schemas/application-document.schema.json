@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/application-document.schema.json",
+  "title": "Application Document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document_id", "type", "instance_id", "application_id", "document_type", "status", "path", "source_refs", "created", "updated", "schema_version"],
+  "properties": {
+    "document_id": { "type": "string", "pattern": "^DOC-\\d{4}-\\d{6,}$" },
+    "type": { "const": "application-document" },
+    "instance_id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId" },
+    "application_id": { "type": "string", "pattern": "^APP-\\d{4}-\\d{4,}$" },
+    "document_type": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["required", "collecting", "ready", "submitted", "not-applicable"] },
+    "path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "requested_at": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }, { "type": "null" }] },
+    "due_at": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }, { "type": "null" }] },
+    "submitted_at": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }, { "type": "null" }] },
+    "source_refs": { "type": "array", "items": { "type": "string" } },
+    "notes": { "type": "string" },
+    "created": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "updated": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "schema_version": { "const": 1 }
+  }
+}

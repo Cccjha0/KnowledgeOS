@@ -6,6 +6,7 @@ import type {
   OperationPlan,
   ProcessedReportsFile,
   ResearchReport,
+  ResearchRequest,
   UpdateResult,
 } from "../types.js";
 import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
@@ -28,6 +29,7 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
 import { DeterministicComparisonAdapter, type ComparisonAdapter } from "../application/adapter.js";
 import { buildOperationPlan } from "../application/plan.js";
+import { applyReportToResearchRequest } from "../application/researchRequest.js";
 
 const SCHEMAS = {
   instance: "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
@@ -36,6 +38,7 @@ const SCHEMAS = {
   update: "https://pkb.local/schemas/application-tracker/update-result.schema.json",
   plan: "https://pkb.local/schemas/core/operation-plan.schema.json",
   review: "https://pkb.local/schemas/core/review-item.schema.json",
+  request: "https://pkb.local/schemas/application-tracker/research-request.schema.json",
 } as const;
 
 export interface ProcessReportOptions {
@@ -147,6 +150,41 @@ async function determineDestination(
 
 function reportWikiReference(vaultRoot: string, destination: string): string {
   return `[[${toVaultPath(vaultRoot, destination).replace(/\.md$/i, "")}]]`;
+}
+
+async function attachResearchRequestOperation(
+  vaultRoot: string,
+  plan: OperationPlan,
+  report: ResearchReport,
+  record: ApplicationRecord,
+  recordPath: string,
+  now: string,
+): Promise<string | null> {
+  if (report.request_id === null) return null;
+  const candidates = (await listFilesRecursive(path.join(vaultRoot, "20-Workspace", "Applications"), ".md"))
+    .filter((file) => file.split(path.sep).includes("Research Requests") && path.basename(file, ".md") === report.request_id);
+  if (candidates.length !== 1) {
+    throw new PkbError("RESEARCH_REQUEST_NOT_FOUND", `Expected exactly one Research Request ${report.request_id}.`, candidates);
+  }
+  const requestDocument = parseMarkdown(vaultRoot, candidates[0]!);
+  validateSchema(vaultRoot, SCHEMAS.request, requestDocument.data);
+  const request = requestDocument.data as unknown as ResearchRequest;
+  if (request.application_id !== record.id || request.record_path !== recordPath) {
+    throw new PkbError("RESEARCH_REQUEST_TARGET_MISMATCH", "Research Request does not belong to the matched Application Record.");
+  }
+  const updated = applyReportToResearchRequest(request, report, now);
+  const target = toVaultPath(vaultRoot, candidates[0]!);
+  plan.operations.push({
+    operation_id: `OP-${String(plan.operations.length + 1).padStart(3, "0")}`,
+    type: "update-frontmatter",
+    target,
+    risk: "green",
+    confidence: 1,
+    idempotency_key: `${request.request_id}:${report.report_id}:lifecycle`,
+    payload: { patch: updated, schema_id: SCHEMAS.request },
+    requires_review_id: null,
+  });
+  return target;
 }
 
 async function writeRunLog(
@@ -274,6 +312,9 @@ export async function processApplicationReport(
     taskId,
     planId,
   });
+  const requestTarget = await attachResearchRequestOperation(
+    vaultRoot, plan, report, target.record, target.relative, now,
+  );
   validateSchema(vaultRoot, SCHEMAS.plan, plan);
 
   const planPath = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
@@ -296,7 +337,7 @@ export async function processApplicationReport(
   const snapshot = await createGitSnapshot(vaultRoot, runId);
   await executeOperationPlan(vaultRoot, plan, {
     allowedTypes: ["update-frontmatter", "append-section", "move-file"],
-    allowedTargets: [target.relative, toVaultPath(vaultRoot, reportAbsolute)],
+    allowedTargets: [target.relative, toVaultPath(vaultRoot, reportAbsolute), ...(requestTarget ? [requestTarget] : [])],
     requiredReviewId: null,
   });
   const reviewPaths = await writeReviewItems(vaultRoot, update.review_items);

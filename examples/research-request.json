@@ -1,0 +1,17 @@
+{
+  "request_id": "REQ-2026-000001",
+  "type": "research-request",
+  "instance_id": "australia-masters-2027",
+  "application_id": "APP-2026-0001",
+  "record_path": "20-Workspace/Applications/australia-masters-2027/Records/Monash-C6007.md",
+  "status": "pending",
+  "reason": "The application record reached its scheduled verification time.",
+  "requested_fields": ["application_open", "deadline", "tuition"],
+  "report_ids": [],
+  "idempotency_key": "application-check:APP-2026-0001:2026-07-30T12:00:00+09:00",
+  "created_at": "2026-07-30T12:00:00+09:00",
+  "updated_at": "2026-07-30T12:00:00+09:00",
+  "completed_at": null,
+  "next_action_at": "2026-07-30T12:00:00+09:00",
+  "schema_version": 1
+}

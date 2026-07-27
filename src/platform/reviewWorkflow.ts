@@ -28,6 +28,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
+import { APPLICATION_STATE_MACHINE, assertApplicationTransition, type ApplicationStatus } from "../application/stateMachine.js";
 import {
   locateReviewItem,
   persistReviewItem,
@@ -186,6 +187,11 @@ function buildRecordPatch(
     : structuredClone(proposed.new_value ?? null);
   const patch: JsonObject = { updated: decision.decided_at };
   const status = expectedApplicationStatus(field, effectiveValue, proposed);
+  if (status !== null && status !== record.application_status) {
+    assertApplicationTransition(record.application_status as ApplicationStatus, status as ApplicationStatus);
+    const rule = APPLICATION_STATE_MACHINE[status as ApplicationStatus];
+    patch.monitoring = { active: !rule.terminal, stopped: rule.stopMonitoring };
+  }
 
   if (field === "application_status") {
     if (typeof effectiveValue !== "string") {

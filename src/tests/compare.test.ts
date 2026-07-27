@@ -5,8 +5,8 @@ import { compareApplicationUpdate } from "../application/compare.js";
 
 const baseRecord: ApplicationRecord = {
   id: "APP-2026-0001",
-  module: "application-tracker",
-  module_instance: "australia-masters-2027",
+  source_module: "application-tracker",
+  instance_id: "australia-masters-2027",
   type: "application-record",
   institution: "Monash University",
   program_name: "Master of Artificial Intelligence",
@@ -19,6 +19,7 @@ const baseRecord: ApplicationRecord = {
     check_interval_days: 3,
     last_checked: "2026-07-22T10:00:00+09:00",
     next_check: "2026-07-25T10:00:00+09:00",
+    stopped: [],
   },
   facts: {
     application_open: {
@@ -40,6 +41,7 @@ function report(open: boolean): ResearchReport {
   return {
     report_id: open ? "RPT-2026-000003" : "RPT-2026-000002",
     research_type: "application-update",
+    request_id: null,
     instance_id: "australia-masters-2027",
     institution: "Monash University",
     program_name: "Master of Artificial Intelligence",

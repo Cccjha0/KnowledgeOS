@@ -5,12 +5,20 @@ critical_fields:
   - academic_requirement
   - english_requirement
   - application_open
+  - credit_exemption
 
 auto_execute:
   - update_last_checked
   - update_next_check
   - append_no_change_log
   - add_source_reference
+
+prior_confirmation_fields:
+  - submitted_at
+  - offer_accepted
+  - deposit_paid
+  - coe_received
+  - visa_submitted
 
 review_before_execute:
   - change_critical_field

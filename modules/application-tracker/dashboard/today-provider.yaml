@@ -1,47 +1,24 @@
 provider_id: application-tracker-today
 version: 1
+implementation: src/application/dashboard.ts
 
-queries:
-  - id: due-monitoring-check
-    source: application-record
-    condition:
-      monitoring.active: true
-      monitoring.next_check: "<=now"
-    output:
-      category: research
-      priority: high
-      title: "申请信息需要重新核验"
-      actions: [open, generate, defer]
+project_fields:
+  - current_project
+  - application_status
+  - next_check
+  - pending_review_count
+  - material_progress
+  - last_updated
+  - next_action
 
-  - id: pending-critical-review
-    source: review-item
-    condition:
-      source_module: application-tracker
-      status: pending
-      priority: ["high", "critical"]
-    output:
-      category: review
-      priority: high
-      title: "关键申请信息等待确认"
-      actions: [open, approve, reject, defer, discuss]
-
-  - id: unresolved-user-edit
-    source: review-item
-    condition:
-      status: pending
-      target_observation.matches: neither
-    output:
-      category: review
-      priority: high
-      title: "目标文件已修改，审核仍未关闭"
-      actions: [open, reconcile, discuss]
-
-  - id: review-execution-error
-    source: review-item
-    condition:
-      status: error
-    output:
-      category: error
-      priority: critical
-      title: "审核执行失败"
-      actions: [open, retry]
+items:
+  - source: application-record
+    category: status
+    actions: [open, generate]
+  - source: research-request
+    category: research
+    actions: [open, run]
+  - source: application-document
+    aggregate: material_progress
+  - source: review-item
+    aggregate: pending_review_count

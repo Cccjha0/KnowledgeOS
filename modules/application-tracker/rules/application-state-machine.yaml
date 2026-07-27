@@ -1,0 +1,19 @@
+version: 1
+main_path:
+  - watching
+  - not-open
+  - open
+  - preparing
+  - submitted
+  - awaiting-result
+  - conditional-offer
+  - unconditional-offer
+  - accepted
+  - coe-issued
+  - visa-processing
+  - completed
+side_states:
+  - rejected
+  - withdrawn
+  - archived
+implementation: src/application/stateMachine.ts

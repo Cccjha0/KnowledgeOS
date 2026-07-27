@@ -1,7 +1,7 @@
 ---
 id:
-module: application-tracker
-module_instance:
+source_module: application-tracker
+instance_id:
 type: application-record
 
 institution:
@@ -17,6 +17,7 @@ monitoring:
   check_interval_days: 7
   last_checked:
   next_check:
+  stopped: []
 
 facts: {}
 source_files: []

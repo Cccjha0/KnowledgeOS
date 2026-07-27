@@ -86,6 +86,7 @@
             "no-change",
             "auto-update",
             "review",
+            "user-confirmation-required",
             "ignore"
           ]
         },
