@@ -20,7 +20,7 @@ node dist/cli.js runtime watch --vault E:\KnowledgeOS\knowledgeos-vault
 .\tools\install_windows_runner.ps1 -VaultPath E:\KnowledgeOS\knowledgeos-vault -Action Uninstall
 ```
 
-The installer only registers the task when explicitly invoked. It does not silently change Windows startup settings during Vault installation.
+The installer only registers the runner when explicitly invoked. It prefers Task Scheduler and falls back to the current-user Windows login startup registry when Task Scheduler policy denies registration. Both paths run the watcher hidden and are removed by `-Action Uninstall`; Vault installation itself does not silently change startup settings.
 
 ## First jobs
 
