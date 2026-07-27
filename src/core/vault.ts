@@ -35,7 +35,7 @@ export interface VaultDoctorResult {
 }
 
 const REQUIRED_DIRECTORIES = [
-  "20-Workspace/Applications/Inbox",
+  "00-Inbox",
   "90-System/Instances",
   "90-System/Logs",
   "90-System/Review Queue/Pending",
@@ -113,7 +113,11 @@ function initializeGit(vaultRoot: string): void {
   }
 }
 
-export async function initializeVault(vaultPath: string, requestedGitMode: GitMode): Promise<VaultInitResult> {
+export async function initializeVault(
+  vaultPath: string,
+  requestedGitMode: GitMode,
+  additionalDirectories: readonly string[] = [],
+): Promise<VaultInitResult> {
   const vaultRoot = path.resolve(vaultPath);
   if (await exists(vaultRoot)) {
     const stat = await fs.stat(vaultRoot);
@@ -142,7 +146,8 @@ export async function initializeVault(vaultPath: string, requestedGitMode: GitMo
 
   const createdDirectories: string[] = [];
   const createdFiles: string[] = [];
-  for (const directory of REQUIRED_DIRECTORIES) {
+  const requiredDirectories = [...REQUIRED_DIRECTORIES, ...additionalDirectories];
+  for (const directory of requiredDirectories) {
     await ensureDirectory(vaultRoot, directory, createdDirectories);
   }
 
@@ -155,7 +160,7 @@ export async function initializeVault(vaultPath: string, requestedGitMode: GitMo
     "# Today\n\nKnowledgeOS 尚未生成今日仪表盘。\n",
     createdFiles,
   );
-  for (const directory of REQUIRED_DIRECTORIES) {
+  for (const directory of requiredDirectories) {
     await writeIfMissing(vaultRoot, `${directory}/.gitkeep`, "", createdFiles);
   }
 
@@ -189,7 +194,10 @@ export async function initializeVault(vaultPath: string, requestedGitMode: GitMo
   };
 }
 
-export async function doctorVault(vaultPath: string): Promise<VaultDoctorResult> {
+export async function doctorVault(
+  vaultPath: string,
+  additionalDirectories: readonly string[] = [],
+): Promise<VaultDoctorResult> {
   const vaultRoot = path.resolve(vaultPath);
   const checks: VaultDoctorResult["checks"] = [];
   if (!(await exists(vaultRoot))) {
@@ -216,7 +224,7 @@ export async function doctorVault(vaultPath: string): Promise<VaultDoctorResult>
     checks.push({ name: "vault-config", ok: false, message: "缺少 vault-config.json，请先运行 vault init。" });
   }
 
-  for (const directory of REQUIRED_DIRECTORIES) {
+  for (const directory of [...REQUIRED_DIRECTORIES, ...additionalDirectories]) {
     const present = await exists(path.join(vaultRoot, ...directory.split("/")));
     checks.push({ name: `directory:${directory}`, ok: present, message: present ? "目录存在。" : "目录缺失。" });
   }

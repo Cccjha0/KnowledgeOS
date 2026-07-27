@@ -1,68 +1,76 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseMarkdown } from "./bridge.js";
+import type { DashboardItem } from "./types.js";
+import { parseMarkdown, validateSchema } from "./bridge.js";
 import { exists, listFilesRecursive, toVaultPath } from "./files.js";
 import { requeueDueReviews } from "./reviews.js";
+
+const DASHBOARD_SCHEMA = "https://pkb.local/schemas/core/dashboard-item.schema.json";
+const PRIORITY_WEIGHT: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 function wikiLink(vaultPath: string): string {
   return `[[${vaultPath.replace(/\.md$/i, "")}]]`;
 }
 
-export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
-  await requeueDueReviews(vaultRoot);
-  const inboxRoot = path.join(vaultRoot, "20-Workspace", "Applications");
-  const inboxFiles = (await listFilesRecursive(inboxRoot, ".md")).filter((file) =>
-    file.split(path.sep).includes("Inbox"),
-  );
-
-  const reviewRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
-  const reviewFiles = await listFilesRecursive(reviewRoot, ".md");
-  const pendingReviews: Array<{ path: string; title: string; priority: string; warning: boolean }> = [];
-  for (const reviewFile of reviewFiles) {
-    const document = parseMarkdown(vaultRoot, reviewFile);
-    if (document.data.status === "pending") {
-      pendingReviews.push({
-        path: toVaultPath(vaultRoot, reviewFile),
-        title: String(document.data.reason ?? path.basename(reviewFile, ".md")),
-        priority: String(document.data.priority ?? "medium"),
-        warning: Boolean(
-          document.data.target_observation &&
-          typeof document.data.target_observation === "object" &&
-          !Array.isArray(document.data.target_observation) &&
-          (document.data.target_observation as Record<string, unknown>).matches === "neither"
-        ),
-      });
+async function collectReviewDashboardItems(vaultRoot: string): Promise<DashboardItem[]> {
+  const items: DashboardItem[] = [];
+  const pendingRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
+  for (const file of await listFilesRecursive(pendingRoot, ".md")) {
+    const document = parseMarkdown(vaultRoot, file);
+    if (document.data.status !== "pending") {
+      continue;
     }
+    const observation = document.data.target_observation;
+    const warning = Boolean(
+      observation && typeof observation === "object" && !Array.isArray(observation) &&
+      (observation as Record<string, unknown>).matches === "neither",
+    );
+    items.push({
+      item_id: `DSH-REVIEW-${String(document.data.review_id)}`,
+      source_module: String(document.data.source_module),
+      instance_id: typeof document.data.instance_id === "string" ? document.data.instance_id : null,
+      category: warning ? "warning" : "review",
+      priority: String(document.data.priority) as DashboardItem["priority"],
+      title: String(document.data.reason ?? path.basename(file, ".md")),
+      description: warning ? "目标文件已被修改，但关联审核项仍未关闭。" : "等待用户决定。",
+      target: toVaultPath(vaultRoot, file),
+      due_at: null,
+      actions: ["open", "approve", "reject", "defer", "discuss"],
+    });
   }
 
   const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
-  const errorFiles = await listFilesRecursive(errorRoot, ".md");
-  const errorReviews = errorFiles.map((file) => ({
-    path: toVaultPath(vaultRoot, file),
-    title: path.basename(file, ".md"),
-  }));
-
-  const recordRoot = path.join(vaultRoot, "20-Workspace", "Applications");
-  const recordFiles = (await listFilesRecursive(recordRoot, ".md")).filter((file) =>
-    file.split(path.sep).includes("Records"),
-  );
-  const now = Date.now();
-  const dueRecords: Array<{ path: string; title: string; due: string }> = [];
-  for (const recordFile of recordFiles) {
-    const document = parseMarkdown(vaultRoot, recordFile);
-    const monitoring = document.data.monitoring;
-    if (monitoring && typeof monitoring === "object" && !Array.isArray(monitoring)) {
-      const nextCheck = (monitoring as Record<string, unknown>).next_check;
-      const active = (monitoring as Record<string, unknown>).active;
-      if (active === true && typeof nextCheck === "string" && Date.parse(nextCheck) <= now) {
-        dueRecords.push({
-          path: toVaultPath(vaultRoot, recordFile),
-          title: `${String(document.data.institution ?? "申请项目")} — ${String(document.data.program_name ?? "")}`,
-          due: nextCheck,
-        });
-      }
-    }
+  for (const file of await listFilesRecursive(errorRoot, ".md")) {
+    const document = parseMarkdown(vaultRoot, file);
+    items.push({
+      item_id: `DSH-ERROR-${String(document.data.review_id)}`,
+      source_module: String(document.data.source_module),
+      instance_id: typeof document.data.instance_id === "string" ? document.data.instance_id : null,
+      category: "system",
+      priority: "critical",
+      title: `审核执行失败：${String(document.data.review_id)}`,
+      description: String(document.data.resolution ?? "需要人工检查。"),
+      target: toVaultPath(vaultRoot, file),
+      due_at: null,
+      actions: ["open", "retry"],
+    });
   }
+  return items;
+}
+
+export async function buildTodayDashboard(
+  vaultRoot: string,
+  moduleItems: DashboardItem[] = [],
+): Promise<string> {
+  await requeueDueReviews(vaultRoot);
+  const items = [...(await collectReviewDashboardItems(vaultRoot)), ...moduleItems];
+  for (const item of items) {
+    validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
+  }
+  items.sort((a, b) =>
+    (PRIORITY_WEIGHT[a.priority] ?? 99) - (PRIORITY_WEIGHT[b.priority] ?? 99) ||
+    a.title.localeCompare(b.title),
+  );
 
   const logRoot = path.join(vaultRoot, "90-System", "Logs");
   let latestLog: string | null = null;
@@ -73,7 +81,7 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
     latestLog = latest ? toVaultPath(vaultRoot, latest) : null;
   }
 
-  const lines: string[] = [
+  const lines = [
     "# Today",
     "",
     `> 最后重建：${new Date().toISOString()}`,
@@ -81,67 +89,37 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
     "## 今日优先事项",
     "",
   ];
-
-  if (pendingReviews.length === 0 && errorReviews.length === 0 && dueRecords.length === 0 && inboxFiles.length === 0) {
-    lines.push("- 当前没有必须处理的申请事项。");
+  if (items.length === 0) {
+    lines.push("- 当前没有必须处理的事项。");
   } else {
-    if (pendingReviews.length > 0) {
-      lines.push(`- 审核 ${pendingReviews.length} 项关键申请信息。`);
+    const counts = new Map<string, number>();
+    for (const item of items) {
+      counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
     }
-    if (errorReviews.length > 0) {
-      lines.push(`- 处理 ${errorReviews.length} 项审核执行错误。`);
-    }
-    if (dueRecords.length > 0) {
-      lines.push(`- 重新核验 ${dueRecords.length} 个到期申请项目。`);
-    }
-    if (inboxFiles.length > 0) {
-      lines.push(`- 处理申请 Inbox 中的 ${inboxFiles.length} 个 Markdown 文件。`);
+    for (const [category, count] of counts) {
+      lines.push(`- ${category}: ${count}`);
     }
   }
 
-  lines.push("", "## 待人工审核", "");
-  if (pendingReviews.length === 0) {
+  lines.push("", "## 待处理", "");
+  if (items.length === 0) {
     lines.push("- 无。");
   } else {
-    for (const item of pendingReviews.sort((a, b) => a.priority.localeCompare(b.priority))) {
-      lines.push(`- ${wikiLink(item.path)} — ${item.title}（${item.priority}）`);
-      if (item.warning) {
-        lines.push("  - ⚠ 目标文件已被修改，但关联审核项仍未关闭。");
+    for (const item of items) {
+      const link = item.target ? wikiLink(item.target) : item.title;
+      lines.push(`- ${link} — ${item.title}（${item.priority}）`);
+      if (item.description) {
+        lines.push(`  - ${item.description}`);
       }
-    }
-  }
-
-  lines.push("", "## 审核执行错误", "");
-  if (errorReviews.length === 0) {
-    lines.push("- 无。");
-  } else {
-    for (const item of errorReviews) {
-      lines.push(`- ${wikiLink(item.path)} — ${item.title}`);
-    }
-  }
-
-  lines.push("", "## 等待外部核验", "");
-  if (dueRecords.length === 0) {
-    lines.push("- 无到期项目。");
-  } else {
-    for (const item of dueRecords) {
-      lines.push(`- ${wikiLink(item.path)} — 下次检查：${item.due}`);
-    }
-  }
-
-  lines.push("", "## Application Inbox", "");
-  if (inboxFiles.length === 0) {
-    lines.push("- 已清空。");
-  } else {
-    for (const file of inboxFiles) {
-      lines.push(`- ${wikiLink(toVaultPath(vaultRoot, file))}`);
+      if (item.due_at) {
+        lines.push(`  - 到期：${item.due_at}`);
+      }
     }
   }
 
   lines.push("", "## 最近处理", "");
   lines.push(latestLog ? `- ${wikiLink(latestLog)}` : "- 暂无处理日志。");
   lines.push("");
-
   const todayPath = path.join(vaultRoot, "Today.md");
   await fs.writeFile(todayPath, lines.join("\n"), "utf8");
   return todayPath;

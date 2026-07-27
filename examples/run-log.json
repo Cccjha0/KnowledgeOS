@@ -1,0 +1,13 @@
+{
+  "run_id": "RUN-2026-000001",
+  "task_id": "TASK-2026-000001",
+  "plan_id": "PLAN-2026-000001",
+  "source_module": "application-tracker",
+  "instance_id": "example-instance",
+  "review_id": null,
+  "status": "completed",
+  "git_snapshot": "disabled",
+  "started_at": "2026-07-27T12:00:00Z",
+  "completed_at": "2026-07-27T12:00:01Z",
+  "schema_version": 1
+}

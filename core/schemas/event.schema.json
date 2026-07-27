@@ -8,6 +8,7 @@
     "event_id",
     "event_type",
     "source_module",
+    "instance_id",
     "entity",
     "payload",
     "created_at"
@@ -19,25 +20,12 @@
     },
     "event_type": {
       "type": "string",
-      "enum": [
-        "capture.created",
-        "file.added",
-        "file.moved",
-        "note.processed",
-        "metadata.updated",
-        "review.created",
-        "review.resolved",
-        "summary.generated",
-        "research.required",
-        "deadline.approaching",
-        "evidence.created",
-        "instance.archived"
-      ]
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$"
     },
     "source_module": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
     },
-    "source_instance": {
+    "instance_id": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

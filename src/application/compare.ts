@@ -144,7 +144,7 @@ export async function compareApplicationUpdate(
         review_id: reviewId,
         schema_version: 1,
         source_module: "application-tracker",
-        module_instance: report.instance_id,
+        instance_id: report.instance_id,
         target: options.targetRecordPath,
         action: "change-critical-field",
         proposed_value: proposedValue,

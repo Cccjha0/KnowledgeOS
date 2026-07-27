@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { MarkdownDocument, ReviewItem, ReviewStatus } from "../types.js";
+import type { MarkdownDocument, ReviewItem, ReviewStatus } from "./types.js";
 import { parseMarkdown, validateSchema, writeMarkdown } from "./bridge.js";
 import { ensureDir, exists } from "./files.js";
 

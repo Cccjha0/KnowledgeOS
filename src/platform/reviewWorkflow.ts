@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   ApplicationFact,
@@ -14,13 +13,11 @@ import type {
   ReviewStatus,
   ReviewTargetObservation,
 } from "../types.js";
-import { parseMarkdown, validateSchema, writeMarkdown } from "../core/bridge.js";
-import { buildTodayDashboard } from "../core/dashboard.js";
+import { parseMarkdown, validateSchema } from "../core/bridge.js";
+import { rebuildTodayDashboard } from "./dashboard.js";
 import { PkbError } from "../core/errors.js";
 import {
   deepEqual,
-  deepMerge,
-  ensureDir,
   fromVaultPath,
   listFilesRecursive,
   toVaultPath,
@@ -29,7 +26,8 @@ import {
 } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
-import { appendToSection } from "../core/markdown.js";
+import { writeRunLog } from "../core/logs.js";
+import { executeOperationPlan } from "../core/operationExecutor.js";
 import {
   locateReviewItem,
   persistReviewItem,
@@ -233,7 +231,10 @@ function buildReviewPlan(
         risk: "yellow",
         confidence: 1,
         idempotency_key: `${item.review_id}:${decision.decided_at}:frontmatter`,
-        payload: { patch },
+        payload: {
+          patch,
+          schema_id: SCHEMAS.record,
+        },
         requires_review_id: item.review_id,
       },
       {
@@ -255,58 +256,12 @@ function buildReviewPlan(
   return {
     plan_id: ids.planId,
     task_id: ids.taskId,
-    module: item.source_module,
-    instance: item.module_instance,
+    source_module: item.source_module,
+    instance_id: item.instance_id,
     summary: `落实审核决定 ${item.review_id}: ${decision.decision}`,
     operations,
     review_items: [],
   };
-}
-
-function checkReviewPlanPermissions(plan: OperationPlan, item: ReviewItem): void {
-  const allowed = new Set(["update-frontmatter", "append-section"]);
-  for (const operation of plan.operations) {
-    if (!allowed.has(operation.type) || operation.target !== item.target || operation.requires_review_id !== item.review_id) {
-      throw new PkbError("PERMISSION_DENIED", "审核计划包含越权操作。", operation);
-    }
-  }
-}
-
-async function executeReviewPlan(
-  vaultRoot: string,
-  targetPath: string,
-  recordDocument: MarkdownDocument,
-  plan: OperationPlan,
-): Promise<void> {
-  if (plan.operations.length === 0) {
-    return;
-  }
-  const backup = await fs.readFile(targetPath);
-  try {
-    const update = plan.operations.find((operation) => operation.type === "update-frontmatter");
-    const append = plan.operations.find((operation) => operation.type === "append-section");
-    if (!update || !append) {
-      throw new PkbError("INVALID_PLAN", "批准计划缺少更新或变更记录操作。", plan);
-    }
-    const patch = update.payload.patch;
-    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-      throw new PkbError("INVALID_PLAN", "审核计划 patch 无效。", update);
-    }
-    const updated: MarkdownDocument = {
-      data: deepMerge(recordDocument.data, patch as JsonObject),
-      content: appendToSection(
-        recordDocument.content,
-        String(append.payload.section),
-        String(append.payload.content),
-        String(append.payload.marker),
-      ),
-    };
-    validateSchema(vaultRoot, SCHEMAS.record, updated.data);
-    writeMarkdown(vaultRoot, targetPath, updated);
-  } catch (error) {
-    await fs.writeFile(targetPath, backup);
-    throw error;
-  }
 }
 
 async function writeReviewRunLog(
@@ -317,23 +272,19 @@ async function writeReviewRunLog(
   plan: OperationPlan,
   snapshot: string,
 ): Promise<string> {
-  const filePath = path.join(vaultRoot, "90-System", "Logs", `${runId}.md`);
-  await ensureDir(path.dirname(filePath));
-  writeMarkdown(vaultRoot, filePath, {
-    data: {
-      run_id: runId,
-      task_id: plan.task_id,
-      plan_id: plan.plan_id,
-      module: item.source_module,
-      instance: item.module_instance,
-      review_id: item.review_id,
-      status: "completed",
-      git_snapshot: snapshot,
-      started_at: decision.decided_at,
-      completed_at: new Date().toISOString(),
-      schema_version: 1,
-    },
-    content: [
+  return writeRunLog(vaultRoot, {
+    run_id: runId,
+    task_id: plan.task_id,
+    plan_id: plan.plan_id,
+    source_module: item.source_module,
+    instance_id: item.instance_id,
+    review_id: item.review_id,
+    status: "completed",
+    git_snapshot: snapshot,
+    started_at: decision.decided_at,
+    completed_at: new Date().toISOString(),
+    schema_version: 1,
+  }, [
       `# ${runId}`,
       "",
       `- 审核：[[90-System/Review Queue/Closed/${item.review_id}]]`,
@@ -341,9 +292,7 @@ async function writeReviewRunLog(
       `- 备注：${decision.user_comment || "无"}`,
       `- 操作数：${plan.operations.length}`,
       "",
-    ].join("\n"),
-  });
-  return filePath;
+    ].join("\n"));
 }
 
 function withDecision(item: ReviewItem, decision: ReviewDecision, status: ReviewStatus, resolution: string): ReviewItem {
@@ -387,7 +336,7 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
     }
     const item = withDecision(located.item, decision, "deferred", `延后至 ${decision.review_after}。`);
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
-    const todayPath = await buildTodayDashboard(vaultRoot);
+    const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status: item.status,
       reviewId: item.review_id,
@@ -402,7 +351,7 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
   if (decision.decision === "discuss") {
     const item = withDecision(located.item, decision, "pending", "等待进一步讨论，尚未执行任何修改。");
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
-    const todayPath = await buildTodayDashboard(vaultRoot);
+    const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status: item.status,
       reviewId: item.review_id,
@@ -423,13 +372,16 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
   const runId = await allocateId(vaultRoot, "RUN");
   const plan = buildReviewPlan(located.item, decision, record, { taskId, planId });
   validateSchema(vaultRoot, SCHEMAS.plan, plan);
-  checkReviewPlanPermissions(plan, located.item);
   const planAbsolute = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
   await writeJsonAtomic(planAbsolute, plan);
   const snapshot = await createGitSnapshot(vaultRoot, runId);
 
   try {
-    await executeReviewPlan(vaultRoot, targetPath, recordDocument, plan);
+    await executeOperationPlan(vaultRoot, plan, {
+      allowedTypes: ["update-frontmatter", "append-section"],
+      allowedTargets: [located.item.target],
+      requiredReviewId: located.item.review_id,
+    });
     const status: ReviewStatus = decision.decision === "approve"
       ? "approved"
       : decision.decision === "approve-with-modification"
@@ -441,7 +393,7 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
     const item = withDecision(located.item, decision, status, resolution);
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
     await writeReviewRunLog(vaultRoot, runId, item, decision, plan, snapshot);
-    const todayPath = await buildTodayDashboard(vaultRoot);
+    const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status,
       reviewId: item.review_id,
@@ -459,7 +411,7 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
       `执行失败：${error instanceof Error ? error.message : String(error)}`,
     );
     await persistReviewItem(vaultRoot, located, failed);
-    await buildTodayDashboard(vaultRoot);
+    await rebuildTodayDashboard(vaultRoot);
     throw error;
   }
 }
@@ -526,7 +478,7 @@ export async function reconcileReviews(vaultPath: string, reviewId?: string, now
       unchanged.push(id);
     }
   }
-  const todayPath = await buildTodayDashboard(vaultRoot);
+  const todayPath = await rebuildTodayDashboard(vaultRoot);
   return { requeued, resolved, warnings, unchanged, todayPath: toVaultPath(vaultRoot, todayPath) };
 }
 
@@ -544,7 +496,7 @@ export async function retryReview(vaultPath: string, reviewId: string): Promise<
     resolution: "错误已确认，审核项重新进入 pending；原决定保留在 decision_history。",
   };
   const reviewPath = await persistReviewItem(vaultRoot, located, item);
-  const todayPath = await buildTodayDashboard(vaultRoot);
+  const todayPath = await rebuildTodayDashboard(vaultRoot);
   return {
     status: "pending",
     reviewId,

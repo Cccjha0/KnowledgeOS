@@ -3,9 +3,10 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { processApplicationReport } from "./application/processReport.js";
-import { decideReview, reconcileReviews, retryReview } from "./application/review.js";
-import { buildTodayDashboard } from "./core/dashboard.js";
+import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
+import { processApplicationReport } from "./platform/applicationWorkflow.js";
+import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
+import { rebuildTodayDashboard } from "./platform/dashboard.js";
 import { PkbError } from "./core/errors.js";
 import { doctorVault, initializeVault, type GitMode } from "./core/vault.js";
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
@@ -103,7 +104,11 @@ async function main(): Promise<void> {
     if (!value && !parsed.vaultExplicit) {
       throw new Error("vault init 需要明确指定 Vault 路径");
     }
-    const result = await initializeVault(value ? path.resolve(value) : parsed.vault, parsed.gitMode);
+    const result = await initializeVault(
+      value ? path.resolve(value) : parsed.vault,
+      parsed.gitMode,
+      APPLICATION_VAULT_DIRECTORIES,
+    );
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -112,7 +117,10 @@ async function main(): Promise<void> {
     if (!value && !parsed.vaultExplicit) {
       throw new Error("vault doctor 需要明确指定 Vault 路径");
     }
-    const result = await doctorVault(value ? path.resolve(value) : parsed.vault);
+    const result = await doctorVault(
+      value ? path.resolve(value) : parsed.vault,
+      APPLICATION_VAULT_DIRECTORIES,
+    );
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.status === "ok" ? 0 : 1;
     return;
@@ -187,7 +195,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "dashboard" && subcommand === "build") {
-    const today = await buildTodayDashboard(parsed.vault);
+    const today = await rebuildTodayDashboard(parsed.vault);
     console.log(JSON.stringify({ status: "built", today }, null, 2));
     return;
   }

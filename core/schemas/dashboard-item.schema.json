@@ -7,15 +7,19 @@
   "required": [
     "item_id",
     "source_module",
+    "instance_id",
     "category",
     "priority",
     "title",
+    "description",
+    "target",
+    "due_at",
     "actions"
   ],
   "properties": {
     "item_id": {
       "type": "string",
-      "minLength": 4
+      "pattern": "^DSH-[A-Za-z0-9][A-Za-z0-9._:-]*$"
     },
     "source_module": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
@@ -84,7 +88,9 @@
           "discuss",
           "generate",
           "run",
-          "dismiss"
+          "dismiss",
+          "reconcile",
+          "retry"
         ]
       }
     }

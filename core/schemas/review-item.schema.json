@@ -8,6 +8,7 @@
     "review_id",
     "schema_version",
     "source_module",
+    "instance_id",
     "target",
     "action",
     "confidence",
@@ -31,7 +32,7 @@
     "source_module": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
     },
-    "module_instance": {
+    "instance_id": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { JsonObject, JsonValue } from "../types.js";
+import type { JsonObject, JsonValue } from "./types.js";
 
 export async function exists(filePath: string): Promise<boolean> {
   try {

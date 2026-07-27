@@ -9,7 +9,7 @@
     {
       "type": "object",
       "required": [
-        "module",
+        "module_id",
         "application_type",
         "region",
         "intake",
@@ -17,7 +17,7 @@
         "monitoring"
       ],
       "properties": {
-        "module": {
+        "module_id": {
           "const": "application-tracker"
         },
         "application_type": {

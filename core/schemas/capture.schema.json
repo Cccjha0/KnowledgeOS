@@ -34,7 +34,7 @@
     "source_level": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/sourceLevel"
     },
-    "module_hint": {
+    "module_id_hint": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
@@ -44,7 +44,7 @@
         }
       ]
     },
-    "instance_hint": {
+    "instance_id_hint": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

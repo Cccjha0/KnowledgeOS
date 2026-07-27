@@ -118,4 +118,14 @@ ok &= validate(
     "examples/review-decision.json"
 )
 
+run_log = json.loads(
+    (ENGINE_ROOT / "examples/run-log.json")
+    .read_text(encoding="utf-8")
+)
+ok &= validate(
+    "https://pkb.local/schemas/core/run-log.schema.json",
+    run_log,
+    "examples/run-log.json"
+)
+
 sys.exit(0 if ok else 1)

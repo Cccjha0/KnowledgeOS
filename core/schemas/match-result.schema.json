@@ -21,7 +21,7 @@
     "confidence": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
     },
-    "suggested_instance": {
+    "suggested_instance_id": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

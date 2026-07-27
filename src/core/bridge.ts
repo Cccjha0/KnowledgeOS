@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { JsonObject, MarkdownDocument } from "../types.js";
+import type { JsonObject, MarkdownDocument } from "./types.js";
 import { PkbError } from "./errors.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");

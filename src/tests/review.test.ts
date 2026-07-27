@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { decideReview, reconcileReviews } from "../application/review.js";
+import { decideReview, reconcileReviews } from "../platform/reviewWorkflow.js";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { writeReviewItems } from "../core/reviews.js";
 import { initializeVault } from "../core/vault.js";
@@ -64,7 +64,7 @@ function reviewItem(
     review_id: reviewId,
     schema_version: 1,
     source_module: "application-tracker",
-    module_instance: "test-instance",
+    instance_id: "test-instance",
     target: TARGET,
     action: "change-critical-field",
     proposed_value: {

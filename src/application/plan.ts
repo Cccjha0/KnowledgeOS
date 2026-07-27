@@ -23,8 +23,8 @@ export function buildOperationPlan(
   return {
     plan_id: ids.planId,
     task_id: ids.taskId,
-    module: "application-tracker",
-    instance: report.instance_id,
+    source_module: "application-tracker",
+    instance_id: report.instance_id,
     summary: `处理 ${report.institution} ${report.program_name} 的研究报告`,
     operations: [
       {
@@ -36,6 +36,7 @@ export function buildOperationPlan(
         idempotency_key: `${report.report_id}:update-record-frontmatter`,
         payload: {
           patch: update.frontmatter_patch,
+          schema_id: "https://pkb.local/schemas/application-tracker/application-record.schema.json",
         },
         requires_review_id: null,
       },

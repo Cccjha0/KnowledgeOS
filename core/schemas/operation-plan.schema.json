@@ -7,7 +7,8 @@
   "required": [
     "plan_id",
     "task_id",
-    "module",
+    "source_module",
+    "instance_id",
     "summary",
     "operations",
     "review_items"
@@ -21,10 +22,10 @@
       "type": "string",
       "pattern": "^TASK-\\d{4}-\\d{6,}$"
     },
-    "module": {
+    "source_module": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
     },
-    "instance": {
+    "instance_id": {
       "anyOf": [
         {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/run-log.schema.json",
+  "title": "KnowledgeOS Run Log",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "task_id",
+    "plan_id",
+    "source_module",
+    "instance_id",
+    "review_id",
+    "status",
+    "git_snapshot",
+    "started_at",
+    "completed_at",
+    "schema_version"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN-\\d{4}-\\d{6,}$"
+    },
+    "task_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^TASK-\\d{4}-\\d{6,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "plan_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^PLAN-\\d{4}-\\d{6,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source_module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "instance_id": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^REV-\\d{4}-\\d{6,}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed"
+      ]
+    },
+    "git_snapshot": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "started_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "completed_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "schema_version": {
+      "const": 1
+    }
+  }
+}

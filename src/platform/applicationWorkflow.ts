@@ -1,4 +1,3 @@
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   ApplicationRecord,
@@ -9,11 +8,10 @@ import type {
   ResearchReport,
   UpdateResult,
 } from "../types.js";
-import { parseMarkdown, parseYaml, validateSchema, writeMarkdown } from "../core/bridge.js";
-import { buildTodayDashboard } from "../core/dashboard.js";
+import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
+import { rebuildTodayDashboard } from "./dashboard.js";
 import { PkbError } from "../core/errors.js";
 import {
-  deepMerge,
   ensureDir,
   exists,
   fromVaultPath,
@@ -25,10 +23,11 @@ import {
 } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
-import { appendToSection } from "../core/markdown.js";
+import { writeRunLog as writeCoreRunLog } from "../core/logs.js";
+import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import { DeterministicComparisonAdapter, type ComparisonAdapter } from "./adapter.js";
-import { buildOperationPlan } from "./plan.js";
+import { DeterministicComparisonAdapter, type ComparisonAdapter } from "../application/adapter.js";
+import { buildOperationPlan } from "../application/plan.js";
 
 const SCHEMAS = {
   instance: "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
@@ -159,9 +158,6 @@ async function writeRunLog(
   destination: string,
   reviewPaths: string[],
 ): Promise<string> {
-  const logsRoot = path.join(vaultRoot, "90-System", "Logs");
-  await ensureDir(logsRoot);
-  const filePath = path.join(logsRoot, `${runId}.md`);
   const now = new Date().toISOString();
   const content = [
     `# ${runId}`,
@@ -187,89 +183,19 @@ async function writeRunLog(
     "",
   ].join("\n");
 
-  writeMarkdown(vaultRoot, filePath, {
-    data: {
-      run_id: runId,
-      task_id: plan.task_id,
-      plan_id: plan.plan_id,
-      module: "application-tracker",
-      instance: report.instance_id,
-      status: "completed",
-      git_snapshot: snapshot,
-      started_at: now,
-      completed_at: new Date().toISOString(),
-      schema_version: 1,
-    },
-    content,
-  });
-  return filePath;
-}
-
-async function executePlan(
-  vaultRoot: string,
-  recordAbsolute: string,
-  recordDocument: MarkdownDocument,
-  sourceReport: string,
-  destinationReport: string,
-  plan: OperationPlan,
-): Promise<void> {
-  const transactionRoot = path.join(vaultRoot, "90-System", "State", ".transactions", plan.plan_id);
-  await ensureDir(transactionRoot);
-  const recordBackup = path.join(transactionRoot, "record.md.bak");
-  const reportBackup = path.join(transactionRoot, "report.md.bak");
-  await fs.copyFile(recordAbsolute, recordBackup);
-  await fs.copyFile(sourceReport, reportBackup);
-
-  try {
-    const updateOperation = plan.operations.find((operation) => operation.type === "update-frontmatter");
-    const appendOperation = plan.operations.find((operation) => operation.type === "append-section");
-    if (!updateOperation || !appendOperation) {
-      throw new PkbError("INVALID_PLAN", "Operation Plan 缺少更新档案所需的操作。", plan);
-    }
-
-    const patch = updateOperation.payload.patch;
-    if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-      throw new PkbError("INVALID_PLAN", "update-frontmatter patch 无效。", updateOperation);
-    }
-
-    const section = String(appendOperation.payload.section ?? "变更记录");
-    const entry = String(appendOperation.payload.content ?? "");
-    const marker = String(appendOperation.payload.marker ?? "");
-    const updatedDocument: MarkdownDocument = {
-      data: deepMerge(recordDocument.data, patch as JsonObject),
-      content: appendToSection(recordDocument.content, section, entry, marker),
-    };
-    validateSchema(vaultRoot, SCHEMAS.record, updatedDocument.data);
-    writeMarkdown(vaultRoot, recordAbsolute, updatedDocument);
-
-    await ensureDir(path.dirname(destinationReport));
-    if (path.resolve(sourceReport) !== path.resolve(destinationReport)) {
-      if (await exists(destinationReport)) {
-        const same = (await sha256File(destinationReport)) === (await sha256File(sourceReport));
-        if (!same) {
-          throw new PkbError("REPORT_DESTINATION_EXISTS", "研究报告归档目标已存在且内容不同。", destinationReport);
-        }
-        await fs.unlink(sourceReport);
-      } else {
-        await fs.rename(sourceReport, destinationReport);
-      }
-    }
-  } catch (error) {
-    await fs.copyFile(recordBackup, recordAbsolute);
-    if (!(await exists(sourceReport))) {
-      await fs.copyFile(reportBackup, sourceReport);
-    }
-    if (await exists(destinationReport)) {
-      const destinationHash = await sha256File(destinationReport);
-      const backupHash = await sha256File(reportBackup);
-      if (destinationHash === backupHash && path.resolve(destinationReport) !== path.resolve(sourceReport)) {
-        await fs.unlink(destinationReport);
-      }
-    }
-    throw error;
-  } finally {
-    await fs.rm(transactionRoot, { recursive: true, force: true });
-  }
+  return writeCoreRunLog(vaultRoot, {
+    run_id: runId,
+    task_id: plan.task_id,
+    plan_id: plan.plan_id,
+    source_module: "application-tracker",
+    instance_id: report.instance_id,
+    review_id: null,
+    status: "completed",
+    git_snapshot: snapshot,
+    started_at: now,
+    completed_at: new Date().toISOString(),
+    schema_version: 1,
+  }, content);
 }
 
 export async function processApplicationReport(
@@ -368,14 +294,11 @@ export async function processApplicationReport(
   }
 
   const snapshot = await createGitSnapshot(vaultRoot, runId);
-  await executePlan(
-    vaultRoot,
-    target.absolute,
-    target.document,
-    reportAbsolute,
-    destination,
-    plan,
-  );
+  await executeOperationPlan(vaultRoot, plan, {
+    allowedTypes: ["update-frontmatter", "append-section", "move-file"],
+    allowedTargets: [target.relative, toVaultPath(vaultRoot, reportAbsolute)],
+    requiredReviewId: null,
+  });
   const reviewPaths = await writeReviewItems(vaultRoot, update.review_items);
 
   processed.reports[report.report_id] = {
@@ -386,7 +309,7 @@ export async function processApplicationReport(
   };
   await writeJsonAtomic(processedPath, processed);
   await writeRunLog(vaultRoot, runId, report, plan, snapshot, destination, reviewPaths);
-  const todayPath = await buildTodayDashboard(vaultRoot);
+  const todayPath = await rebuildTodayDashboard(vaultRoot);
 
   return {
     status: "processed",

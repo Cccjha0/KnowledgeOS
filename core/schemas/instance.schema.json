@@ -6,7 +6,7 @@
   "additionalProperties": true,
   "required": [
     "instance_id",
-    "module",
+    "module_id",
     "status",
     "display_name",
     "content_root",
@@ -17,7 +17,7 @@
     "instance_id": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
     },
-    "module": {
+    "module_id": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
     },
     "status": {
