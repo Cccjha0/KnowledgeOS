@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/review-item.schema.json",
+  "title": "PKB Review Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "review_id",
+    "schema_version",
+    "source_module",
+    "target",
+    "action",
+    "confidence",
+    "priority",
+    "status",
+    "reason",
+    "created"
+  ],
+  "properties": {
+    "review_id": {
+      "type": "string",
+      "pattern": "^REV-\\d{4}-\\d{6,}$"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source_module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "module_instance": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "target": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
+    "action": {
+      "type": "string"
+    },
+    "proposed_value": {},
+    "confidence": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+    },
+    "priority": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/priority"
+    },
+    "status": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/reviewStatus"
+    },
+    "reason": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "review_after": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "user_decision": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resolution": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

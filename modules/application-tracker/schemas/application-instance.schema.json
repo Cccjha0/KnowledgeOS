@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
+  "title": "Application Tracker Instance",
+  "allOf": [
+    {
+      "$ref": "https://pkb.local/schemas/core/instance.schema.json"
+    },
+    {
+      "type": "object",
+      "required": [
+        "module",
+        "application_type",
+        "region",
+        "intake",
+        "default_currency",
+        "monitoring"
+      ],
+      "properties": {
+        "module": {
+          "const": "application-tracker"
+        },
+        "application_type": {
+          "type": "string",
+          "enum": [
+            "masters",
+            "phd",
+            "scholarship",
+            "job",
+            "internship",
+            "other"
+          ]
+        },
+        "region": {
+          "type": "string"
+        },
+        "intake": {
+          "type": "string"
+        },
+        "default_currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "monitoring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "default_check_interval_days"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "default_check_interval_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 365
+            }
+          }
+        }
+      }
+    }
+  ]
+}

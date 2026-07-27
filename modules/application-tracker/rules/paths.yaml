@@ -1,0 +1,14 @@
+instance_root: "20-Workspace/Applications/{instance_id}"
+
+folders:
+  inbox: Inbox
+  records: Records
+  research: Research
+  documents: Documents
+  dashboards: Dashboards
+  archive: Archive
+
+type_routes:
+  application-research-report: Research
+  application-record: Records
+  application-document: Documents

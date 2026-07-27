@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/instance.schema.json",
+  "title": "PKB Base Module Instance",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "instance_id",
+    "module",
+    "status",
+    "display_name",
+    "content_root",
+    "created",
+    "updated"
+  ],
+  "properties": {
+    "instance_id": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+    },
+    "module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "active",
+        "paused",
+        "completed",
+        "archived",
+        "error"
+      ]
+    },
+    "display_name": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "content_root": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
+    "inbox_path": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
+    "created": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "updated": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    }
+  }
+}

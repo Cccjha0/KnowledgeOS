@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/common.schema.json",
+  "title": "PKB Common Definitions",
+  "$defs": {
+    "moduleId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "instanceId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "vaultPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:[\\\\/])(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"
+    },
+    "isoDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "isoDateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "risk": {
+      "type": "string",
+      "enum": [
+        "green",
+        "yellow",
+        "red"
+      ]
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "processingStatus": {
+      "type": "string",
+      "enum": [
+        "new",
+        "classified",
+        "processing",
+        "processed",
+        "needs-review",
+        "failed",
+        "archived"
+      ]
+    },
+    "reviewStatus": {
+      "type": "string",
+      "enum": [
+        "not-required",
+        "pending",
+        "approved",
+        "approved-with-modification",
+        "rejected",
+        "deferred",
+        "resolved-by-user-edit",
+        "expired",
+        "error"
+      ]
+    },
+    "sourceLevel": {
+      "type": "string",
+      "enum": [
+        "target-directory",
+        "instance-inbox",
+        "module-inbox",
+        "global-inbox"
+      ]
+    },
+    "readLevel": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "jsonValue": {
+      "description": "任意 JSON 值。"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+provider_id: application-tracker-today
+version: 1
+
+queries:
+  - id: due-monitoring-check
+    source: application-record
+    condition:
+      monitoring.active: true
+      monitoring.next_check: "<=now"
+    output:
+      category: research
+      priority: high
+      title: "申请信息需要重新核验"
+      actions: [open, generate, defer]
+
+  - id: pending-critical-review
+    source: review-item
+    condition:
+      source_module: application-tracker
+      status: pending
+      priority: ["high", "critical"]
+    output:
+      category: review
+      priority: high
+      title: "关键申请信息等待确认"
+      actions: [open, approve, reject, defer, discuss]

@@ -1,0 +1,32 @@
+{
+  "target_record": "20-Workspace/Applications/australia-masters-2027/Records/Monash-C6007.md",
+  "material_change": false,
+  "field_changes": [
+    {
+      "field": "application_open",
+      "old_value": false,
+      "new_value": false,
+      "confidence": 0.95,
+      "action": "no-change",
+      "reason": "新旧报告均未确认申请开放。",
+      "source_ids": [
+        "SRC-001",
+        "SRC-002"
+      ]
+    }
+  ],
+  "frontmatter_patch": {
+    "monitoring": {
+      "last_checked": "2026-07-27T12:00:00+09:00",
+      "next_check": "2026-07-30T12:00:00+09:00"
+    }
+  },
+  "sections_to_append": [
+    {
+      "section": "变更记录",
+      "content": "- 2026-07-27：完成例行核验，未发现实质变化。"
+    }
+  ],
+  "review_items": [],
+  "next_check": "2026-07-30T12:00:00+09:00"
+}

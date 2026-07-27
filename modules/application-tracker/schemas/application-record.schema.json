@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/application-record.schema.json",
+  "title": "Application Target Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "module",
+    "module_instance",
+    "type",
+    "institution",
+    "program_name",
+    "country",
+    "intake",
+    "application_status",
+    "monitoring",
+    "facts",
+    "created",
+    "updated",
+    "schema_version"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^APP-\\d{4}-\\d{4,}$"
+    },
+    "module": {
+      "const": "application-tracker"
+    },
+    "module_instance": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+    },
+    "type": {
+      "const": "application-record"
+    },
+    "institution": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "program_name": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "program_code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "country": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "intake": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "application_status": {
+      "type": "string",
+      "enum": [
+        "watching",
+        "not-open",
+        "open",
+        "preparing",
+        "submitted",
+        "awaiting-result",
+        "conditional-offer",
+        "unconditional-offer",
+        "accepted",
+        "coe-issued",
+        "visa-processing",
+        "completed",
+        "rejected",
+        "withdrawn",
+        "archived"
+      ]
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "active",
+        "check_interval_days",
+        "last_checked",
+        "next_check"
+      ],
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "check_interval_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        },
+        "last_checked": {
+          "anyOf": [
+            {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_check": {
+          "anyOf": [
+            {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/fact"
+      }
+    },
+    "source_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "created": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "updated": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "fact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "confidence",
+        "source_refs"
+      ],
+      "properties": {
+        "value": {},
+        "status": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "pending",
+            "conflicting",
+            "unknown"
+          ]
+        },
+        "confidence": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+        },
+        "checked_at": {
+          "anyOf": [
+            {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

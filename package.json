@@ -1,0 +1,23 @@
+{
+  "name": "knowledgeos-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pkb": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "validate": "node dist/cli.js validate --vault ../knowledgeos-vault",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "chain": "node dist/cli.js application process-report 20-Workspace/Applications/australia-masters-2027/Inbox/2026-07-27-Monash-C6007-Update.md --vault ../knowledgeos-vault"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.3"
+  }
+}

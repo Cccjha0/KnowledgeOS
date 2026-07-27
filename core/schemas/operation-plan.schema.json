@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/operation-plan.schema.json",
+  "title": "PKB Operation Plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "task_id",
+    "module",
+    "summary",
+    "operations",
+    "review_items"
+  ],
+  "properties": {
+    "plan_id": {
+      "type": "string",
+      "pattern": "^PLAN-\\d{4}-\\d{6,}$"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^TASK-\\d{4}-\\d{6,}$"
+    },
+    "module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "instance": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "summary": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    },
+    "review_items": {
+      "type": "array",
+      "items": {
+        "$ref": "https://pkb.local/schemas/core/review-item.schema.json"
+      }
+    }
+  },
+  "$defs": {
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "type",
+        "risk",
+        "idempotency_key",
+        "payload"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "pattern": "^OP-\\d{3,}$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "create-file",
+            "update-file",
+            "append-section",
+            "update-frontmatter",
+            "rename-file",
+            "move-file",
+            "create-directory",
+            "create-sidecar",
+            "add-link",
+            "remove-link",
+            "update-index",
+            "publish-event",
+            "update-instance",
+            "archive-file",
+            "merge-files",
+            "delete-file",
+            "git-push"
+          ]
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "risk": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/risk"
+        },
+        "confidence": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 256
+        },
+        "payload": {
+          "type": "object"
+        },
+        "requires_review_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

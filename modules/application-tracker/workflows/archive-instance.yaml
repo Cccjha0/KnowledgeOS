@@ -1,0 +1,32 @@
+id: archive-instance
+version: 1
+
+inputs:
+  - instance
+
+steps:
+  - id: check-open-reviews
+    uses: core.query-review-items
+    with:
+      status: pending
+
+  - id: check-inbox
+    uses: core.scan-directory
+    with:
+      path: "{instance.inbox_path}"
+
+  - id: create-final-summary
+    uses: codex.prompt
+    with:
+      prompt: prompts/final-summary.md
+      allow_network: false
+
+  - id: update-instance
+    uses: core.update-instance
+    with:
+      status: archived
+
+  - id: publish-event
+    uses: core.publish-event
+    with:
+      event_type: instance.archived

@@ -1,0 +1,32 @@
+id: match
+version: 1
+
+inputs:
+  - capture
+  - active_instances
+
+steps:
+  - id: path-match
+    uses: core.match-path
+    with:
+      module_paths:
+        - 20-Workspace/Applications
+        - 90-System/Research Requests
+
+  - id: metadata-match
+    uses: core.match-frontmatter
+    with:
+      accepted_types:
+        - application-research-report
+        - application-record
+        - application-document
+
+  - id: semantic-fallback
+    when: "path_match.confidence < 0.90"
+    uses: codex.prompt
+    with:
+      prompt: prompts/match.md
+      max_read_level: 0
+
+outputs:
+  schema: ../../../core/schemas/match-result.schema.json

@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/research-report.schema.json",
+  "title": "Application Research Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_id",
+    "research_type",
+    "instance_id",
+    "institution",
+    "program_name",
+    "intake",
+    "checked_at",
+    "material_change",
+    "confidence",
+    "sources",
+    "findings",
+    "unresolved",
+    "summary"
+  ],
+  "properties": {
+    "report_id": {
+      "type": "string",
+      "pattern": "^RPT-\\d{4}-\\d{6,}$"
+    },
+    "research_type": {
+      "const": "application-update"
+    },
+    "instance_id": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+    },
+    "institution": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "program_name": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "program_code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "intake": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "checked_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "material_change": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "findings": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_type",
+        "title",
+        "accessed_at"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^SRC-\\d{3,}$"
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "official-application-system",
+            "official-course-page",
+            "official-handbook",
+            "official-fees-page",
+            "official-email",
+            "official-other",
+            "third-party",
+            "unknown"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "accessed_at": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "status",
+        "confidence",
+        "source_ids"
+      ],
+      "properties": {
+        "value": {},
+        "status": {
+          "type": "string",
+          "enum": [
+            "confirmed",
+            "pending",
+            "conflicting",
+            "unknown"
+          ]
+        },
+        "confidence": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^SRC-\\d{3,}$"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

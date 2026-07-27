@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/application-tracker/update-result.schema.json",
+  "title": "Application Update Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "target_record",
+    "material_change",
+    "field_changes",
+    "frontmatter_patch",
+    "sections_to_append",
+    "review_items",
+    "next_check"
+  ],
+  "properties": {
+    "target_record": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
+    "material_change": {
+      "type": "boolean"
+    },
+    "field_changes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fieldChange"
+      }
+    },
+    "frontmatter_patch": {
+      "type": "object"
+    },
+    "sections_to_append": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "content"
+        ],
+        "properties": {
+          "section": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "review_items": {
+      "type": "array",
+      "items": {
+        "$ref": "https://pkb.local/schemas/core/review-item.schema.json"
+      }
+    },
+    "next_check": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    }
+  },
+  "$defs": {
+    "fieldChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "old_value",
+        "new_value",
+        "confidence",
+        "action",
+        "reason",
+        "source_ids"
+      ],
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "old_value": {},
+        "new_value": {},
+        "confidence": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "no-change",
+            "auto-update",
+            "review",
+            "ignore"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

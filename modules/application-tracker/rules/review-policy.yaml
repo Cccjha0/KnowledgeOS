@@ -1,0 +1,24 @@
+critical_fields:
+  - application_status
+  - deadline
+  - tuition
+  - academic_requirement
+  - english_requirement
+  - application_open
+
+auto_execute:
+  - update_last_checked
+  - update_next_check
+  - append_no_change_log
+  - add_source_reference
+
+review_before_execute:
+  - change_critical_field
+  - change_application_status
+  - resolve_conflicting_fact
+  - merge_application_records
+  - archive_application_record
+
+confidence:
+  auto_min: 0.95
+  review_min: 0.65

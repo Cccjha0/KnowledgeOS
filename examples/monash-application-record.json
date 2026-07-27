@@ -1,0 +1,44 @@
+{
+  "id": "APP-2026-0001",
+  "module": "application-tracker",
+  "module_instance": "australia-masters-2027",
+  "type": "application-record",
+  "institution": "Monash University",
+  "program_name": "Master of Artificial Intelligence",
+  "program_code": "C6007",
+  "country": "Australia",
+  "intake": "2027-02",
+  "application_status": "not-open",
+  "monitoring": {
+    "active": true,
+    "check_interval_days": 3,
+    "last_checked": "2026-07-22T10:00:00+09:00",
+    "next_check": "2026-07-25T10:00:00+09:00"
+  },
+  "facts": {
+    "application_open": {
+      "value": false,
+      "status": "confirmed",
+      "confidence": 0.95,
+      "checked_at": "2026-07-22T10:00:00+09:00",
+      "source_refs": [
+        "[[RPT-2026-000001]]"
+      ],
+      "notes": "上次核验时未确认 February 2027 选项。"
+    },
+    "tuition": {
+      "value": null,
+      "status": "unknown",
+      "confidence": 0.0,
+      "checked_at": null,
+      "source_refs": [],
+      "notes": "等待 2027 年度官方学费。"
+    }
+  },
+  "source_files": [
+    "[[RPT-2026-000001]]"
+  ],
+  "created": "2026-07-22T10:00:00+09:00",
+  "updated": "2026-07-22T10:00:00+09:00",
+  "schema_version": 1
+}

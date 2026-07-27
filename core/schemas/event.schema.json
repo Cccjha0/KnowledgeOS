@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/event.schema.json",
+  "title": "PKB Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "source_module",
+    "entity",
+    "payload",
+    "created_at"
+  ],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^EVT-\\d{4}-\\d{6,}$"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "capture.created",
+        "file.added",
+        "file.moved",
+        "note.processed",
+        "metadata.updated",
+        "review.created",
+        "review.resolved",
+        "summary.generated",
+        "research.required",
+        "deadline.approaching",
+        "evidence.created",
+        "instance.archived"
+      ]
+    },
+    "source_module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "source_instance": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "payload": {
+      "type": "object"
+    },
+    "created_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    }
+  }
+}

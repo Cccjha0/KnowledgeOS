@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/dashboard-item.schema.json",
+  "title": "PKB Dashboard Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "item_id",
+    "source_module",
+    "category",
+    "priority",
+    "title",
+    "actions"
+  ],
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "minLength": 4
+    },
+    "source_module": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "instance_id": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "action",
+        "review",
+        "research",
+        "summary",
+        "deadline",
+        "warning",
+        "status",
+        "system"
+      ]
+    },
+    "priority": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/priority"
+    },
+    "title": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "description": {
+      "type": "string"
+    },
+    "target": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "due_at": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "open",
+          "approve",
+          "reject",
+          "defer",
+          "discuss",
+          "generate",
+          "run",
+          "dismiss"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/match-result.schema.json",
+  "title": "PKB Module Match Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "module_id",
+    "matched",
+    "confidence",
+    "reasons",
+    "required_read_level"
+  ],
+  "properties": {
+    "module_id": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+    },
+    "matched": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence"
+    },
+    "suggested_instance": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "suggested_type": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_read_level": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+    },
+    "review_required": {
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

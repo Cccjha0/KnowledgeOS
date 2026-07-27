@@ -1,0 +1,19 @@
+id: review-resolve
+version: 1
+
+inputs:
+  - review_item
+  - user_decision
+
+steps:
+  - id: validate-decision
+    uses: core.validate-review-decision
+
+  - id: build-final-plan
+    uses: codex.prompt
+    with:
+      prompt: prompts/resolve-review.md
+      allow_network: false
+
+  - id: execute
+    uses: core.execute-operation-plan

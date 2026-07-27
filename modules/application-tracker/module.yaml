@@ -1,0 +1,86 @@
+id: application-tracker
+name: 申请跟踪
+version: 0.1.0
+status: enabled
+
+description: >
+  管理硕士、博士、奖学金、工作和实习申请。
+  MVP 先实现外部研究报告的路由、比较、审核和复查提醒。
+
+engine:
+  min_version: 0.1.0
+  max_version: 0.x
+
+module_type: workflow
+
+capabilities:
+  - capture-processing
+  - metadata-enrichment
+  - file-organization
+  - periodic-summary
+  - dashboard-items
+  - review-items
+  - research-request
+  - event-publishing
+
+accepted_inputs:
+  - markdown
+  - json
+  - yaml
+  - pdf
+
+inbox:
+  module_level:
+    enabled: true
+    path: 20-Workspace/Applications/Inbox
+  instance_level:
+    enabled: true
+    path_pattern: "{instance_root}/Inbox"
+  allow_global_routing: true
+
+routing:
+  matcher: workflows/match.yaml
+  auto_route_threshold: 0.90
+  review_threshold: 0.65
+
+entry_workflows:
+  capture: workflows/process-research-report.yaml
+  review_resolve: workflows/review-resolve.yaml
+  archive: workflows/archive-instance.yaml
+
+schemas:
+  instance: schemas/application-instance.schema.json
+  application_record: schemas/application-record.schema.json
+  research_report: schemas/research-report.schema.json
+  update_result: schemas/update-result.schema.json
+
+rules:
+  paths: rules/paths.yaml
+  review: rules/review-policy.yaml
+  reading: rules/reading-policy.yaml
+
+dashboard:
+  provider: dashboard/today-provider.yaml
+
+events:
+  publishes:
+    - research.required
+    - metadata.updated
+    - review.created
+    - instance.archived
+  subscribes:
+    - file.added
+
+dependencies:
+  components:
+    - status-machine
+    - research-request
+    - comparison-table
+
+scheduled_jobs: []
+
+permissions:
+  max_default_read_level: 0
+  allow_external_network: false
+  allow_delete: false
+  allow_bulk_move: false

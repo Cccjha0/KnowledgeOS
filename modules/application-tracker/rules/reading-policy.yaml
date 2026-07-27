@@ -1,0 +1,14 @@
+default_level: 0
+
+rules:
+  - type: application-research-report
+    allow: [0, 1, 2, 3]
+    require_user_for: []
+
+  - type: official-document
+    allow: [0, 1, 2]
+    require_user_for: [3]
+
+  - type: application-attachment
+    allow: [0, 1]
+    require_user_for: [2, 3]

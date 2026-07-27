@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/capture.schema.json",
+  "title": "PKB Capture Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "capture_id",
+    "path",
+    "filename",
+    "extension",
+    "source_level",
+    "created_at",
+    "modified_at",
+    "file_hash",
+    "frontmatter",
+    "content_read_level"
+  ],
+  "properties": {
+    "capture_id": {
+      "type": "string",
+      "pattern": "^CAP-\\d{4}-\\d{6,}$"
+    },
+    "path": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
+    "filename": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+    },
+    "extension": {
+      "type": "string",
+      "pattern": "^\\.[A-Za-z0-9]+$"
+    },
+    "source_level": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/sourceLevel"
+    },
+    "module_hint": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "instance_hint": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "modified_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "file_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "frontmatter": {
+      "type": "object"
+    },
+    "text_preview": {
+      "type": "string"
+    },
+    "content_read_level": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+    },
+    "attachment_metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

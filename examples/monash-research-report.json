@@ -1,0 +1,54 @@
+{
+  "report_id": "RPT-2026-000002",
+  "research_type": "application-update",
+  "instance_id": "australia-masters-2027",
+  "institution": "Monash University",
+  "program_name": "Master of Artificial Intelligence",
+  "program_code": "C6007",
+  "intake": "2027-02",
+  "checked_at": "2026-07-27T12:00:00+09:00",
+  "material_change": false,
+  "confidence": 0.95,
+  "sources": [
+    {
+      "source_id": "SRC-001",
+      "source_type": "official-course-page",
+      "title": "Master of Artificial Intelligence",
+      "url": "https://example.edu/course",
+      "accessed_at": "2026-07-27T11:30:00+09:00",
+      "notes": "示例 URL，仅用于 Schema 测试。"
+    },
+    {
+      "source_id": "SRC-002",
+      "source_type": "official-application-system",
+      "title": "Application portal",
+      "url": "https://example.edu/apply",
+      "accessed_at": "2026-07-27T11:40:00+09:00",
+      "notes": "未确认出现 February 2027 选项。"
+    }
+  ],
+  "findings": {
+    "application_open": {
+      "value": false,
+      "status": "confirmed",
+      "confidence": 0.95,
+      "source_ids": [
+        "SRC-001",
+        "SRC-002"
+      ],
+      "notes": "未发现实质变化。"
+    },
+    "tuition": {
+      "value": null,
+      "status": "unknown",
+      "confidence": 0.0,
+      "source_ids": [],
+      "notes": "2027 年度学费仍未确认。"
+    }
+  },
+  "unresolved": [
+    "正式开放日期",
+    "2027 年度国际生学费"
+  ],
+  "summary": "本次核验未发现申请开放状态的实质变化。"
+}

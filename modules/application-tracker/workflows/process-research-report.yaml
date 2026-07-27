@@ -1,0 +1,45 @@
+id: process-research-report
+version: 1
+
+inputs:
+  - capture
+  - instance
+
+steps:
+  - id: validate-capture
+    uses: core.validate-capture
+
+  - id: parse-report
+    uses: core.parse-structured-document
+    with:
+      accepted_schemas:
+        - schemas/research-report.schema.json
+
+  - id: locate-target-record
+    uses: core.find-by-fields
+    with:
+      root: "{instance.content_root}/Records"
+      fields:
+        - institution
+        - program_code
+        - program_name
+        - intake
+
+  - id: compare
+    uses: codex.prompt
+    with:
+      prompt: prompts/compare-update.md
+      output_schema: schemas/update-result.schema.json
+      allow_network: false
+
+  - id: build-plan
+    uses: core.build-operation-plan
+
+  - id: apply-review-policy
+    uses: core.review-filter
+    with:
+      policy: rules/review-policy.yaml
+
+outputs:
+  - operation_plan
+  - dashboard_items
