@@ -1,0 +1,12 @@
+{
+  "entry_id": "EXP-2026-000001",
+  "type": "experience-entry",
+  "instance_id": "internship-2026",
+  "occurred_at": "2026-07-27T10:30:00+08:00",
+  "raw_text": "修复导入任务的重复写入问题，并补充了回归测试。",
+  "project": "data-import",
+  "tags": ["bugfix", "testing"],
+  "source_path": "20-Workspace/Experience Log/internship-2026/Inbox/2026-07-27-1030.md",
+  "captured_at": "2026-07-27T10:31:00+08:00",
+  "schema_version": 1
+}

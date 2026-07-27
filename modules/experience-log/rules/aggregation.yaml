@@ -1,0 +1,6 @@
+day_boundary: instance_timezone
+week_standard: ISO-8601
+daily_group_by: [instance_id, local_date]
+weekly_group_by: [instance_id, iso_week]
+deduplicate_by: [entry_id, daily_id]
+weekly_reads_raw_entries: false

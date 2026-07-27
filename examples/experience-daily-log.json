@@ -1,0 +1,14 @@
+{
+  "daily_id": "DAY-2026-07-27",
+  "type": "experience-daily-log",
+  "instance_id": "internship-2026",
+  "date": "2026-07-27",
+  "entry_ids": ["EXP-2026-000001"],
+  "accomplishments": ["修复导入任务的重复写入问题", "补充回归测试"],
+  "blockers": [],
+  "learnings": ["幂等键需要覆盖输入和目标"],
+  "next_actions": ["观察下一次批量导入"],
+  "source_refs": ["20-Workspace/Experience Log/internship-2026/Inbox/2026-07-27-1030.md"],
+  "created_at": "2026-07-27T18:00:00+08:00",
+  "schema_version": 1
+}

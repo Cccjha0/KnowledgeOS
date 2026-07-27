@@ -1,0 +1,7 @@
+instance_root: 20-Workspace/Experience Log/{instance_id}
+inbox: "{instance_root}/Inbox"
+daily: "{instance_root}/Daily"
+weekly: "{instance_root}/Weekly"
+archive: "{instance_root}/Archive"
+daily_filename: "{date}.md"
+weekly_filename: "{week}.md"

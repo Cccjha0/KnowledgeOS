@@ -29,6 +29,7 @@ test("Core discovers module manifests and generic instances", async () => {
     const modules = await discoverModules(ENGINE_ROOT);
     const instances = await discoverInstances(vault);
     assert.ok(modules.some((item) => item.data.id === "application-tracker"));
+    assert.ok(modules.some((item) => item.data.id === "experience-log"));
     assert.deepEqual(instances.map((item) => item.data.instance_id), ["demo-instance"]);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });

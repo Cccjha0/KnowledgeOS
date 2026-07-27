@@ -1,0 +1,78 @@
+id: experience-log
+name: 实习经历日志
+version: 0.1.0
+status: enabled
+description: 将零散实习记录整理为结构化日报，并按周生成总结。
+
+engine:
+  min_version: 0.1.0
+  max_version: 0.x
+
+module_type: workflow
+
+capabilities:
+  - capture-processing
+  - metadata-enrichment
+  - file-organization
+  - periodic-summary
+  - dashboard-items
+  - event-publishing
+
+accepted_inputs:
+  - markdown
+  - text
+
+inbox:
+  module_level:
+    enabled: true
+    path: 20-Workspace/Experience Log/Inbox
+  instance_level:
+    enabled: true
+    path_pattern: "{instance_root}/Inbox"
+  allow_global_routing: true
+
+routing:
+  matcher: workflows/match.yaml
+  auto_route_threshold: 0.85
+  review_threshold: 0.60
+
+entry_workflows:
+  capture: workflows/build-daily-log.yaml
+  weekly_summary: workflows/build-weekly-summary.yaml
+
+schemas:
+  instance: schemas/experience-instance.schema.json
+  experience_entry: schemas/experience-entry.schema.json
+  daily_log: schemas/daily-log.schema.json
+  weekly_summary: schemas/weekly-summary.schema.json
+
+rules:
+  paths: rules/paths.yaml
+  aggregation: rules/aggregation.yaml
+  review: rules/review-policy.yaml
+
+dashboard:
+  provider: dashboard/today-provider.yaml
+
+events:
+  publishes:
+    - experience.daily-log-created
+    - experience.weekly-summary-created
+  subscribes:
+    - file.added
+
+dependencies:
+  components:
+    - timeline
+
+scheduled_jobs:
+  - id: weekly-summary
+    schedule: "0 18 * * 5"
+    workflow: workflows/build-weekly-summary.yaml
+    timezone: instance
+
+permissions:
+  max_default_read_level: 0
+  allow_external_network: false
+  allow_delete: false
+  allow_bulk_move: false

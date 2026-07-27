@@ -1,0 +1,14 @@
+auto_execute:
+  - create_daily_log
+  - archive_processed_entry
+  - create_weekly_summary
+requires_review:
+  - overwrite_existing_daily_log
+  - overwrite_existing_weekly_summary
+  - move_file_outside_instance
+forbidden_outputs:
+  - resume
+  - star_story
+  - skill_graph
+  - monthly_report
+  - final_internship_report

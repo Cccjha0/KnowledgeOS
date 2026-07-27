@@ -1,0 +1,15 @@
+{
+  "instance_id": "internship-2026",
+  "module_id": "experience-log",
+  "status": "active",
+  "display_name": "2026 Summer Internship",
+  "content_root": "20-Workspace/Experience Log/internship-2026",
+  "inbox_path": "20-Workspace/Experience Log/internship-2026/Inbox",
+  "organization": "Example Labs",
+  "role": "Software Engineering Intern",
+  "start_date": "2026-07-01",
+  "end_date": null,
+  "timezone": "Asia/Shanghai",
+  "created": "2026-07-01T00:00:00+08:00",
+  "updated": "2026-07-01T00:00:00+08:00"
+}

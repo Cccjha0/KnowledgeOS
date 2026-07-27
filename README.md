@@ -2,6 +2,7 @@
 
 Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/CORE_MODULE_BOUNDARY.md`。
 申请模块的日常使用状态机、字段风险、Research Request 和 Dashboard 约定见 `docs/APPLICATION_TRACKER_DAILY.md`。
+第二模块 experience-log 的范围、接入方式和 Core 修改审计见 `docs/EXPERIENCE_LOG_VALIDATION.md`。
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 

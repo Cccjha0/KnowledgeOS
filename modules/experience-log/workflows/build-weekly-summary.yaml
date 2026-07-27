@@ -1,0 +1,17 @@
+id: build-weekly-summary
+version: 1
+inputs: [instance, schedule]
+steps:
+  - id: collect-week
+    uses: core.find-by-fields
+    with:
+      root: "{instance.content_root}/Daily"
+      fields: [instance_id, date]
+  - id: summarize
+    uses: codex.prompt
+    with:
+      prompt: prompts/weekly-summary.md
+      output_schema: schemas/weekly-summary.schema.json
+  - id: build-plan
+    uses: core.build-operation-plan
+outputs: [operation_plan, dashboard_items, events]

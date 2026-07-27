@@ -212,7 +212,29 @@
     "scheduled_jobs": {
       "type": "array",
       "items": {
-        "type": "object"
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "schedule",
+          "workflow",
+          "timezone"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+          },
+          "schedule": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+          },
+          "workflow": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+          },
+          "timezone": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+          }
+        }
       }
     },
     "permissions": {

@@ -58,15 +58,13 @@ def validate(schema_id, data, label):
 
 ok = True
 
-module_manifest = yaml.safe_load(
-    (ENGINE_ROOT / "modules/application-tracker/module.yaml")
-    .read_text(encoding="utf-8")
-)
-ok &= validate(
-    "https://pkb.local/schemas/core/module-manifest.schema.json",
-    module_manifest,
-    "application-tracker/module.yaml"
-)
+for module_path in sorted((ENGINE_ROOT / "modules").glob("*/module.yaml")):
+    module_manifest = yaml.safe_load(module_path.read_text(encoding="utf-8"))
+    ok &= validate(
+        "https://pkb.local/schemas/core/module-manifest.schema.json",
+        module_manifest,
+        str(module_path.relative_to(ENGINE_ROOT)).replace("\\", "/")
+    )
 
 instance = yaml.safe_load(
     (VAULT_ROOT / "90-System/Instances/australia-masters-2027/instance.yaml")
@@ -145,5 +143,18 @@ ok &= validate(
     research_request,
     "examples/research-request.json"
 )
+
+for filename, schema_name in (
+    ("experience-instance.json", "experience-instance"),
+    ("experience-entry.json", "experience-entry"),
+    ("experience-daily-log.json", "daily-log"),
+    ("experience-weekly-summary.json", "weekly-summary"),
+):
+    experience_fixture = json.loads((ENGINE_ROOT / "examples" / filename).read_text(encoding="utf-8"))
+    ok &= validate(
+        f"https://pkb.local/schemas/experience-log/{schema_name}.schema.json",
+        experience_fixture,
+        f"examples/{filename}"
+    )
 
 sys.exit(0 if ok else 1)

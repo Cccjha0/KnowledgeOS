@@ -1,0 +1,17 @@
+# 任务
+
+把同一天的零散实习记录整理成一份结构化日报。
+
+# 输入
+
+- 当前 Experience Instance；
+- 当天尚未处理的 Experience Entry；
+- 允许读取级别内的项目名称。
+
+# 输出约束
+
+- 输出必须符合 `schemas/daily-log.schema.json`；
+- 只总结输入中明确存在的事实，不补写绩效、技能或影响；
+- 保留全部 `entry_ids` 和 Vault 相对 `source_refs`；
+- 将内容归入 accomplishments、blockers、learnings、next_actions；
+- 输出一个 Operation Plan，创建日报并把原始条目移动到实例 Archive。

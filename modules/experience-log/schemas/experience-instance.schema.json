@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/experience-log/experience-instance.schema.json",
+  "title": "Experience Log Instance",
+  "allOf": [
+    { "$ref": "https://pkb.local/schemas/core/instance.schema.json" },
+    {
+      "type": "object",
+      "required": ["module_id", "organization", "role", "start_date", "timezone"],
+      "properties": {
+        "module_id": { "const": "experience-log" },
+        "organization": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString" },
+        "role": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString" },
+        "start_date": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDate" },
+        "end_date": { "anyOf": [{ "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDate" }, { "type": "null" }] },
+        "timezone": { "type": "string", "minLength": 1 }
+      }
+    }
+  ]
+}

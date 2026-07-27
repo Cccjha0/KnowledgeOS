@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/experience-log/experience-entry.schema.json",
+  "title": "Experience Entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entry_id", "type", "instance_id", "occurred_at", "raw_text", "project", "tags", "source_path", "captured_at", "schema_version"],
+  "properties": {
+    "entry_id": { "type": "string", "pattern": "^EXP-\\d{4}-\\d{6,}$" },
+    "type": { "const": "experience-entry" },
+    "instance_id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/instanceId" },
+    "occurred_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "raw_text": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString" },
+    "project": { "type": ["string", "null"] },
+    "tags": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+    "source_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "captured_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "schema_version": { "const": 1 }
+  }
+}

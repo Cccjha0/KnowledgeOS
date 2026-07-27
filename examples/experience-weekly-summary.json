@@ -1,0 +1,17 @@
+{
+  "summary_id": "WEEK-2026-W31",
+  "type": "experience-weekly-summary",
+  "instance_id": "internship-2026",
+  "week": "2026-W31",
+  "period_start": "2026-07-27",
+  "period_end": "2026-08-02",
+  "daily_log_ids": ["DAY-2026-07-27"],
+  "highlights": ["消除导入任务重复写入"],
+  "progress": ["完善数据导入稳定性"],
+  "blockers": [],
+  "learnings": ["为写入流程设计稳定幂等键"],
+  "next_week": ["观察批量导入并补充边界用例"],
+  "source_refs": ["20-Workspace/Experience Log/internship-2026/Daily/2026-07-27.md"],
+  "created_at": "2026-07-31T18:00:00+08:00",
+  "schema_version": 1
+}

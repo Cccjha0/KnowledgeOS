@@ -13,6 +13,10 @@ FORBIDDEN_CORE_TERMS = (
     "english_requirement",
     "program_code",
     "Applications",
+    "experience-entry",
+    "experience-daily-log",
+    "experience-weekly-summary",
+    "internship",
 )
 
 FORBIDDEN_MODULE_PATTERNS = (

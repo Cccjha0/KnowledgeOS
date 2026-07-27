@@ -1,0 +1,23 @@
+id: build-daily-log
+version: 1
+inputs: [capture, instance]
+steps:
+  - id: validate-capture
+    uses: core.validate-capture
+  - id: parse-entry
+    uses: core.parse-structured-document
+    with:
+      output_schema: schemas/experience-entry.schema.json
+  - id: collect-same-day
+    uses: core.find-by-fields
+    with:
+      root: "{instance.content_root}/Inbox"
+      fields: [instance_id, occurred_at]
+  - id: structure-daily-log
+    uses: codex.prompt
+    with:
+      prompt: prompts/structure-daily-log.md
+      output_schema: schemas/daily-log.schema.json
+  - id: build-plan
+    uses: core.build-operation-plan
+outputs: [operation_plan, dashboard_items, events]

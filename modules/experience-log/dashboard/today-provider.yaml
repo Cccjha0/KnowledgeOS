@@ -1,0 +1,13 @@
+provider_id: experience-log-today
+version: 1
+items:
+  - source: experience-entry
+    condition: unprocessed
+    category: action
+    title: 整理今日零散记录
+    actions: [open, run]
+  - source: weekly-summary
+    condition: due
+    category: summary
+    title: 生成本周实习总结
+    actions: [open, generate]

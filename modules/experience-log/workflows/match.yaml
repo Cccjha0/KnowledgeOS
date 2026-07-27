@@ -1,0 +1,10 @@
+id: match
+version: 1
+inputs: [capture]
+steps:
+  - id: match-capture
+    uses: codex.prompt
+    with:
+      prompt: prompts/match.md
+      output_schema: core/match-result
+outputs: [match_result]
