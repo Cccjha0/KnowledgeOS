@@ -4,7 +4,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ProcessInboxBatchParams, ProcessInboxItemParams } from "../api/types.js";
-import { discoverInstances, discoverModules } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { ensureDir, exists, fromVaultPath, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
@@ -87,7 +87,7 @@ async function releaseItemLock(vaultRoot: string, itemId: string, handle: FileHa
 }
 
 async function routeDestination(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null): Promise<string> {
-  const modules = (await discoverModules(ENGINE_ROOT)).filter((entry) => entry.data.status === "enabled");
+  const modules = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).filter((entry) => entry.data.status === "enabled");
   const module = modules.find((entry) => entry.data.id === moduleId);
   if (!module) throw new PkbError("INBOX_ROUTE_INVALID", `Module ${moduleId} is not enabled.`);
   if (instanceId) {

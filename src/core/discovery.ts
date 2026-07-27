@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseYaml, validateSchema } from "./bridge.js";
-import { exists } from "./files.js";
+import { exists, readJson } from "./files.js";
 import type { JsonObject } from "./types.js";
 
 const MODULE_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
@@ -30,6 +30,22 @@ export async function discoverModules(engineRoot: string): Promise<DiscoveredDoc
     result.push({ path: manifest, data });
   }
   return result;
+}
+
+export async function discoverModulesForVault(engineRoot: string, vaultRoot: string): Promise<DiscoveredDocument[]> {
+  const modules = await discoverModules(engineRoot);
+  const installed = await readJson<{ modules?: Array<{ id?: string; status?: string }> }>(
+    path.join(vaultRoot, "90-System", "Modules", "installed.json"), { modules: [] },
+  );
+  const statuses = new Map(
+    (installed.modules ?? [])
+      .filter((entry) => typeof entry.id === "string" && ["enabled", "disabled"].includes(entry.status ?? ""))
+      .map((entry) => [entry.id!, entry.status!]),
+  );
+  return modules.map((module) => ({
+    path: module.path,
+    data: { ...module.data, status: statuses.get(String(module.data.id)) ?? (module.data.status === "disabled" ? "disabled" : "enabled") },
+  }));
 }
 
 export async function discoverInstances(vaultRoot: string): Promise<DiscoveredDocument[]> {

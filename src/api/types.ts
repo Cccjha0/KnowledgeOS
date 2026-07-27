@@ -25,7 +25,10 @@ export type CommandApiMethod =
   | "getInstances"
   | "getRecentRuns"
   | "getRunDetails"
-  | "rollbackRun";
+  | "rollbackRun"
+  | "manageModule"
+  | "createInstance"
+  | "manageInstance";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;
@@ -102,5 +105,29 @@ export interface GetRunDetailsParams {
 
 export interface RollbackRunParams {
   run_id: string;
+  confirm?: boolean;
+}
+
+export interface ManageModuleParams {
+  module_id: string;
+  action: "enable" | "disable" | "validate";
+  preview_only?: boolean;
+  confirm?: boolean;
+}
+
+export interface CreateInstanceParams {
+  module_id: string;
+  instance_id: string;
+  display_name: string;
+  fields: JsonObject;
+  content_root?: string | null;
+  inbox_path?: string | null;
+  preview_only?: boolean;
+}
+
+export interface ManageInstanceParams {
+  instance_id: string;
+  action: "activate" | "pause" | "resume" | "complete" | "archive";
+  preview_only?: boolean;
   confirm?: boolean;
 }

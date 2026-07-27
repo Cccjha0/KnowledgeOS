@@ -1,9 +1,9 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
+import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
 import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
-import { discoverInstances, discoverModules } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { fromVaultPath, listFilesRecursive, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { rollbackTransaction } from "../core/operationExecutor.js";
@@ -18,6 +18,7 @@ import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { listInbox } from "./inboxDiscovery.js";
 import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
+import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -161,7 +162,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   if (method === "resolveReview") return resolveReviewCommand(vaultRoot, params);
   if (method === "getModules") {
     const instances = await discoverInstances(vaultRoot);
-    const modules = await discoverModules(ENGINE_ROOT);
+    const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
     return modules.map((module) => ({
       id: module.data.id,
       name: module.data.name,
@@ -169,12 +170,20 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       status: module.data.status,
       description: module.data.description,
       active_instance_count: instances.filter((instance) => instance.data.module_id === module.data.id && instance.data.status === "active").length,
+      instance_form: module.data.instance_form ?? null,
+      available_actions: module.data.status === "enabled" ? ["disable", "validate", "create-instance"] : ["enable", "validate"],
     })) as JsonValue;
   }
   if (method === "getInstances") {
     const moduleId = typeof params.module_id === "string" ? params.module_id : null;
     const instances = await discoverInstances(vaultRoot);
-    return instances.filter((instance) => !moduleId || instance.data.module_id === moduleId).map((instance) => instance.data) as JsonValue;
+    return instances.filter((instance) => !moduleId || instance.data.module_id === moduleId).map((instance) => ({
+      ...instance.data,
+      available_actions: instance.data.status === "active" ? ["pause", "complete", "archive"]
+        : instance.data.status === "paused" ? ["resume", "complete", "archive"]
+          : instance.data.status === "planned" ? ["activate", "archive"]
+            : instance.data.status === "completed" || instance.data.status === "error" ? ["archive"] : [],
+    })) as JsonValue;
   }
   if (method === "getRecentRuns") return listRunViews(vaultRoot, params);
   if (method === "getRunDetails") {
@@ -221,6 +230,9 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "processInboxItem") return processInboxItem(vaultRoot, params as unknown as ProcessInboxItemParams);
   if (method === "processInboxBatch") return processInboxBatch(vaultRoot, params as unknown as ProcessInboxBatchParams);
+  if (method === "manageModule") return manageModule(vaultRoot, params as unknown as ManageModuleParams);
+  if (method === "createInstance") return createInstance(vaultRoot, params as unknown as CreateInstanceParams);
+  if (method === "manageInstance") return manageInstance(vaultRoot, params as unknown as ManageInstanceParams);
   throw new PkbError("METHOD_NOT_FOUND", `Unknown Core Command API method: ${method}`);
 }
 
@@ -238,6 +250,16 @@ function userFacingError(error: unknown): UserFacingError {
     RUN_NOT_ROLLBACKABLE: { impact: "现有文件保持不变。", actions: ["查看 Run 详情", "使用 Git 历史人工恢复"], retryable: false },
     ROLLBACK_CONFIRMATION_REQUIRED: { impact: "尚未执行撤销。", actions: ["查看后续依赖 Run", "确认影响后再次撤销"], retryable: true },
     ROLLBACK_CONFLICT: { impact: "系统拒绝覆盖 Run 之后的用户修改。", actions: ["打开冲突文件", "使用 Git 历史人工比较"], retryable: false },
+    MODULE_CONFIRMATION_REQUIRED: { impact: "模块状态尚未改变。", actions: ["查看停用影响", "确认后再次提交"], retryable: true },
+    MODULE_DISABLED: { impact: "没有创建或处理实例数据。", actions: ["先启用模块", "刷新 System Center"], retryable: true },
+    INSTANCE_CONFIRMATION_REQUIRED: { impact: "实例尚未归档。", actions: ["检查未处理 Inbox 和审核", "确认保留这些事项后归档"], retryable: true },
+    INSTANCE_TRANSITION_INVALID: { impact: "实例状态保持不变。", actions: ["刷新实例状态", "选择当前状态允许的操作"], retryable: true },
+    INSTANCE_EXISTS: { impact: "没有覆盖现有实例。", actions: ["使用新的实例 ID", "打开已有实例"], retryable: true },
+    INSTANCE_FIELD_REQUIRED: { impact: "实例尚未创建。", actions: ["补充必填字段", "重新预览"], retryable: true },
+    INVALID_INSTANCE_ID: { impact: "实例尚未创建。", actions: ["使用 3–128 位字母、数字、点、下划线或连字符", "重新预览"], retryable: true },
+    INSTANCE_FIELD_UNKNOWN: { impact: "实例尚未创建。", actions: ["刷新模块表单", "移除模块未声明的字段"], retryable: true },
+    INVALID_INSTANCE_PATH: { impact: "没有创建目录或实例配置。", actions: ["确保 Inbox 位于实例内容目录内", "重新预览"], retryable: true },
+    MODULE_NOT_FOUND: { impact: "没有修改模块或实例。", actions: ["刷新 System Center", "同步或安装模块配置"], retryable: true },
     CAPTURE_CONTENT_REQUIRED: { impact: "没有创建 Capture 文件。", actions: ["输入内容后重新保存"], retryable: true },
     CAPTURE_IN_PROGRESS: { impact: "系统没有创建重复文件。", actions: ["稍后刷新 Today", "若未出现则重试"], retryable: true },
     IDEMPOTENCY_CONFLICT: { impact: "系统拒绝覆盖先前的 Capture 请求。", actions: ["保留输入并重新打开 Capture"], retryable: false },

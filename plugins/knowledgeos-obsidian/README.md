@@ -21,3 +21,7 @@ visible as waiting for Codex instead of being reported as completed.
 System Center shows Core connectivity, module and instance status, recent runs, affected files,
 operation summaries, errors, Git snapshots, and rollback safety. Rollback is revalidated by Core and
 creates a separate audit Run. Developer mode reveals the underlying Plan and transaction only on demand.
+
+Lifecycle controls use Core previews for module enable/disable/validation and instance creation,
+pause/resume/complete/archive. Instance forms come from module declarations, and archive keeps all user
+data while requiring confirmation when Inbox or Review work remains.

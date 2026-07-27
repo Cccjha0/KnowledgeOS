@@ -28,6 +28,9 @@ action.
 | `getRecentRuns` | optional `limit` (1–100), `status` | user-facing counts, source action and rollback assessment | available |
 | `getRunDetails` | `run_id`, optional `developer_mode` | affected files, operation/review summary, error and rollback assessment | available |
 | `rollbackRun` | `run_id`, `confirm?: boolean` | rollback status, audit Run and original plan identity | available |
+| `manageModule` | `module_id`, `action: enable/disable/validate`, optional preview/confirm | impact preview, validation or lifecycle Run | available |
+| `createInstance` | module, instance ID/name, module-declared fields, optional paths/preview | validated paths/config preview or creation Run | available |
+| `manageInstance` | `instance_id`, lifecycle action, optional preview/confirm | impact preview or state-change Run | available |
 
 Inbox processing never scans the whole Vault. `processInboxBatch` rejects an empty or implicit scope,
 and Core skips low-confidence and AI-dependent entries even when their IDs are supplied.
@@ -42,6 +45,9 @@ the returned `context_token`; stale tokens are rejected before the decision work
 Run rollback is assessed twice: when the Run view is built and immediately before execution. A changed
 target is unavailable; overlap with a later completed Run requires `confirm: true`. Successful rollback
 creates a separate audit Run and refreshes Today.
+
+Module and instance lifecycle mutations require a preview-capable Core endpoint. The plugin never edits
+`installed.json` or `instance.yaml`; module disable and archive-with-open-work require explicit confirmation.
 
 ## Response and UI state
 

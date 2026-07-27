@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown } from "../core/bridge.js";
-import { discoverInstances, discoverModules, type DiscoveredDocument } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
 
@@ -90,7 +90,7 @@ function moduleThreshold(module: DiscoveredDocument | undefined): number {
 }
 
 async function roots(vaultRoot: string): Promise<{ roots: InboxRoot[]; modules: DiscoveredDocument[]; instances: DiscoveredDocument[] }> {
-  const modules = (await discoverModules(ENGINE_ROOT)).filter((entry) => entry.data.status === "enabled");
+  const modules = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).filter((entry) => entry.data.status === "enabled");
   const instances = (await discoverInstances(vaultRoot)).filter((entry) => entry.data.status === "active");
   const enabled = new Set(modules.map((entry) => String(entry.data.id)));
   const result: InboxRoot[] = [{ path: "00-Inbox", scope: "global", moduleId: null, instanceId: null }];

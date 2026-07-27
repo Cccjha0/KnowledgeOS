@@ -4,6 +4,7 @@ import { parseMarkdown } from "../core/bridge.js";
 import { listFilesRecursive, toVaultPath } from "../core/files.js";
 import { APPLICATION_STATE_MACHINE, type ApplicationStatus } from "./stateMachine.js";
 import { OPEN_RESEARCH_REQUEST_STATUSES } from "./researchRequest.js";
+import { discoverInstances } from "../core/discovery.js";
 
 interface Located<T> { file: string; data: T }
 
@@ -14,14 +15,19 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
   const documents: Array<Located<ApplicationDocument>> = [];
   const requests: Array<Located<ResearchRequest>> = [];
   let sequence = 0;
+  const instanceRoots = (await discoverInstances(vaultRoot))
+    .filter((instance) => instance.data.module_id === "application-tracker" && typeof instance.data.content_root === "string")
+    .map((instance) => ({ instance_id: String(instance.data.instance_id), content_root: String(instance.data.content_root) }));
   const nextId = (kind: string): string => `DSH-APP-${kind}-${String(++sequence).padStart(3, "0")}`;
 
   for (const file of await listFilesRecursive(root, ".md")) {
     const parts = file.split(path.sep);
     const document = parseMarkdown(vaultRoot, file);
     if (parts.includes("Inbox")) {
+      const vaultPath = toVaultPath(vaultRoot, file);
+      const inferredInstance = instanceRoots.find((instance) => vaultPath === instance.content_root || vaultPath.startsWith(`${instance.content_root}/`));
       items.push({
-        item_id: nextId("INBOX"), source_module: "application-tracker", instance_id: null,
+        item_id: nextId("INBOX"), source_module: "application-tracker", instance_id: typeof document.data.instance_id === "string" ? document.data.instance_id : inferredInstance?.instance_id ?? null,
         category: "action", priority: "medium", title: "Process application Inbox item",
         description: path.basename(file), target: toVaultPath(vaultRoot, file), due_at: null,
         created_at: null, blocks_count: 0, active_context: true, actions: ["open", "run"],

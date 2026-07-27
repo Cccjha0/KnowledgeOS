@@ -1,6 +1,6 @@
 id: application-tracker
 name: 申请跟踪
-version: 0.1.0
+version: 0.2.0
 status: enabled
 
 description: >
@@ -87,3 +87,37 @@ permissions:
   allow_external_network: false
   allow_delete: false
   allow_bulk_move: false
+
+instance_form:
+  content_root_pattern: "20-Workspace/Applications/{instance_id}"
+  inbox_path_pattern: "{content_root}/Inbox"
+  fields:
+    - key: application_type
+      label: 申请类型
+      type: select
+      required: true
+      default: masters
+      options: [masters, phd, scholarship, job, internship, other]
+    - key: region
+      label: 地区
+      type: text
+      required: true
+    - key: intake
+      label: 入学批次
+      type: text
+      required: true
+    - key: default_currency
+      label: 默认货币
+      type: text
+      required: true
+      default: AUD
+    - key: monitoring.enabled
+      label: 启用定期核验
+      type: boolean
+      required: true
+      default: true
+    - key: monitoring.default_check_interval_days
+      label: 默认核验间隔（天）
+      type: number
+      required: true
+      default: 30

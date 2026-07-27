@@ -58,6 +58,10 @@ export function parseYaml(vaultRoot: string, filePath: string): JsonObject {
   return JSON.parse(output) as JsonObject;
 }
 
+export function writeYaml(vaultRoot: string, filePath: string, data: JsonObject): void {
+  runBridge(vaultRoot, ["write-yaml", filePath], data);
+}
+
 export function validateSchema(
   vaultRoot: string,
   schemaId: string,

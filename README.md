@@ -9,6 +9,7 @@ Quick Capture 的用户流程、上下文推断与幂等规则见 `docs/QUICK_CA
 Review Center、目标字段对比和 Codex 结构化讨论回写见 `docs/REVIEW_CENTER.md`。
 Inbox Center 的受管扫描范围、路由预览、批量安全规则和失败恢复见 `docs/INBOX_CENTER.md`。
 System Center 的运行摘要、撤销安全分级和恢复审计见 `docs/SYSTEM_CENTER.md`。
+模块启停、实例创建向导和实例状态机见 `docs/LIFECYCLE_MANAGEMENT.md`。
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 
@@ -93,6 +94,7 @@ node dist/cli.js api getTodayItems `
 当前交付完成 Today、Quick Capture、Inbox Center、Review Center 和 System Center。Inbox Center 支持
 执行前预览、显式路由、高置信度批量处理、延后/忽略/移出管理和失败重试；插件不会绕过 Core 直接读写文件。
 System Center 支持模块/实例状态、Recent Runs、用户可读 Run 详情以及经过文件冲突和后续依赖检查的安全撤销。
+F06b 生命周期接口进一步支持模块启用/停用/验证，以及实例创建、暂停、恢复、完成和无数据删除的归档。
 
 ## 初始化或接入 Vault
 

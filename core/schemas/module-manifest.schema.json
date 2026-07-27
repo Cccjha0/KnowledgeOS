@@ -260,6 +260,31 @@
           "type": "boolean"
         }
       }
+    },
+    "instance_form": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content_root_pattern", "inbox_path_pattern", "fields"],
+      "properties": {
+        "content_root_pattern": { "type": "string", "minLength": 1 },
+        "inbox_path_pattern": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "label", "type", "required"],
+            "properties": {
+              "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+              "label": { "type": "string", "minLength": 1 },
+              "type": { "type": "string", "enum": ["text", "date", "number", "select", "boolean", "timezone"] },
+              "required": { "type": "boolean" },
+              "default": {},
+              "options": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { DiscoveredDocument } from "./discovery.js";
-import { discoverInstances, discoverModules } from "./discovery.js";
+import { discoverInstances, discoverModulesForVault } from "./discovery.js";
 import { PkbError } from "./errors.js";
 import type { JsonObject } from "./types.js";
 
@@ -57,7 +57,7 @@ export async function inferCaptureContext(options: {
   instanceId?: string | null;
   activePath?: string | null;
 }): Promise<CaptureContext> {
-  const modules = enabledModules(await discoverModules(options.engineRoot));
+  const modules = enabledModules(await discoverModulesForVault(options.engineRoot, options.vaultRoot));
   const instances = await discoverInstances(options.vaultRoot);
   const activeInstances = instances.filter((instance) => instance.data.status === "active" && modules.has(String(instance.data.module_id)));
   const requestedModule = options.moduleId ?? null;

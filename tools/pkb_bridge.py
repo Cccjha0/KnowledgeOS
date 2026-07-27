@@ -103,6 +103,23 @@ def main():
         print(json.dumps(data, ensure_ascii=False))
         return
 
+    if command == "write-yaml":
+        path = Path(sys.argv[2])
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, dict):
+            fail("YAML document must be a mapping")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rendered = yaml.safe_dump(
+            payload,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+            width=120,
+        )
+        path.write_text(rendered, encoding="utf-8")
+        print(json.dumps({"ok": True}, ensure_ascii=False))
+        return
+
     if command == "validate":
         engine_root = Path(sys.argv[2]).resolve()
         schema_id = sys.argv[3]

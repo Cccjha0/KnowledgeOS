@@ -8,13 +8,15 @@ const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 
 export interface ConfigurationSyncResult {
   engineVersion: string;
-  modules: Array<{ id: string; version: string; installed_path: string }>;
+  modules: Array<{ id: string; version: string; installed_path: string; status: "enabled" | "disabled" }>;
   components: string[];
 }
 
 export async function syncInstalledConfiguration(vaultRoot: string): Promise<ConfigurationSyncResult> {
   const packageJson = JSON.parse(await fs.readFile(path.join(ENGINE_ROOT, "package.json"), "utf8")) as { version: string };
   const moduleRoot = path.join(ENGINE_ROOT, "modules");
+  const previous = JSON.parse(await fs.readFile(path.join(vaultRoot, "90-System", "Modules", "installed.json"), "utf8").catch(() => "{\"modules\":[]}")) as { modules?: Array<{ id?: string; status?: string }> };
+  const previousStatus = new Map((previous.modules ?? []).filter((item) => typeof item.id === "string").map((item) => [item.id!, item.status]));
   const modules: ConfigurationSyncResult["modules"] = [];
   const components = new Set<string>();
   for (const manifestPath of (await listFilesRecursive(moduleRoot, "module.yaml")).filter((file) => path.basename(path.dirname(file)) !== "")) {
@@ -26,7 +28,9 @@ export async function syncInstalledConfiguration(vaultRoot: string): Promise<Con
     const destination = path.join(vaultRoot, "90-System", "Modules", id, version);
     await ensureDir(destination);
     await fs.cp(source, destination, { recursive: true, force: true });
-    modules.push({ id, version, installed_path: toVaultPath(vaultRoot, destination) });
+    const prior = previousStatus.get(id);
+    const status = prior === "enabled" || prior === "disabled" ? prior : manifest.status === "disabled" ? "disabled" : "enabled";
+    modules.push({ id, version, installed_path: toVaultPath(vaultRoot, destination), status });
     const dependencies = manifest.dependencies;
     if (dependencies && typeof dependencies === "object" && !Array.isArray(dependencies)) {
       const declared = (dependencies as Record<string, unknown>).components;

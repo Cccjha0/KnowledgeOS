@@ -1,6 +1,6 @@
 id: experience-log
 name: 实习经历日志
-version: 0.1.0
+version: 0.2.0
 status: enabled
 description: 将零散实习记录整理为结构化日报，并按周生成总结。
 
@@ -76,3 +76,30 @@ permissions:
   allow_external_network: false
   allow_delete: false
   allow_bulk_move: false
+
+instance_form:
+  content_root_pattern: "20-Workspace/Experience Log/{instance_id}"
+  inbox_path_pattern: "{content_root}/Inbox"
+  fields:
+    - key: organization
+      label: 组织
+      type: text
+      required: true
+    - key: role
+      label: 职位
+      type: text
+      required: true
+    - key: start_date
+      label: 开始日期
+      type: date
+      required: true
+    - key: end_date
+      label: 结束日期
+      type: date
+      required: false
+      default: null
+    - key: timezone
+      label: 时区
+      type: timezone
+      required: true
+      default: Asia/Shanghai

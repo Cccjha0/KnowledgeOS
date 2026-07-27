@@ -13,7 +13,7 @@ System Center 展示：
 - Run 的用户摘要、受影响文件、操作状态、审核、Git 快照和错误摘要；
 - 撤销安全等级与执行入口。
 
-模块启停、模块验证、实例创建、暂停、恢复和归档尚未加入冻结的 v1 Command API。插件明确显示这些能力未开放，不会直接修改 `module.yaml` 或 `instance.yaml`。它们属于后续 F06b 生命周期接口。
+F06b 已加入模块启停/验证、实例创建向导以及激活、暂停、恢复、完成和归档。所有操作先由 Core 返回影响预览，再通过 Git 快照和 Operation Plan 执行；插件不会直接修改 `module.yaml`、`installed.json` 或 `instance.yaml`。详细状态机见 `LIFECYCLE_MANAGEMENT.md`。
 
 ## Run 读模型
 

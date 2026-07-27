@@ -2,13 +2,13 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { JsonObject, MarkdownDocument, Operation, OperationPlan } from "./types.js";
-import { parseMarkdown, validateSchema, writeMarkdown } from "./bridge.js";
+import { parseMarkdown, parseYaml, validateSchema, writeMarkdown, writeYaml } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { deepMerge, ensureDir, exists, fromVaultPath, readJson, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import { appendToSection } from "./markdown.js";
 
 const PLAN_SCHEMA = "https://pkb.local/schemas/core/operation-plan.schema.json";
-const SUPPORTED_TYPES = new Set(["create-file", "update-frontmatter", "append-section", "move-file", "migrate-frontmatter"]);
+const SUPPORTED_TYPES = new Set(["create-file", "update-file", "update-frontmatter", "append-section", "move-file", "migrate-frontmatter", "update-instance"]);
 
 export type TransactionStatus = "not-started" | "in-progress" | "completed" | "partially-failed" | "rolled-back" | "manual-action-required";
 type OperationStatus = "pending" | "in-progress" | "completed" | "skipped" | "failed";
@@ -231,12 +231,29 @@ async function executeOperation(vaultRoot: string, operation: Operation): Promis
   const target = resolveVaultPath(vaultRoot, operation.target!);
   if (operation.type === "create-file") {
     if (await exists(target)) throw new PkbError("TARGET_EXISTS", "create-file target already exists.", operation.target);
+    if (operation.payload.format === "yaml") {
+      const data = requireObject(operation.payload.data, operation, "data");
+      if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
+      writeYaml(vaultRoot, target, data);
+      return;
+    }
+    if (operation.payload.format === "text" && typeof operation.payload.text === "string") {
+      await ensureDir(path.dirname(target));
+      await fs.writeFile(target, operation.payload.text, "utf8");
+      return;
+    }
     const document = requireObject(operation.payload.document, operation, "document");
     const data = requireObject(document.data, operation, "document.data");
     if (typeof document.content !== "string") throw new PkbError("INVALID_OPERATION", "document.content must be a string.", operation);
     if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
     await ensureDir(path.dirname(target));
     writeMarkdown(vaultRoot, target, { data, content: document.content });
+    return;
+  }
+  if (operation.type === "update-file") {
+    if (operation.payload.format !== "json") throw new PkbError("INVALID_OPERATION", "update-file currently requires format=json.", operation);
+    const data = requireObject(operation.payload.data, operation, "data");
+    await writeJsonAtomic(target, data);
     return;
   }
   if (operation.type === "update-frontmatter") {
@@ -269,6 +286,12 @@ async function executeOperation(vaultRoot: string, operation: Operation): Promis
     data.schema_version = toVersion;
     if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
     writeMarkdown(vaultRoot, target, { data, content: document.content });
+    return;
+  }
+  if (operation.type === "update-instance") {
+    const data = deepMerge(parseYaml(vaultRoot, target), requireObject(operation.payload.patch, operation, "patch"));
+    if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, data);
+    writeYaml(vaultRoot, target, data);
     return;
   }
   if (operation.type === "append-section") {

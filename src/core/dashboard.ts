@@ -161,9 +161,14 @@ function groupInbox(items: DashboardItem[]): TodayInboxGroup[] {
 export async function buildTodaySnapshot(
   vaultRoot: string,
   moduleItems: DashboardItem[] = [],
+  enabledModules: ReadonlySet<string> | null = null,
 ): Promise<TodaySnapshot> {
   await requeueDueReviews(vaultRoot);
-  const all = uniqueItems([...(await collectReviewDashboardItems(vaultRoot)), ...moduleItems]);
+  const reviewItems = await collectReviewDashboardItems(vaultRoot);
+  const all = uniqueItems([
+    ...reviewItems.filter((item) => !enabledModules || enabledModules.has(item.source_module)),
+    ...moduleItems,
+  ]);
   for (const item of all) validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
   const sorted = sortItems(all);
   const reviews = sorted.filter((item) => item.category === "review");

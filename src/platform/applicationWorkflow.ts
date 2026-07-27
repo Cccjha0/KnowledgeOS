@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ApplicationRecord,
   JsonObject,
@@ -30,6 +31,9 @@ import { writeReviewItems } from "../core/reviews.js";
 import { DeterministicComparisonAdapter, type ComparisonAdapter } from "../application/adapter.js";
 import { buildOperationPlan } from "../application/plan.js";
 import { applyReportToResearchRequest } from "../application/researchRequest.js";
+import { discoverModulesForVault } from "../core/discovery.js";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const SCHEMAS = {
   instance: "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
@@ -240,6 +244,8 @@ export async function processApplicationReport(
   options: ProcessReportOptions,
 ): Promise<ProcessReportResult> {
   const vaultRoot = path.resolve(options.vaultRoot);
+  const applicationModule = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((module) => module.data.id === "application-tracker");
+  if (!applicationModule || applicationModule.data.status !== "enabled") throw new PkbError("MODULE_DISABLED", "application-tracker is disabled for this Vault.");
   const reportAbsolute = path.isAbsolute(options.reportPath)
     ? options.reportPath
     : path.resolve(vaultRoot, options.reportPath);
