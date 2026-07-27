@@ -8,7 +8,7 @@ import sys
 SCHEMA_VERSION = 1
 
 TRANSITIONS = {
-    "queued": {"running", "deferred", "cancelled", "waiting-for-user"},
+    "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
     "running": {"completed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "failed", "cancelled", "interrupted"},
     "waiting-for-network": {"queued", "cancelled", "failed"},
     "waiting-for-ai": {"queued", "cancelled", "failed"},
@@ -214,6 +214,37 @@ def start_run(connection, payload):
     return run_dict(run)
 
 
+def finish_run(connection, payload):
+    connection.execute("BEGIN IMMEDIATE")
+    run = connection.execute("SELECT * FROM task_runs WHERE run_id=?", (payload["run_id"],)).fetchone()
+    if not run:
+        connection.rollback(); fail("RUN_NOT_FOUND", f"Runtime Run {payload['run_id']} was not found.")
+    if run["status"] != "running":
+        connection.rollback(); fail("RUN_NOT_RUNNING", f"Runtime Run {payload['run_id']} is {run['status']}.")
+    task = connection.execute("SELECT * FROM tasks WHERE task_id=?", (run["task_id"],)).fetchone()
+    if not task or task["status"] != "running":
+        connection.rollback(); fail("TASK_STATE_CONFLICT", "Task is no longer running.")
+    task_status = payload["task_status"]
+    if task_status not in TRANSITIONS["running"]:
+        connection.rollback(); fail("TASK_TRANSITION_INVALID", f"Invalid task transition: running -> {task_status}")
+    now = now_iso()
+    error = payload.get("error")
+    run_status = payload["run_status"]
+    connection.execute("""UPDATE task_runs SET status=?,ended_at=?,heartbeat_at=?,operation_plan_id=?,git_snapshot_id=?,
+      input_files_json=?,output_files_json=?,error_json=?,metrics_json=? WHERE run_id=? AND status='running'""",
+      (run_status, now, now, payload.get("operation_plan_id"), payload.get("git_snapshot_id"),
+       json.dumps(payload.get("input_files") or []), json.dumps(payload.get("output_files") or []),
+       json.dumps(error) if error else None, json.dumps(payload.get("metrics") or {}), payload["run_id"]))
+    completed_at = now if task_status in {"completed", "failed", "cancelled"} else None
+    connection.execute("""UPDATE tasks SET status=?,updated_at=?,completed_at=?,last_error_json=?,completion_reason=?
+      WHERE task_id=? AND status='running'""",
+      (task_status, now, completed_at, json.dumps(error) if error else None, payload.get("completion_reason"), run["task_id"]))
+    updated_run = connection.execute("SELECT * FROM task_runs WHERE run_id=?", (payload["run_id"],)).fetchone()
+    updated_task = connection.execute("SELECT * FROM tasks WHERE task_id=?", (run["task_id"],)).fetchone()
+    connection.commit()
+    return {"run": run_dict(updated_run), "task": task_dict(updated_task)}
+
+
 def dispatch(command, connection, payload):
     if command == "init":
         migrate(connection); return {"schema_version": SCHEMA_VERSION}
@@ -238,6 +269,13 @@ def dispatch(command, connection, payload):
         return [task_dict(row) for row in rows]
     if command == "transition-task": return transition_task(connection, payload)
     if command == "start-run": return start_run(connection, payload)
+    if command == "finish-run": return finish_run(connection, payload)
+    if command == "heartbeat-run":
+        now = now_iso()
+        cursor = connection.execute("UPDATE task_runs SET heartbeat_at=? WHERE run_id=? AND status='running'", (now, payload["run_id"]))
+        connection.commit()
+        if cursor.rowcount != 1: fail("RUN_NOT_RUNNING", f"Runtime Run {payload['run_id']} is not running.")
+        return {"run_id": payload["run_id"], "heartbeat_at": now}
     if command == "get-runs": return [run_dict(row) for row in connection.execute("SELECT * FROM task_runs WHERE task_id=? ORDER BY attempt_number DESC", (payload["task_id"],))]
     if command == "set-resource-status":
         connection.execute("""INSERT INTO resource_status(resource,status,reason,checked_at,details_json) VALUES(?,?,?,?,?)
@@ -247,6 +285,12 @@ def dispatch(command, connection, payload):
     if command == "get-resource-statuses":
         return [{"resource": row["resource"], "status": row["status"], "reason": row["reason"], "checked_at": row["checked_at"], "details": decode_json(row["details_json"], {})}
                 for row in connection.execute("SELECT * FROM resource_status ORDER BY resource")]
+    if command == "wake-resource-tasks":
+        mapping = {"network": "waiting-for-network", "codex": "waiting-for-ai", "user": "waiting-for-user"}
+        waiting = mapping.get(payload["resource"])
+        if not waiting: return {"woken": 0}
+        cursor = connection.execute("UPDATE tasks SET status='queued',updated_at=? WHERE status=?", (now_iso(), waiting))
+        connection.commit(); return {"woken": cursor.rowcount}
     if command == "set-checkpoint":
         connection.execute("""INSERT INTO scheduler_checkpoints(job_id,last_evaluated_at,last_created_window,next_evaluation_at) VALUES(?,?,?,?)
           ON CONFLICT(job_id) DO UPDATE SET last_evaluated_at=excluded.last_evaluated_at,last_created_window=excluded.last_created_window,next_evaluation_at=excluded.next_evaluation_at""",

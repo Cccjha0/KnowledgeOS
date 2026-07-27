@@ -80,9 +80,31 @@ export class RuntimeRepository {
   startRun(taskId: string, workerId: string, resourcesChecked: JsonObject): TaskRun {
     return this.call("start-run", { task_id: taskId, worker_id: workerId, resources_checked: resourcesChecked });
   }
+  finishRun(runId: string, result: {
+    runStatus: "completed" | "failed" | "cancelled" | "interrupted";
+    taskStatus: TaskStatus;
+    error?: RuntimeError | null;
+    operationPlanId?: string | null;
+    gitSnapshotId?: string | null;
+    inputFiles?: string[];
+    outputFiles?: string[];
+    metrics?: JsonObject;
+    completionReason?: string | null;
+  }): { run: TaskRun; task: RuntimeTask } {
+    return this.call("finish-run", {
+      run_id: runId, run_status: result.runStatus, task_status: result.taskStatus, error: result.error ?? null,
+      operation_plan_id: result.operationPlanId ?? null, git_snapshot_id: result.gitSnapshotId ?? null,
+      input_files: result.inputFiles ?? [], output_files: result.outputFiles ?? [], metrics: result.metrics ?? {},
+      completion_reason: result.completionReason ?? null,
+    }) as unknown as { run: TaskRun; task: RuntimeTask };
+  }
+  heartbeatRun(runId: string): string { return String((this.call("heartbeat-run", { run_id: runId }) as JsonObject).heartbeat_at); }
   getRuns(taskId: string): TaskRun[] { return this.call("get-runs", { task_id: taskId }); }
   setResourceStatus(status: ResourceStatus): void { this.call("set-resource-status", status); }
   getResourceStatuses(): ResourceStatus[] { return this.call("get-resource-statuses"); }
+  wakeResourceTasks(resource: ResourceStatus["resource"]): number {
+    return Number((this.call("wake-resource-tasks", { resource }) as JsonObject).woken);
+  }
   setCheckpoint(checkpoint: SchedulerCheckpoint): void { this.call("set-checkpoint", checkpoint); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));
