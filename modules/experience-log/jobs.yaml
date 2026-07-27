@@ -1,0 +1,12 @@
+jobs:
+  - id: weekly-summary
+    scope: instance
+    enabled: true
+    task_type: workflow
+    workflow: experience-log:weekly-summary
+    trigger: { type: weekly, weekday: Fri, at: "18:00", timezone: instance }
+    resources: { filesystem: required, network: not-required, codex: required, user: not-required }
+    catch_up: { policy: aggregate, max_age_days: 21 }
+    retry: { max_attempts: 3, strategy: exponential }
+    concurrency: { policy: forbid, key: "experience-log:{instance}:weekly-summary" }
+    priority: normal

@@ -1020,6 +1020,44 @@ class CreateInstanceModal extends Modal {
   }
 }
 
+class TaskDetailsModal extends Modal {
+  constructor(app, plugin, taskId, onChanged) { super(app); this.plugin = plugin; this.taskId = taskId; this.onChanged = onChanged; }
+  async onOpen() {
+    const root = this.contentEl;
+    root.empty(); root.addClass("knowledgeos-run-modal");
+    root.createEl("h2", { text: "Task 详情" });
+    const state = markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在加载任务…" }));
+    const response = await this.plugin.client.invoke("getTaskDetails", { task_id: this.taskId });
+    if (!response.ok) { state.setText(response.error?.message || "任务加载失败"); return; }
+    state.remove();
+    const task = response.data.task;
+    root.createEl("h3", { text: `${task.job_id} · ${task.status}` });
+    root.createDiv({ cls: "knowledgeos-review-meta", text: `${task.module}${task.instance_id ? ` / ${task.instance_id}` : ""} · ${task.priority}` });
+    root.createDiv({ text: `计划：${task.scheduled_for} · 尝试 ${task.attempt_count}/${task.max_attempts}` });
+    root.createDiv({ text: `资源：filesystem ${task.resources.filesystem} · network ${task.resources.network} · codex ${task.resources.codex} · user ${task.resources.user}` });
+    if (task.last_error) root.createDiv({ cls: "knowledgeos-review-warning", text: `${task.last_error.code}：${task.last_error.message}` });
+    root.createEl("h4", { text: `运行历史 (${response.data.runs.length})` });
+    for (const run of response.data.runs) root.createDiv({ cls: "knowledgeos-run-operation", text: `第 ${run.attempt_number} 次 · ${run.status} · ${run.started_at}` });
+    const actions = root.createDiv({ cls: "knowledgeos-capture-actions" });
+    if (["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) this.actionButton(actions, "重试", "retry");
+    if (!["completed", "cancelled"].includes(task.status)) {
+      this.actionButton(actions, "延后一天", "defer", { defer_until: new Date(Date.now() + 86_400_000).toISOString() });
+      this.actionButton(actions, task.status === "running" ? "请求取消" : "取消", "cancel");
+    }
+    const close = actions.createEl("button", { text: "关闭" }); close.onclick = () => this.close();
+  }
+  actionButton(root, label, action, extra = {}) {
+    const button = root.createEl("button", { text: label });
+    button.onclick = async () => {
+      button.disabled = true;
+      const response = await this.plugin.client.invoke("manageTask", { task_id: this.taskId, action, ...extra });
+      if (!response.ok) { button.disabled = false; this.plugin.notify(response.error?.message || "任务操作失败", { error: true }); return; }
+      this.plugin.notify(`任务已更新为 ${response.data.status}`);
+      this.close(); await this.onChanged();
+    };
+  }
+}
+
 class SystemCenterView extends ItemView {
   constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
   getViewType() { return SYSTEM_VIEW_TYPE; }
@@ -1027,22 +1065,25 @@ class SystemCenterView extends ItemView {
   getIcon() { return "activity"; }
   async onOpen() { await this.refresh(); }
 
-  async refresh(openRunId = null) {
+  async refresh(openRunId = null, openTaskId = null) {
     const root = this.contentEl;
     root.empty();
     markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" }));
-    const [modules, instances, inbox, reviews, runs] = await Promise.all([
+    const [modules, instances, inbox, reviews, runs, tasks, runtime] = await Promise.all([
       this.plugin.client.invoke("getModules", {}),
       this.plugin.client.invoke("getInstances", {}),
       this.plugin.client.invoke("listInboxItems", {}),
       this.plugin.client.invoke("listReviewItems", { statuses: ["pending", "error"] }),
       this.plugin.client.invoke("getRecentRuns", { limit: 20 }),
+      this.plugin.client.invoke("listTasks", { limit: 200 }),
+      this.plugin.client.invoke("getTaskRuntimeStatus", {}),
     ]);
-    const failed = [modules, instances, inbox, reviews, runs].find((response) => !response.ok);
+    const failed = [modules, instances, inbox, reviews, runs, tasks, runtime].find((response) => !response.ok);
     if (failed) { this.renderFailure(failed.error); return; }
-    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data };
+    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data, tasks: tasks.data, runtime: runtime.data };
     this.render();
     if (openRunId) new RunDetailsModal(this.app, this.plugin, openRunId, () => this.refresh()).open();
+    if (openTaskId) new TaskDetailsModal(this.app, this.plugin, openTaskId, () => this.refresh()).open();
   }
 
   renderFailure(error) {
@@ -1075,9 +1116,32 @@ class SystemCenterView extends ItemView {
     const create = header.createEl("button", { cls: "mod-cta", text: "创建实例" });
     create.disabled = !this.data.modules.some((module) => module.status === "enabled" && module.instance_form);
     create.onclick = () => new CreateInstanceModal(this.app, this.plugin, this.data.modules, () => this.refresh()).open();
+    const runTasks = header.createEl("button", { text: "运行任务队列" });
+    runTasks.onclick = async () => { runTasks.disabled = true; const response = await this.plugin.client.invoke("runTaskCycle", { limit: 2 }); runTasks.disabled = false; if (!response.ok) this.plugin.notify(response.error?.message || "任务运行失败", { error: true }); await this.refresh(); };
     const health = root.createDiv({ cls: "knowledgeos-system-health" });
     health.createEl("strong", { text: "Core 已连接 · Command API v1" });
     health.createDiv({ text: `模块 ${this.data.modules.length} · 实例 ${this.data.instances.length} · Inbox ${this.data.inbox.counts.total} · 待审核 ${this.data.reviews.length}` });
+    health.createDiv({ text: `Task Runtime ${this.data.runtime.integrity} · 队列 ${this.data.runtime.counts.queued || 0} · 等待 AI ${this.data.runtime.counts["waiting-for-ai"] || 0} · 失败 ${this.data.runtime.counts.failed || 0}` });
+
+    root.createEl("h3", { text: "Task Center" });
+    const taskGroups = [
+      ["Active", ["queued", "running"]], ["Waiting", ["waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"]],
+      ["Scheduled", ["queued"]], ["Failed", ["failed"]], ["History", ["completed", "cancelled"]],
+    ];
+    for (const [label, statuses] of taskGroups) {
+      const matching = this.data.tasks.filter((task) => statuses.includes(task.status))
+        .filter((task) => label === "Scheduled" ? task.status === "queued" && Date.parse(task.scheduled_for) > Date.now() : label === "Active" ? task.status === "running" || (task.status === "queued" && Date.parse(task.scheduled_for) <= Date.now()) : true)
+        .slice(0, label === "History" ? 10 : 50);
+      if (!matching.length) continue;
+      root.createEl("h4", { text: `${label} (${matching.length})` });
+      for (const task of matching) {
+        const card = root.createDiv({ cls: `knowledgeos-card knowledgeos-task-card task-${task.status}` });
+        const open = card.createEl("button", { cls: "knowledgeos-link", text: `${task.job_id} · ${task.status}` });
+        open.onclick = () => new TaskDetailsModal(this.app, this.plugin, task.task_id, () => this.refresh()).open();
+        card.createDiv({ cls: "knowledgeos-review-meta", text: `${task.module}${task.instance_id ? ` / ${task.instance_id}` : ""} · ${task.scheduled_for} · 尝试 ${task.attempt_count}/${task.max_attempts}` });
+        if (task.last_error) card.createDiv({ cls: "knowledgeos-description", text: task.last_error.message });
+      }
+    }
 
     root.createEl("h3", { text: "模块" });
     for (const module of this.data.modules) {
@@ -1228,6 +1292,8 @@ class TodayView extends ItemView {
       const button = card.createEl("button", { cls: "knowledgeos-link", text: item.title });
       button.onclick = () => item.category === "review"
         ? this.plugin.activateReviews(item.item_id.replace("DSH-REVIEW-", ""))
+        : item.item_id.startsWith("DSH-TASK-")
+          ? this.plugin.activateSystem(null, item.item_id.replace("DSH-TASK-", ""))
         : item.target && this.app.workspace.openLinkText(item.target, "", false);
       if (item.description) card.createDiv({ cls: "knowledgeos-description", text: item.description });
       card.createSpan({ cls: "knowledgeos-module", text: item.source_module });
@@ -1334,7 +1400,11 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
         }
       }, 1500);
     }));
-    if (this.settings.openTodayOnStartup) this.app.workspace.onLayoutReady(() => this.activateToday());
+    this.app.workspace.onLayoutReady(async () => {
+      await this.runTaskCycle(true);
+      if (this.settings.openTodayOnStartup) await this.activateToday();
+    });
+    this.registerInterval(setInterval(() => this.runTaskCycle(false), 60_000));
   }
 
   async saveSettings() {
@@ -1344,6 +1414,18 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
 
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);
+  }
+
+  async runTaskCycle(startup = false) {
+    if (this.taskCycleRunning) return;
+    this.taskCycleRunning = true;
+    try {
+      const response = await this.client.invoke("runTaskCycle", { startup, limit: 2 });
+      if (!response.ok) return;
+      for (const type of [VIEW_TYPE, SYSTEM_VIEW_TYPE]) {
+        for (const leaf of this.app.workspace.getLeavesOfType(type)) await leaf.view.refresh();
+      }
+    } finally { this.taskCycleRunning = false; }
   }
 
   async activateToday() {
@@ -1379,13 +1461,13 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     if (leaf.view?.refresh) await leaf.view.refresh();
   }
 
-  async activateSystem(runId = null) {
+  async activateSystem(runId = null, taskId = null) {
     let leaf = this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getRightLeaf(false);
       await leaf.setViewState({ type: SYSTEM_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    if (leaf.view?.refresh) await leaf.view.refresh(runId);
+    if (leaf.view?.refresh) await leaf.view.refresh(runId, taskId);
   }
 };

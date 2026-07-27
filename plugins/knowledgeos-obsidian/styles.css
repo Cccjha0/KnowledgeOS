@@ -41,6 +41,8 @@
 .knowledgeos-system-health div { color: var(--text-muted); margin-top: .3rem; }
 .knowledgeos-system-card button[disabled] { margin-top: .5rem; }
 .knowledgeos-run-card.run-failed { border-left: 3px solid var(--color-red); }
+.knowledgeos-task-card.task-failed { border-left: 3px solid var(--color-red); }
+.knowledgeos-task-card.task-waiting-for-ai, .knowledgeos-task-card.task-waiting-for-network, .knowledgeos-task-card.task-waiting-for-user { border-left: 3px solid var(--color-orange); }
 .knowledgeos-rollback-inline { font-size: var(--font-ui-smaller); margin-top: .4rem; }
 .rollback-safe { color: var(--color-green); }
 .rollback-confirmation-required { color: var(--color-orange); }

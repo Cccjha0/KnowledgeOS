@@ -3,6 +3,8 @@ import { PkbError } from "../core/errors.js";
 import type { JsonObject } from "../core/types.js";
 import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
+import { doctorVault } from "../core/vault.js";
+import { syncDueResearchRequests } from "../platform/researchRequestWorkflow.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
 
@@ -25,6 +27,16 @@ const coreHandlers: Record<string, RuntimeHandler> = {
   "core:scan-inbox": async ({ vaultRoot }) => {
     const items = await discoverInboxItems(vaultRoot);
     return { completion_reason: "inbox-scanned", input_files: items.map((item) => item.path), metrics: { files_read: items.length, inbox_items: items.length } };
+  },
+  "core:vault-audit": async ({ vaultRoot }) => {
+    const report = await doctorVault(vaultRoot);
+    const failed = report.checks.filter((check) => !check.ok);
+    if (failed.length) throw new PkbError("VAULT_AUDIT_FAILED", failed.map((check) => check.message).join("; "));
+    return { completion_reason: "vault-audit-clean", metrics: { checks: report.checks.length } };
+  },
+  "application:sync-due-research": async ({ vaultRoot }) => {
+    const result = await syncDueResearchRequests(vaultRoot);
+    return { completion_reason: result.created.length ? "research-requests-created" : "no-due-applications", operation_plan_id: result.planPath, git_snapshot_id: result.snapshot, output_files: result.created, metrics: { created: result.created.length, existing: result.existing.length } };
   },
 };
 

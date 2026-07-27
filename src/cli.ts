@@ -18,6 +18,10 @@ import { createVaultBackup, restoreVaultBackup, verifyVaultBackup } from "./core
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
 import { invokeCommandApi } from "./platform/commandApi.js";
 import type { CommandApiMethod } from "./api/types.js";
+import { registerDeclaredJobs } from "./runtime/jobRegistry.js";
+import { reconcileStartup } from "./runtime/reconciler.js";
+import { evaluateScheduler } from "./runtime/scheduler.js";
+import { dispatchOnce } from "./runtime/dispatcher.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -116,7 +120,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan [--vault PATH]\n  pkb migration apply MIGRATION_RUN_ID [--vault PATH]\n  pkb transaction recover [--vault PATH]\n  pkb transaction rollback PLAN_ID [--vault PATH]\n  pkb backup create DESTINATION [--vault PATH]\n  pkb backup verify ARCHIVE\n  pkb backup restore ARCHIVE TARGET\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb application research-sync [--vault PATH]\n  pkb application research-start REQUEST_ID [--vault PATH]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -298,6 +302,22 @@ async function main(): Promise<void> {
   if (command === "dashboard" && subcommand === "build") {
     const today = await rebuildTodayDashboard(parsed.vault);
     console.log(JSON.stringify({ status: "built", today }, null, 2));
+    return;
+  }
+
+  if (command === "runtime" && ["startup", "run-once", "watch"].includes(subcommand ?? "")) {
+    const cycle = async (startup: boolean) => {
+      const jobs = await registerDeclaredJobs(parsed.vault);
+      const preparation = startup ? await reconcileStartup(parsed.vault) : { scheduler: await evaluateScheduler(parsed.vault) };
+      const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2 });
+      return { jobs_registered: jobs.length, preparation, dispatch };
+    };
+    if (subcommand === "startup") { console.log(JSON.stringify(await cycle(true), null, 2)); return; }
+    if (subcommand === "run-once") { console.log(JSON.stringify(await cycle(false), null, 2)); return; }
+    console.log(JSON.stringify(await cycle(true), null, 2));
+    const timer = setInterval(async () => console.log(JSON.stringify(await cycle(false))), 60_000);
+    process.once("SIGINT", () => { clearInterval(timer); process.exitCode = 0; });
+    process.once("SIGTERM", () => { clearInterval(timer); process.exitCode = 0; });
     return;
   }
 

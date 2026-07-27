@@ -5,6 +5,7 @@ import type { CreateInstanceParams, ManageInstanceParams, ManageModuleParams } f
 import { parseMarkdown, validateSchema } from "../core/bridge.js";
 import { discoverInstances, discoverModules, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
+import { reconcileLifecycleTasks } from "../runtime/jobRegistry.js";
 import { exists, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
@@ -175,7 +176,9 @@ export async function manageModule(vaultRoot: string, params: ManageModuleParams
     operations: [{ operation_id: "OP-001", type: "update-file", target, risk: targetStatus === "disabled" ? "yellow" : "green", confidence: 1, idempotency_key: `module-lifecycle:${moduleId}:${targetStatus}:${Date.now()}`, payload: { format: "json", data: installed }, requires_review_id: null }],
     review_items: [],
   };
-  return { ...preview, status: targetStatus, ...await executePlan(vaultRoot, plan, ["update-file"], [target]) };
+  const execution = await executePlan(vaultRoot, plan, ["update-file"], [target]);
+  const task_effects = await reconcileLifecycleTasks(vaultRoot, { moduleId, active: targetStatus === "enabled" });
+  return { ...preview, status: targetStatus, ...execution, task_effects };
 }
 
 function buildFields(descriptor: JsonObject, provided: JsonObject): JsonObject {
@@ -302,5 +305,9 @@ export async function manageInstance(vaultRoot: string, params: ManageInstancePa
       payload: { patch: { status: transition.to, updated: new Date().toISOString() }, schema_id: schemaId }, requires_review_id: null,
     }], review_items: [],
   };
-  return { ...preview, status: transition.to, ...await executePlan(vaultRoot, plan, ["update-instance"], [target]) };
+  const execution = await executePlan(vaultRoot, plan, ["update-instance"], [target]);
+  const task_effects = await reconcileLifecycleTasks(vaultRoot, {
+    moduleId, instanceId, active: transition.to === "active", createFinalSummary: params.action === "complete",
+  });
+  return { ...preview, status: transition.to, ...execution, task_effects };
 }

@@ -1,0 +1,12 @@
+jobs:
+  - id: due-research-check
+    scope: module
+    enabled: true
+    task_type: core-operation
+    workflow: application:sync-due-research
+    trigger: { type: daily, at: "08:15", timezone: Asia/Shanghai }
+    resources: { filesystem: required, network: not-required, codex: not-required, user: not-required }
+    catch_up: { policy: latest, max_age_days: 14 }
+    retry: { max_attempts: 3, strategy: exponential }
+    concurrency: { policy: forbid, key: application-tracker:due-research }
+    priority: normal

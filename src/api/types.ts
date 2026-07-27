@@ -28,7 +28,12 @@ export type CommandApiMethod =
   | "rollbackRun"
   | "manageModule"
   | "createInstance"
-  | "manageInstance";
+  | "manageInstance"
+  | "listTasks"
+  | "getTaskDetails"
+  | "manageTask"
+  | "getTaskRuntimeStatus"
+  | "runTaskCycle";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;

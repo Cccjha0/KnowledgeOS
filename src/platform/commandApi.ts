@@ -19,6 +19,12 @@ import { listInbox } from "./inboxDiscovery.js";
 import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
+import { dispatchOnce } from "../runtime/dispatcher.js";
+import type { TaskStatus } from "../runtime/domain.js";
+import { reconcileStartup } from "../runtime/reconciler.js";
+import { RuntimeRepository } from "../runtime/repository.js";
+import { evaluateScheduler } from "../runtime/scheduler.js";
+import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -160,6 +166,45 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "listReviewItems") return listReviews(vaultRoot, params);
   if (method === "resolveReview") return resolveReviewCommand(vaultRoot, params);
+  if (["listTasks", "getTaskDetails", "manageTask", "getTaskRuntimeStatus"].includes(method)) {
+    const repository = await RuntimeRepository.open(vaultRoot);
+    try {
+      if (method === "listTasks") {
+        const statuses = Array.isArray(params.statuses) ? params.statuses.filter((item): item is TaskStatus => typeof item === "string") : undefined;
+        return repository.listTasks(statuses).slice(0, typeof params.limit === "number" ? params.limit : 200);
+      }
+      if (method === "getTaskDetails") {
+        const task = repository.getTask(stringParam(params, "task_id"));
+        if (!task) throw new PkbError("TASK_NOT_FOUND", `Task ${String(params.task_id)} was not found.`);
+        return { task, runs: repository.getRuns(task.task_id) };
+      }
+      if (method === "getTaskRuntimeStatus") {
+        const tasks = repository.listTasks();
+        const counts: Record<string, number> = {};
+        for (const task of tasks) counts[task.status] = (counts[task.status] ?? 0) + 1;
+        return { integrity: repository.integrityCheck(), counts, resources: repository.getResourceStatuses(), jobs: repository.listJobs(), checkpoints: repository.getCheckpoints() };
+      }
+      const taskId = stringParam(params, "task_id");
+      const action = stringParam(params, "action");
+      if (action === "retry" || action === "run-now") return repository.retryTask(taskId);
+      if (action === "cancel") return repository.cancelTask(taskId);
+      if (action === "defer") {
+        const until = stringParam(params, "defer_until");
+        if (!Number.isFinite(Date.parse(until)) || Date.parse(until) <= Date.now()) throw new PkbError("INVALID_REQUEST", "defer_until must be a future date-time.");
+        let task = repository.getTask(taskId);
+        if (!task) throw new PkbError("TASK_NOT_FOUND", `Task ${taskId} was not found.`);
+        if (task.status !== "queued") task = repository.retryTask(taskId);
+        return repository.transitionTask(task.task_id, "deferred", { deferUntil: until });
+      }
+      throw new PkbError("INVALID_REQUEST", `Unknown task action: ${action}`);
+    } finally { repository.close(); }
+  }
+  if (method === "runTaskCycle") {
+    const jobs = await registerDeclaredJobs(vaultRoot);
+    const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
+    const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2 });
+    return { jobs_registered: jobs.length, startup, dispatch } as unknown as JsonValue;
+  }
   if (method === "getModules") {
     const instances = await discoverInstances(vaultRoot);
     const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
