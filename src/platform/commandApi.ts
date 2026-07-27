@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
+import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
 import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModules } from "../core/discovery.js";
@@ -13,6 +13,8 @@ import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
 import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
+import { listInbox } from "./inboxDiscovery.js";
+import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -28,14 +30,6 @@ function stringParam(params: JsonObject, key: string): string {
   const value = params[key];
   if (typeof value !== "string" || value.length === 0) throw new PkbError("INVALID_REQUEST", `${key} is required.`);
   return value;
-}
-
-function capabilityNotReady(method: CommandApiMethod, milestone: string): never {
-  throw new PkbError(
-    "CAPABILITY_NOT_READY",
-    `${method} is part of the frozen API but will be enabled in ${milestone}.`,
-    { method, milestone },
-  );
 }
 
 async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
@@ -179,12 +173,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return snapshot;
   }
   if (method === "listInboxItems") {
-    const snapshot = await getTodaySnapshot(vaultRoot);
-    const moduleId = typeof params.module_id === "string" ? params.module_id : null;
-    const instanceId = typeof params.instance_id === "string" ? params.instance_id : null;
-    return snapshot.inbox.filter((group) =>
-      (!moduleId || group.source_module === moduleId) && (!instanceId || group.instance_id === instanceId),
-    );
+    return listInbox(vaultRoot, params);
   }
   if (method === "listReviewItems") return listReviews(vaultRoot, params);
   if (method === "resolveReview") return resolveReviewCommand(vaultRoot, params);
@@ -227,7 +216,8 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       params: params as unknown as CreateCaptureParams,
     });
   }
-  if (method === "processInboxItem" || method === "processInboxBatch") return capabilityNotReady(method, "F04");
+  if (method === "processInboxItem") return processInboxItem(vaultRoot, params as unknown as ProcessInboxItemParams);
+  if (method === "processInboxBatch") return processInboxBatch(vaultRoot, params as unknown as ProcessInboxBatchParams);
   throw new PkbError("METHOD_NOT_FOUND", `Unknown Core Command API method: ${method}`);
 }
 
@@ -235,8 +225,12 @@ function userFacingError(error: unknown): UserFacingError {
   const code = error instanceof PkbError ? error.code : "UNEXPECTED_ERROR";
   const technical = error instanceof PkbError ? error.details : error instanceof Error ? error.stack ?? error.message : String(error);
   const messages: Record<string, { impact: string; actions: string[]; retryable: boolean }> = {
-    CAPABILITY_NOT_READY: { impact: "未修改任何 Vault 文件。", actions: ["升级到对应里程碑后重试"], retryable: false },
     INVALID_REQUEST: { impact: "请求未执行。", actions: ["检查输入后重试"], retryable: true },
+    INBOX_ITEM_NOT_FOUND: { impact: "没有处理任何文件。", actions: ["刷新 Inbox Center", "确认条目仍位于受管 Inbox"], retryable: true },
+    INBOX_ITEM_IN_PROGRESS: { impact: "系统拒绝重复执行当前条目。", actions: ["等待当前处理完成", "刷新 Inbox Center"], retryable: true },
+    INBOX_ROUTE_INVALID: { impact: "条目仍保留在原路径。", actions: ["重新选择已启用模块或活跃实例", "再次预览后处理"], retryable: true },
+    INBOX_RETRY_REQUIRED: { impact: "失败条目没有被静默重复执行。", actions: ["查看失败原因", "点击重试"], retryable: true },
+    DESTINATION_EXISTS: { impact: "系统没有覆盖同名文件。", actions: ["打开目标 Inbox 处理同名冲突", "刷新后重试"], retryable: true },
     RUN_NOT_FOUND: { impact: "没有执行撤销或读取操作。", actions: ["刷新运行历史", "确认 Run ID"], retryable: true },
     RUN_NOT_ROLLBACKABLE: { impact: "现有文件保持不变。", actions: ["查看 Run 详情", "使用 Git 历史人工恢复"], retryable: false },
     CAPTURE_CONTENT_REQUIRED: { impact: "没有创建 Capture 文件。", actions: ["输入内容后重新保存"], retryable: true },
@@ -270,9 +264,8 @@ export async function invokeCommandApi(options: {
 }): Promise<CommandApiResponse> {
   try {
     const data = await execute({ vaultRoot: options.vaultRoot, requestId: options.requestId, method: options.method, params: options.params ?? {} });
-    const state = data && typeof data === "object" && !Array.isArray(data) && data.ui_state === "waiting-for-ai"
-      ? "waiting-for-ai"
-      : "completed";
+    const requestedState = data && typeof data === "object" && !Array.isArray(data) ? data.ui_state : null;
+    const state = requestedState === "waiting-for-ai" || requestedState === "waiting-for-user" ? requestedState : "completed";
     return {
       api_version: COMMAND_API_VERSION,
       request_id: options.requestId,

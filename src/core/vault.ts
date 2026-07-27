@@ -49,6 +49,7 @@ const REQUIRED_DIRECTORIES = [
   "90-System/Review Queue/Closed",
   "90-System/Review Queue/Error",
   "90-System/State/Plans",
+  "90-System/State/Inbox",
   "90-System/State/Transactions",
   "90-System/State/Migrations",
   "90-System/State/Locks",

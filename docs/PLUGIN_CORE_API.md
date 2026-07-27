@@ -18,9 +18,9 @@ action.
 |---|---|---|---|
 | `getTodayItems` | `refresh_markdown?: boolean` | `TodaySnapshot` | F02 |
 | `createCapture` | `content`, optional `title`, `module_id`, `instance_id`, `content_type`, `attachments`, `active_path`; `preview_only` for context preview | capture path and routing summary | available |
-| `listInboxItems` | optional `module_id`, `instance_id`, `state` | grouped Inbox items | F02 read model |
-| `processInboxItem` | `item_id`, optional routing override and `preview_only` | run summary or waiting state | F04 contract; implementation pending |
-| `processInboxBatch` | explicit `item_ids`, `mode: high-confidence`, optional module/instance filter | batch summary and per-item results | F04 contract; implementation pending |
+| `listInboxItems` | optional `module_id`, `instance_id`, `state`, `include_closed` | Inbox items, groups and counts | available |
+| `processInboxItem` | `item_id`, `action`, optional `module_id`, `instance_id`, `review_after` | preview, run summary or waiting state | available |
+| `processInboxBatch` | explicit `item_ids`, `mode: high-confidence` | batch summary and per-item results | available |
 | `listReviewItems` | optional status, priority, module, instance, action, creation/deferred-date filters | Review View models with current/suggested values and impact | available |
 | `resolveReview` | direct decision or `prepare-discussion`, `apply-discussion-result`, `reconcile`, `retry`, `mark-resolved-by-user-edit` mode | persisted review result or minimal discussion context | available |
 | `getModules` | none | module summaries and active-instance counts | available |
@@ -29,9 +29,8 @@ action.
 | `getRunDetails` | `run_id` | run log, user summary and transaction record | available |
 | `rollbackRun` | `run_id` | rollback status and plan identity | available |
 
-An endpoint whose implementation belongs to a later F stage is callable and returns the stable
-`CAPABILITY_NOT_READY` error. This currently applies to Inbox processing and prevents clients from
-inventing temporary file-level fallbacks.
+Inbox processing never scans the whole Vault. `processInboxBatch` rejects an empty or implicit scope,
+and Core skips low-confidence and AI-dependent entries even when their IDs are supplied.
 
 `createCapture` uses the caller's `request_id` as its idempotency identity. Retrying the same content
 with the same ID returns the original result; reusing the ID with different content is rejected.

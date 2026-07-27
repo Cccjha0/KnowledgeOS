@@ -3,6 +3,7 @@ const { execFile } = require("node:child_process");
 
 const VIEW_TYPE = "knowledgeos-today";
 const REVIEW_VIEW_TYPE = "knowledgeos-reviews";
+const INBOX_VIEW_TYPE = "knowledgeos-inbox";
 const DEFAULT_SETTINGS = {
   coreCliPath: "",
   nodePath: "node",
@@ -577,6 +578,151 @@ class ReviewCenterView extends ItemView {
   }
 }
 
+class InboxCenterView extends ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.selectedRoutes = new Map(); }
+  getViewType() { return INBOX_VIEW_TYPE; }
+  getDisplayText() { return "KnowledgeOS Inbox"; }
+  getIcon() { return "inbox"; }
+  async onOpen() { await this.refresh(); }
+
+  async refresh(selectedItemId = null) {
+    const root = this.contentEl;
+    root.empty();
+    root.createDiv({ cls: "knowledgeos-state", text: "正在加载 Inbox…" });
+    const [inbox, modules, instances] = await Promise.all([
+      this.plugin.client.invoke("listInboxItems", {}),
+      this.plugin.client.invoke("getModules", {}),
+      this.plugin.client.invoke("getInstances", {}),
+    ]);
+    if (!inbox.ok || !modules.ok || !instances.ok) {
+      const error = inbox.error || modules.error || instances.error;
+      root.empty();
+      root.createEl("h2", { text: "Inbox Center 暂时不可用" });
+      root.createEl("p", { text: error?.message || "未知错误" });
+      const retry = root.createEl("button", { text: "重试" });
+      retry.onclick = () => this.refresh();
+      return;
+    }
+    this.listing = inbox.data;
+    this.modules = modules.data.filter((item) => item.status === "enabled");
+    this.instances = instances.data.filter((item) => item.status === "active");
+    this.render(selectedItemId);
+  }
+
+  render(selectedItemId = null) {
+    const root = this.contentEl;
+    root.empty();
+    const header = root.createDiv({ cls: "knowledgeos-header" });
+    header.createEl("h2", { text: "Inbox Center" });
+    const refresh = header.createEl("button", { text: "刷新" });
+    refresh.onclick = () => this.refresh(selectedItemId);
+    const eligible = this.listing.items.filter((item) => item.confidence >= item.auto_route_threshold && !item.requires_ai);
+    const batch = header.createEl("button", { cls: "mod-cta", text: `处理高置信度项 (${eligible.length})` });
+    batch.disabled = eligible.length === 0;
+    batch.onclick = () => this.processBatch(eligible);
+
+    const counts = root.createDiv({ cls: "knowledgeos-counts" });
+    for (const [label, value] of [["总计", this.listing.counts.total], ["待路由", this.listing.counts.needs_routing], ["等待 AI", this.listing.counts.waiting_for_ai], ["失败", this.listing.counts.failed]]) {
+      counts.createSpan({ cls: "knowledgeos-count", text: `${label} ${value}` });
+    }
+    if (this.resultMessage) root.createDiv({ cls: "knowledgeos-state", text: this.resultMessage });
+    if (!this.listing.groups.length) {
+      root.createDiv({ cls: "knowledgeos-empty", text: "所有受管 Inbox 都已处理完毕。" });
+      return;
+    }
+    for (const group of this.listing.groups) {
+      const section = root.createDiv({ cls: "knowledgeos-inbox-group" });
+      section.createEl("h3", { text: `${group.label} (${group.count})` });
+      for (const item of group.items) this.renderItem(section, item, item.item_id === selectedItemId);
+    }
+  }
+
+  selectedRoute(item) {
+    return this.selectedRoutes.get(item.item_id) || {
+      module_id: item.suggested_module_id,
+      instance_id: item.suggested_instance_id,
+    };
+  }
+
+  renderItem(root, item, selected) {
+    const card = root.createDiv({ cls: `knowledgeos-card knowledgeos-inbox-card state-${item.state}` });
+    const title = card.createEl("button", { cls: "knowledgeos-link", text: item.title });
+    title.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+    card.createDiv({ cls: "knowledgeos-review-meta", text: `${item.path} · ${item.content_type} · ${item.size} bytes` });
+    card.createDiv({ cls: "knowledgeos-review-meta", text: `状态：${item.state} · 置信度：${Math.round(item.confidence * 100)}% · 读取级别：${item.required_read_level}` });
+    card.createDiv({ cls: "knowledgeos-description", text: item.reasons.join("；") || "尚无可靠路由依据" });
+    if (item.error) card.createDiv({ cls: "knowledgeos-review-warning", text: item.error });
+    if (item.requires_ai) card.createDiv({ cls: "knowledgeos-inbox-ai", text: "需要 Codex / 模块工作流继续处理；Core 不会伪装成已完成。" });
+
+    const route = this.selectedRoute(item);
+    const routeRow = card.createDiv({ cls: "knowledgeos-inbox-route" });
+    const moduleSelect = routeRow.createEl("select");
+    moduleSelect.createEl("option", { value: "", text: "选择模块…" });
+    for (const module of this.modules) moduleSelect.createEl("option", { value: module.id, text: module.name });
+    moduleSelect.value = route.module_id || "";
+    const instanceSelect = routeRow.createEl("select");
+    const populateInstances = () => {
+      const previous = route.instance_id || "";
+      instanceSelect.empty();
+      instanceSelect.createEl("option", { value: "", text: "不指定实例" });
+      for (const instance of this.instances.filter((candidate) => !moduleSelect.value || candidate.module_id === moduleSelect.value)) {
+        instanceSelect.createEl("option", { value: instance.instance_id, text: instance.display_name });
+      }
+      instanceSelect.value = previous;
+    };
+    populateInstances();
+    const saveRoute = () => this.selectedRoutes.set(item.item_id, { module_id: moduleSelect.value || null, instance_id: instanceSelect.value || null });
+    moduleSelect.onchange = () => { this.selectedRoutes.set(item.item_id, { module_id: moduleSelect.value || null, instance_id: null }); populateInstances(); };
+    instanceSelect.onchange = saveRoute;
+
+    const actions = card.createDiv({ cls: "knowledgeos-review-actions" });
+    const preview = actions.createEl("button", { text: "预览" });
+    preview.onclick = () => this.previewItem(item);
+    const process = actions.createEl("button", { cls: "mod-cta", text: item.state === "failed" ? "重试" : "处理" });
+    process.onclick = () => this.processItem(item, item.state === "failed" ? "retry" : "process");
+    const open = actions.createEl("button", { text: "打开" });
+    open.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+    const defer = actions.createEl("button", { text: "明天提醒" });
+    defer.onclick = () => this.processItem(item, "defer", { review_after: new Date(Date.now() + 86_400_000).toISOString() });
+    const ignore = actions.createEl("button", { text: "忽略" });
+    ignore.onclick = () => this.processItem(item, "ignore");
+    const unmanage = actions.createEl("button", { text: "移出系统管理" });
+    unmanage.onclick = () => this.processItem(item, "unmanage");
+
+    if (selected && this.previewData?.item_id === item.item_id) {
+      const detail = card.createDiv({ cls: "knowledgeos-inbox-preview" });
+      detail.createEl("strong", { text: "执行预览" });
+      detail.createDiv({ text: `归属：${this.previewData.suggested_ownership.module_id || "未确定"}${this.previewData.suggested_ownership.instance_id ? ` / ${this.previewData.suggested_ownership.instance_id}` : ""}` });
+      detail.createDiv({ text: `目标：${this.previewData.operation_summary.target || "等待用户或 AI 决定"}` });
+      detail.createDiv({ text: `预计操作：${this.previewData.operation_summary.estimated_operations ?? "由模块计划决定"}` });
+      detail.createDiv({ text: `风险：${this.previewData.risk} · ${this.previewData.requires_codex ? "需要 Codex" : "Core 可执行"}` });
+    }
+  }
+
+  async previewItem(item) {
+    const route = this.selectedRoute(item);
+    const response = await this.plugin.client.invoke("processInboxItem", { item_id: item.item_id, action: "preview", ...route });
+    if (!response.ok) { new Notice(response.error?.message || "无法生成预览"); return; }
+    this.previewData = response.data;
+    this.render(item.item_id);
+  }
+
+  async processItem(item, action, extra = {}) {
+    const route = this.selectedRoute(item);
+    const response = await this.plugin.client.invoke("processInboxItem", { item_id: item.item_id, action, ...route, ...extra });
+    if (!response.ok) { new Notice(response.error?.message || "Inbox 处理失败"); return; }
+    this.resultMessage = response.data.status === "waiting-for-ai" ? "条目已安全保留，等待 Codex / 模块工作流。" : `Inbox 状态已更新：${response.data.status}`;
+    await this.refresh();
+  }
+
+  async processBatch(items) {
+    const response = await this.plugin.client.invoke("processInboxBatch", { mode: "high-confidence", item_ids: items.map((item) => item.item_id) });
+    if (!response.ok) { new Notice(response.error?.message || "批量处理失败"); return; }
+    this.resultMessage = `批量完成：成功 ${response.data.completed}，跳过 ${response.data.skipped}，失败 ${response.data.failed}`;
+    await this.refresh();
+  }
+}
+
 class TodayView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -671,7 +817,8 @@ class TodayView extends ItemView {
     if (!groups?.length) return;
     root.createEl("h3", { text: "待处理 Inbox" });
     for (const group of groups) {
-      root.createDiv({ cls: "knowledgeos-card", text: `${group.label}：${group.count} 项` });
+      const button = root.createEl("button", { cls: "knowledgeos-card knowledgeos-inbox-summary", text: `${group.label}：${group.count} 项` });
+      button.onclick = () => this.plugin.activateInbox();
     }
   }
 
@@ -726,12 +873,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.client = new CoreCommandClient(this.settings);
     this.registerView(VIEW_TYPE, (leaf) => new TodayView(leaf, this));
     this.registerView(REVIEW_VIEW_TYPE, (leaf) => new ReviewCenterView(leaf, this));
+    this.registerView(INBOX_VIEW_TYPE, (leaf) => new InboxCenterView(leaf, this));
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
     this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
+    this.addRibbonIcon("inbox", "打开 Inbox Center", () => this.activateInbox());
     this.addCommand({ id: "open-today", name: "Open Today", callback: () => this.activateToday() });
     this.addCommand({ id: "quick-capture", name: "Quick Capture", callback: () => this.openCapture() });
     this.addCommand({ id: "open-reviews", name: "Open Review Center", callback: () => this.activateReviews() });
+    this.addCommand({ id: "open-inbox", name: "Open Inbox Center", callback: () => this.activateInbox() });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       menu.addItem((item) => item.setTitle("Quick Capture 到此上下文").setIcon("plus-circle")
         .onClick(() => this.openCapture(file.path)));
@@ -742,7 +892,9 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       if (file.path === "Today.md") return;
       clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
-        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh();
+        for (const type of [VIEW_TYPE, INBOX_VIEW_TYPE]) {
+          for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.view.refresh();
+        }
       }, 1500);
     }));
     if (this.settings.openTodayOnStartup) this.app.workspace.onLayoutReady(() => this.activateToday());
@@ -774,5 +926,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     }
     this.app.workspace.revealLeaf(leaf);
     if (leaf.view?.renderShell) await leaf.view.renderShell(reviewId);
+  }
+
+  async activateInbox() {
+    let leaf = this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false);
+      await leaf.setViewState({ type: INBOX_VIEW_TYPE, active: true });
+    }
+    this.app.workspace.revealLeaf(leaf);
+    if (leaf.view?.refresh) await leaf.view.refresh();
   }
 };

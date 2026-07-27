@@ -26,3 +26,12 @@
 .knowledgeos-review-context { background: var(--background-secondary); border-radius: 6px; margin: .75rem 0; padding: .7rem; }
 .knowledgeos-review-modal label { display: flex; flex-direction: column; gap: .3rem; margin: .75rem 0; }
 .knowledgeos-review-modal textarea, .knowledgeos-review-modal select, .knowledgeos-review-modal input { width: 100%; }
+.knowledgeos-inbox-group { border-top: 1px solid var(--background-modifier-border); margin-top: .8rem; }
+.knowledgeos-inbox-card.state-failed { border-left: 3px solid var(--color-red); }
+.knowledgeos-inbox-card.state-waiting-for-user { border-left: 3px solid var(--color-orange); }
+.knowledgeos-inbox-route { display: grid; gap: .5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: .6rem; }
+.knowledgeos-inbox-ai, .knowledgeos-inbox-preview { background: var(--background-secondary); border-radius: 6px; margin-top: .6rem; padding: .6rem; }
+.knowledgeos-inbox-ai { color: var(--text-muted); }
+.knowledgeos-inbox-preview div { margin-top: .3rem; }
+.knowledgeos-inbox-summary { cursor: pointer; display: block; text-align: left; width: 100%; }
+@media (max-width: 600px) { .knowledgeos-inbox-route { grid-template-columns: 1fr; } }

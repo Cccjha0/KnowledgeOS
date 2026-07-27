@@ -79,3 +79,18 @@ export interface CreateCaptureParams {
   active_path?: string | null;
   preview_only?: boolean;
 }
+
+export type InboxAction = "preview" | "process" | "route" | "retry" | "defer" | "ignore" | "unmanage";
+
+export interface ProcessInboxItemParams {
+  item_id: string;
+  action?: InboxAction;
+  module_id?: string | null;
+  instance_id?: string | null;
+  review_after?: string | null;
+}
+
+export interface ProcessInboxBatchParams {
+  item_ids: string[];
+  mode: "high-confidence";
+}

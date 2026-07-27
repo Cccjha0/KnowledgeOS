@@ -12,3 +12,8 @@ current instance and performs the actual save; failed saves keep the form text i
 
 Review Center is available from the ribbon and command palette. “Discuss with Codex” copies a minimal,
 versioned context package and requires the final structured outcome to be submitted back through Core.
+
+Inbox Center is available from the ribbon, command palette, and Today Inbox summaries. It displays
+Core routing explanations and execution previews, supports explicit module/instance overrides,
+high-confidence batch processing, defer/ignore/unmanage, and failed-item retry. AI-dependent items stay
+visible as waiting for Codex instead of being reported as completed.

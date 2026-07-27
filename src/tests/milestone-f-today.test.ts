@@ -52,7 +52,7 @@ test("Today uses one ranked, deduplicated snapshot and preserves the user area",
   }
 });
 
-test("deferred Inbox processing fails through the stable user-facing envelope", async () => {
+test("missing Inbox items fail through the stable user-facing envelope", async () => {
   const response = await invokeCommandApi({
     vaultRoot: "unused",
     requestId: "REQ-TEST",
@@ -61,7 +61,7 @@ test("deferred Inbox processing fails through the stable user-facing envelope", 
   });
   assert.equal(response.ok, false);
   assert.equal(response.state, "failed");
-  assert.equal(response.error?.code, "CAPABILITY_NOT_READY");
+  assert.equal(response.error?.code, "INBOX_ITEM_NOT_FOUND");
   assert.equal(response.error?.technical_details !== undefined, true);
 });
 
@@ -74,4 +74,8 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /invoke\("createCapture"/);
   assert.match(plugin, /class ReviewCenterView/);
   assert.match(plugin, /invoke\("resolveReview"/);
+  assert.match(plugin, /class InboxCenterView/);
+  assert.match(plugin, /invoke\("listInboxItems"/);
+  assert.match(plugin, /invoke\("processInboxItem"/);
+  assert.match(plugin, /invoke\("processInboxBatch"/);
 });
