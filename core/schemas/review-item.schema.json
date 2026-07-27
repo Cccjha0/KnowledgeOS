@@ -14,7 +14,10 @@
     "priority",
     "status",
     "reason",
-    "created"
+    "created",
+    "decision",
+    "decision_history",
+    "target_observation"
   ],
   "properties": {
     "review_id": {
@@ -76,10 +79,54 @@
         }
       ]
     },
-    "user_decision": {
-      "type": [
-        "string",
-        "null"
+    "decision": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/review-decision.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decision_history": {
+      "type": "array",
+      "items": {
+        "$ref": "https://pkb.local/schemas/core/review-decision.schema.json"
+      }
+    },
+    "target_observation": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "field",
+            "observed_value",
+            "checked_at",
+            "matches"
+          ],
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "observed_value": {},
+            "checked_at": {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+            },
+            "matches": {
+              "type": "string",
+              "enum": [
+                "old",
+                "proposed",
+                "neither"
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "resolution": {

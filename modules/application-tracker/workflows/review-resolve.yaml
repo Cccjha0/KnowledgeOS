@@ -10,10 +10,22 @@ steps:
     uses: core.validate-review-decision
 
   - id: build-final-plan
-    uses: codex.prompt
-    with:
-      prompt: prompts/resolve-review.md
-      allow_network: false
+    uses: core.build-review-operation-plan
+
+  - id: check-permissions
+    uses: core.check-operation-plan-permissions
+
+  - id: create-snapshot
+    uses: core.create-git-snapshot
 
   - id: execute
     uses: core.execute-operation-plan
+
+  - id: update-review
+    uses: core.persist-review-result
+
+  - id: write-log
+    uses: core.write-run-log
+
+  - id: rebuild-dashboard
+    uses: core.build-today-dashboard

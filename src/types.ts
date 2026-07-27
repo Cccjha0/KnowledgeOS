@@ -6,6 +6,24 @@ export interface JsonObject {
 
 export type Risk = "green" | "yellow" | "red";
 export type Priority = "low" | "medium" | "high" | "critical";
+export type ReviewDecisionKind = "approve" | "approve-with-modification" | "reject" | "defer" | "discuss";
+export type ReviewStatus = "pending" | "approved" | "approved-with-modification" | "rejected" | "deferred" | "resolved-by-user-edit" | "error";
+
+export interface ReviewDecision extends JsonObject {
+  review_id: string;
+  decision: ReviewDecisionKind;
+  user_comment: string;
+  decided_at: string;
+  review_after: string | null;
+  modified_value: JsonValue;
+}
+
+export interface ReviewTargetObservation extends JsonObject {
+  field: string;
+  observed_value: JsonValue;
+  checked_at: string;
+  matches: "old" | "proposed" | "neither";
+}
 
 export interface MarkdownDocument {
   data: JsonObject;
@@ -80,12 +98,14 @@ export interface ReviewItem extends JsonObject {
   proposed_value: JsonValue;
   confidence: number;
   priority: Priority;
-  status: string;
+  status: ReviewStatus;
   reason: string;
   evidence: JsonValue[];
   created: string;
   review_after: string | null;
-  user_decision: string | null;
+  decision: ReviewDecision | null;
+  decision_history: ReviewDecision[];
+  target_observation: ReviewTargetObservation | null;
   resolution: string | null;
 }
 

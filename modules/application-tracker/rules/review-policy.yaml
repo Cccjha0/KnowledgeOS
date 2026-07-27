@@ -22,3 +22,30 @@ review_before_execute:
 confidence:
   auto_min: 0.95
   review_min: 0.65
+
+decisions:
+  allowed:
+    - approve
+    - approve-with-modification
+    - reject
+    - defer
+    - discuss
+  terminal:
+    - approve
+    - approve-with-modification
+    - reject
+  require_modified_value:
+    - approve-with-modification
+  require_review_after:
+    - defer
+
+statuses:
+  open:
+    - pending
+    - deferred
+    - error
+  closed:
+    - approved
+    - approved-with-modification
+    - rejected
+    - resolved-by-user-edit

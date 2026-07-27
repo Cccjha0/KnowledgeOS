@@ -63,14 +63,12 @@
     "reviewStatus": {
       "type": "string",
       "enum": [
-        "not-required",
         "pending",
         "approved",
         "approved-with-modification",
         "rejected",
         "deferred",
         "resolved-by-user-edit",
-        "expired",
         "error"
       ]
     },

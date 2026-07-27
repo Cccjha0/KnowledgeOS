@@ -12,7 +12,7 @@ function runBridge(
   input?: unknown,
 ): string {
   const bridge = path.join(ENGINE_ROOT, "tools", "pkb_bridge.py");
-  const result = spawnSync("python", [bridge, ...args], {
+  const result = spawnSync("python", ["-X", "utf8", bridge, ...args], {
     cwd: vaultRoot,
     encoding: "utf8",
     input: input === undefined ? undefined : JSON.stringify(input),
@@ -31,7 +31,9 @@ function runBridge(
     }
     throw new PkbError(
       "PYTHON_BRIDGE_FAILED",
-      `Python bridge exited with status ${result.status ?? "unknown"}`,
+      `Python bridge exited with status ${result.status ?? "unknown"}: ${
+        typeof details === "string" ? details : JSON.stringify(details)
+      }`,
       details,
     );
   }

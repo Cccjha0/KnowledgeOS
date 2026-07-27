@@ -4,9 +4,11 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { processApplicationReport } from "./application/processReport.js";
+import { decideReview, reconcileReviews, retryReview } from "./application/review.js";
 import { buildTodayDashboard } from "./core/dashboard.js";
 import { PkbError } from "./core/errors.js";
 import { doctorVault, initializeVault, type GitMode } from "./core/vault.js";
+import type { JsonValue, ReviewDecisionKind } from "./types.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -14,6 +16,9 @@ interface ParsedArgs {
   dryRun: boolean;
   gitMode: GitMode;
   vaultExplicit: boolean;
+  userComment: string;
+  reviewAfter: string | null;
+  modifiedValue: JsonValue | undefined;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -22,6 +27,9 @@ function parseArgs(argv: string[]): ParsedArgs {
   let dryRun = false;
   let gitMode: GitMode = "initialize";
   let vaultExplicit = false;
+  let userComment = "";
+  let reviewAfter: string | null = null;
+  let modifiedValue: JsonValue | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]!;
     if (value === "--vault") {
@@ -41,15 +49,45 @@ function parseArgs(argv: string[]): ParsedArgs {
       }
       gitMode = next;
       index += 1;
+    } else if (value === "--comment") {
+      const next = argv[index + 1];
+      if (next === undefined) {
+        throw new Error("--comment 需要文本参数");
+      }
+      userComment = next;
+      index += 1;
+    } else if (value === "--review-after") {
+      const next = argv[index + 1];
+      if (!next) {
+        throw new Error("--review-after 需要 ISO 时间参数");
+      }
+      reviewAfter = next;
+      index += 1;
+    } else if (value === "--value") {
+      const next = argv[index + 1];
+      if (next === undefined) {
+        throw new Error("--value 需要 JSON 参数");
+      }
+      modifiedValue = JSON.parse(next) as JsonValue;
+      index += 1;
     } else {
       positional.push(value);
     }
   }
-  return { positional, vault: path.resolve(vault), dryRun, gitMode, vaultExplicit };
+  return {
+    positional,
+    vault: path.resolve(vault),
+    dryRun,
+    gitMode,
+    vaultExplicit,
+    userComment,
+    reviewAfter,
+    modifiedValue,
+  };
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb dashboard build [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb validate [--vault PATH]\n  pkb application process-report REPORT [--vault PATH] [--dry-run]\n  pkb review decide REVIEW_ID DECISION [--comment TEXT] [--value JSON] [--review-after ISO] [--vault PATH]\n  pkb review reconcile [REVIEW_ID] [--vault PATH]\n  pkb review retry REVIEW_ID [--vault PATH]\n  pkb dashboard build [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -82,7 +120,7 @@ async function main(): Promise<void> {
 
   if (command === "validate") {
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const result = spawnSync("python", [path.join(engineRoot, "tools", "validate.py"), "--vault", parsed.vault], {
+    const result = spawnSync("python", ["-X", "utf8", path.join(engineRoot, "tools", "validate.py"), "--vault", parsed.vault], {
       cwd: engineRoot,
       encoding: "utf8",
     });
@@ -92,6 +130,46 @@ async function main(): Promise<void> {
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
     process.exitCode = result.status ?? 1;
+    return;
+  }
+
+  if (command === "review" && subcommand === "decide") {
+    const reviewId = value;
+    const decision = parsed.positional[3] as ReviewDecisionKind | undefined;
+    const allowed = new Set<ReviewDecisionKind>([
+      "approve",
+      "approve-with-modification",
+      "reject",
+      "defer",
+      "discuss",
+    ]);
+    if (!reviewId || !decision || !allowed.has(decision)) {
+      throw new Error("review decide 需要 REVIEW_ID 和有效的 DECISION");
+    }
+    const result = await decideReview({
+      vaultRoot: parsed.vault,
+      reviewId,
+      decision,
+      userComment: parsed.userComment,
+      reviewAfter: parsed.reviewAfter,
+      modifiedValue: parsed.modifiedValue,
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "review" && subcommand === "reconcile") {
+    const result = await reconcileReviews(parsed.vault, value);
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (command === "review" && subcommand === "retry") {
+    if (!value) {
+      throw new Error("review retry 需要 REVIEW_ID");
+    }
+    const result = await retryReview(parsed.vault, value);
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 

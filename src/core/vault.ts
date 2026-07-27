@@ -39,6 +39,9 @@ const REQUIRED_DIRECTORIES = [
   "90-System/Instances",
   "90-System/Logs",
   "90-System/Review Queue/Pending",
+  "90-System/Review Queue/Deferred",
+  "90-System/Review Queue/Closed",
+  "90-System/Review Queue/Error",
   "90-System/State/Plans",
 ] as const;
 

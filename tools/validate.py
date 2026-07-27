@@ -108,4 +108,14 @@ ok &= validate(
     "examples/monash-no-change.update-result.json"
 )
 
+decision = json.loads(
+    (ENGINE_ROOT / "examples/review-decision.json")
+    .read_text(encoding="utf-8")
+)
+ok &= validate(
+    "https://pkb.local/schemas/core/review-decision.schema.json",
+    decision,
+    "examples/review-decision.json"
+)
+
 sys.exit(0 if ok else 1)

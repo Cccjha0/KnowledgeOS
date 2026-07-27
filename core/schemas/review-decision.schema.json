@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/review-decision.schema.json",
+  "title": "KnowledgeOS Review Decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "review_id",
+    "decision",
+    "user_comment",
+    "decided_at",
+    "review_after"
+  ],
+  "properties": {
+    "review_id": {
+      "type": "string",
+      "pattern": "^REV-\\d{4}-\\d{6,}$"
+    },
+    "decision": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "approve-with-modification",
+        "reject",
+        "defer",
+        "discuss"
+      ]
+    },
+    "user_comment": {
+      "type": "string"
+    },
+    "decided_at": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+    },
+    "review_after": {
+      "anyOf": [
+        {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "modified_value": {}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "approve-with-modification"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "modified_value"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "defer"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review_after": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "review_after": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,12 +2,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseMarkdown } from "./bridge.js";
 import { exists, listFilesRecursive, toVaultPath } from "./files.js";
+import { requeueDueReviews } from "./reviews.js";
 
 function wikiLink(vaultPath: string): string {
   return `[[${vaultPath.replace(/\.md$/i, "")}]]`;
 }
 
 export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
+  await requeueDueReviews(vaultRoot);
   const inboxRoot = path.join(vaultRoot, "20-Workspace", "Applications");
   const inboxFiles = (await listFilesRecursive(inboxRoot, ".md")).filter((file) =>
     file.split(path.sep).includes("Inbox"),
@@ -15,7 +17,7 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
 
   const reviewRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
   const reviewFiles = await listFilesRecursive(reviewRoot, ".md");
-  const pendingReviews: Array<{ path: string; title: string; priority: string }> = [];
+  const pendingReviews: Array<{ path: string; title: string; priority: string; warning: boolean }> = [];
   for (const reviewFile of reviewFiles) {
     const document = parseMarkdown(vaultRoot, reviewFile);
     if (document.data.status === "pending") {
@@ -23,9 +25,22 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
         path: toVaultPath(vaultRoot, reviewFile),
         title: String(document.data.reason ?? path.basename(reviewFile, ".md")),
         priority: String(document.data.priority ?? "medium"),
+        warning: Boolean(
+          document.data.target_observation &&
+          typeof document.data.target_observation === "object" &&
+          !Array.isArray(document.data.target_observation) &&
+          (document.data.target_observation as Record<string, unknown>).matches === "neither"
+        ),
       });
     }
   }
+
+  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
+  const errorFiles = await listFilesRecursive(errorRoot, ".md");
+  const errorReviews = errorFiles.map((file) => ({
+    path: toVaultPath(vaultRoot, file),
+    title: path.basename(file, ".md"),
+  }));
 
   const recordRoot = path.join(vaultRoot, "20-Workspace", "Applications");
   const recordFiles = (await listFilesRecursive(recordRoot, ".md")).filter((file) =>
@@ -67,11 +82,14 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
     "",
   ];
 
-  if (pendingReviews.length === 0 && dueRecords.length === 0 && inboxFiles.length === 0) {
+  if (pendingReviews.length === 0 && errorReviews.length === 0 && dueRecords.length === 0 && inboxFiles.length === 0) {
     lines.push("- 当前没有必须处理的申请事项。");
   } else {
     if (pendingReviews.length > 0) {
       lines.push(`- 审核 ${pendingReviews.length} 项关键申请信息。`);
+    }
+    if (errorReviews.length > 0) {
+      lines.push(`- 处理 ${errorReviews.length} 项审核执行错误。`);
     }
     if (dueRecords.length > 0) {
       lines.push(`- 重新核验 ${dueRecords.length} 个到期申请项目。`);
@@ -87,6 +105,18 @@ export async function buildTodayDashboard(vaultRoot: string): Promise<string> {
   } else {
     for (const item of pendingReviews.sort((a, b) => a.priority.localeCompare(b.priority))) {
       lines.push(`- ${wikiLink(item.path)} — ${item.title}（${item.priority}）`);
+      if (item.warning) {
+        lines.push("  - ⚠ 目标文件已被修改，但关联审核项仍未关闭。");
+      }
+    }
+  }
+
+  lines.push("", "## 审核执行错误", "");
+  if (errorReviews.length === 0) {
+    lines.push("- 无。");
+  } else {
+    for (const item of errorReviews) {
+      lines.push(`- ${wikiLink(item.path)} — ${item.title}`);
     }
   }
 

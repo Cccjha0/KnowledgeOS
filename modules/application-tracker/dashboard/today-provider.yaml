@@ -24,3 +24,24 @@ queries:
       priority: high
       title: "关键申请信息等待确认"
       actions: [open, approve, reject, defer, discuss]
+
+  - id: unresolved-user-edit
+    source: review-item
+    condition:
+      status: pending
+      target_observation.matches: neither
+    output:
+      category: review
+      priority: high
+      title: "目标文件已修改，审核仍未关闭"
+      actions: [open, reconcile, discuss]
+
+  - id: review-execution-error
+    source: review-item
+    condition:
+      status: error
+    output:
+      category: error
+      priority: critical
+      title: "审核执行失败"
+      actions: [open, retry]

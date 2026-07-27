@@ -76,8 +76,22 @@ def main():
         path = Path(sys.argv[2])
         payload = json.load(sys.stdin)
         path.parent.mkdir(parents=True, exist_ok=True)
+        rendered = dump_markdown(payload["data"], payload.get("content", ""))
+        surrogate_positions = [
+            index for index, character in enumerate(rendered)
+            if 0xD800 <= ord(character) <= 0xDFFF
+        ]
+        if surrogate_positions:
+            index = surrogate_positions[0]
+            fail(
+                "Markdown contains surrogate code points",
+                {
+                    "positions": surrogate_positions,
+                    "context": repr(rendered[max(0, index - 40):index + 40]),
+                },
+            )
         path.write_text(
-            dump_markdown(payload["data"], payload.get("content", "")),
+            rendered,
             encoding="utf-8",
         )
         print(json.dumps({"ok": True}, ensure_ascii=False))

@@ -10,7 +10,7 @@ ENGINE_ROOT = Path(__file__).resolve().parents[1]
 
 def write_markdown(vault_root: Path, path: Path, data: dict, content: str) -> None:
     result = subprocess.run(
-        ["python", str(ENGINE_ROOT / "tools/pkb_bridge.py"), "write-markdown", str(path)],
+        ["python", "-X", "utf8", str(ENGINE_ROOT / "tools/pkb_bridge.py"), "write-markdown", str(path)],
         input=json.dumps({"data": data, "content": content}, ensure_ascii=False),
         text=True,
         capture_output=True,

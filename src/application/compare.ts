@@ -157,7 +157,9 @@ export async function compareApplicationUpdate(
         evidence: [options.reportReference, ...sourceIds],
         created: options.now,
         review_after: null,
-        user_decision: null,
+        decision: null,
+        decision_history: [],
+        target_observation: null,
         resolution: null,
       });
 

@@ -65,7 +65,7 @@ node dist/cli.js validate --vault ../knowledgeos-vault
 node --test dist/tests/*.test.js
 ```
 
-当前自动化测试覆盖两个确定性比较场景：无变化刷新和关键字段审核保护。
+当前自动化测试覆盖确定性比较、Vault/Git 初始化，以及批准、修改后批准、拒绝、延后、讨论和用户直接修改对账。
 
 ## 初始化或接入 Vault
 
@@ -115,5 +115,17 @@ node dist/cli.js application process-report REPORT.md `
 ```
 
 业务处理产生的 Git 快照只作用于 Vault 仓库，不会修改 engine 的版本历史。
+
+## 处理人工审核
+
+```powershell
+node dist/cli.js review decide REV-2026-000001 approve `
+  --comment "已核对官网" `
+  --vault ../knowledgeos-vault
+
+node dist/cli.js review reconcile --vault ../knowledgeos-vault
+```
+
+支持 `approve`、`approve-with-modification`、`reject`、`defer` 和 `discuss`。完整状态机、字段所有权、执行流程和 Today 规则见 `docs/REVIEW_WORKFLOW.md`。
 
 更多实现细节见 `docs/PROCESS_REPORT_IMPLEMENTATION.md`，系统设计规范位于 `docs/specifications/`。
