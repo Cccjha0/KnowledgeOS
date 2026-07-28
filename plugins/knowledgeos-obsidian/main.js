@@ -1264,6 +1264,14 @@ class SystemCenterView extends ItemView {
     const audit = header.createEl("button", { text: "运行每周审计" });
     audit.onclick = async () => { audit.disabled = true; const response = await this.plugin.client.invoke("runQualityAudit", { frequency: "weekly" }); if (!response.ok) this.plugin.notify(response.error?.message || "质量审计失败", { error: true }); await this.refresh(); };
     section.createDiv({ cls: "knowledgeos-system-health", text: `Active ${quality.overview.active_issues} · Critical ${quality.overview.critical} · High ${quality.overview.high} · 本周解决 ${quality.overview.resolved_this_week}` });
+    const observation = quality.observation || {};
+    const evaluation = observation.evaluation || {};
+    const coverage = evaluation.coverage || {};
+    const observationPanel = section.createEl("details");
+    observationPanel.createEl("summary", { text: "I14 真实观察" });
+    observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
+    observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `初步结论 ${evaluation.overall || "insufficient-evidence"} · 最终评估资格 ${evaluation.eligible_for_final_review ? "已满足" : "未满足"}` });
+    for (const [criterion, result] of Object.entries(evaluation.criteria || {})) observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `${criterion}: ${result?.status || "insufficient-evidence"}` });
     const panels = [
       ["Freshness", quality.freshness, ["due_soon", "stale"]], ["Provenance", quality.provenance, ["missing", "conflicts", "unavailable"]],
       ["Reviews", quality.reviews, ["pending", "overdue", "average_resolution_ms"]], ["Links & Ownership", quality.links_ownership, ["broken_links", "orphan_files", "unowned_files", "missing_ownership"]],

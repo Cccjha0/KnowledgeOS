@@ -1,6 +1,6 @@
 import path from "node:path";
 import { parseMarkdown } from "../core/bridge.js";
-import { fromVaultPath, listFilesRecursive } from "../core/files.js";
+import { fromVaultPath, listFilesRecursive, readJson } from "../core/files.js";
 import type { DashboardItem, JsonObject, ReviewItem } from "../core/types.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { QualityIssue } from "./domain.js";
@@ -36,7 +36,7 @@ export async function getQualityDashboard(vaultRoot: string): Promise<JsonObject
       links_ownership: { broken_links: Number(byType["broken-internal-link"] ?? 0) + Number(byType["broken-internal-anchor"] ?? 0) + Number(byType["broken-external-link"] ?? 0) + Number(byType["external-link-unreachable"] ?? 0), orphan_files: Number(byType["orphan-file"] ?? 0), unowned_files: Number(byType["unowned-file"] ?? 0), missing_ownership: Number(byType["missing-content-ownership"] ?? 0) + Number(byType["invalid-content-ownership"] ?? 0), items: active.filter((item) => item.dimension === "connectivity" || item.issue_type.includes("ownership")) },
       schemas_migrations: { outdated: Number(byType["outdated-schema"] ?? 0), invalid: Number(byType["invalid-frontmatter"] ?? 0) + Number(byType["invalid-entity-schema"] ?? 0), items: active.filter((item) => item.dimension === "validity" && !item.issue_type.startsWith("prompt")) },
       ai_quality: { metrics, anomalies: active.filter((item) => item.issue_type === "prompt-quality-regression") },
-      operational: runtime.runtimeStats(), audit_history: quality.listAudits(50), by_severity: bySeverity,
+      operational: runtime.runtimeStats(), audit_history: quality.listAudits(50), observation: await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-observation.json"), {}), by_severity: bySeverity,
     };
   } finally { quality.close(); runtime.close(); }
 }

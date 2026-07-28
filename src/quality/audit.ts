@@ -35,6 +35,7 @@ function fieldMeta(data: JsonObject, field: string): JsonObject | null {
 function normalizeContent(value: string): string { return value.toLowerCase().replace(/<!--.*?-->/gs, "").replace(/\s+/g, " ").trim(); }
 function contentShingles(value: string): Set<string> { const compact = value.replace(/\s+/g, ""); const output = new Set<string>(); for (let index = 0; index <= compact.length - 5; index += 1) output.add(compact.slice(index, index + 5)); return output; }
 function jaccard(left: Set<string>, right: Set<string>): number { let intersection = 0; for (const value of left) if (right.has(value)) intersection += 1; const union = left.size + right.size - intersection; return union ? intersection / union : 0; }
+function weekKey(value: string): string { const date = new Date(value); if (!Number.isFinite(date.getTime())) return ""; const mondayOffset = (date.getUTCDay() + 6) % 7; date.setUTCDate(date.getUTCDate() - mondayOffset); return date.toISOString().slice(0, 10); }
 function priorityRank(value: QualitySeverity): number { return { critical: 0, high: 1, medium: 2, low: 3, info: 4 }[value]; }
 
 async function policies(vaultRoot: string): Promise<Map<string, ModuleQuality>> {
@@ -201,12 +202,44 @@ function reportMarkdown(frequency: AuditFrequency, auditId: string, summary: Jso
   return `${lines.join("\n")}\n`;
 }
 
-async function updateObservation(vaultRoot: string, now: string, summary: JsonObject): Promise<JsonObject> {
+async function observationMetrics(vaultRoot: string, quality: QualityRepository, now: string): Promise<JsonObject> {
+  const active = quality.listIssues({ statuses: ["open", "acknowledged", "scheduled"] }); const reviews: ReviewItem[] = [];
+  for (const directory of ["Pending", "Deferred", "Error"]) for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", directory), ".md")) try { reviews.push(parseMarkdown(vaultRoot, file).data as unknown as ReviewItem); } catch { /* Invalid review records are detected separately. */ }
+  const runtime = await RuntimeRepository.open(vaultRoot); let followupIssueIds = new Set<string>();
+  try { followupIssueIds = new Set(runtime.listTasks().filter((task) => task.job_id === "quality.stale-field-followup" && !["failed", "cancelled"].includes(task.status)).map((task) => String(task.trigger.issue_id ?? task.payload.quality_issue_id ?? "")).filter(Boolean)); }
+  finally { runtime.close(); }
+  const stale = active.filter((item) => item.issue_type === "stale-critical-field"); const promptAnomalies = active.filter((item) => item.issue_type === "prompt-quality-regression"); const alerts = active.filter((item) => ["critical", "high"].includes(item.severity));
+  return {
+    active_issues: active.length, high_critical_alerts: alerts.length, pending_reviews: reviews.length,
+    overdue_reviews: reviews.filter((item) => item.overdue || (item.sla_due_at && Date.parse(item.sla_due_at) <= Date.parse(now))).length,
+    missing_critical_provenance: active.filter((item) => item.issue_type === "missing-provenance" && item.severity === "high").length,
+    stale_critical_fields: stale.length, actionable_stale_fields: stale.filter((item) => followupIssueIds.has(item.issue_id)).length,
+    prompt_anomalies: promptAnomalies.length,
+    unattributed_prompt_anomalies: promptAnomalies.filter((item) => typeof item.target.prompt_id !== "string" || typeof item.target.prompt_version !== "string").length,
+  };
+}
+
+export function evaluateObservationWindow(observation: JsonObject, now: string): JsonObject {
+  const snapshots = (Array.isArray(observation.snapshots) ? observation.snapshots : []).filter((item): item is JsonObject => Boolean(item && typeof item === "object" && !Array.isArray(item))); const startedAt = String(observation.started_at ?? now);
+  const elapsedDays = Math.max(0, (Date.parse(now) - Date.parse(startedAt)) / 86_400_000); const minimumDays = Number(observation.minimum_days ?? 14); const targetDays = Number(observation.target_days ?? 28);
+  const measured = snapshots.filter((item) => object(item.metrics)); const uniqueDays = new Set(measured.map((item) => String(item.observed_at ?? "").slice(0, 10)).filter(Boolean)).size; const weeklyAuditWindows = new Set(snapshots.filter((item) => item.frequency === "weekly").map((item) => weekKey(String(item.observed_at ?? ""))).filter(Boolean)); const weeklyAudits = weeklyAuditWindows.size;
+  const requiredMeasuredDays = Math.min(7, Math.max(2, Math.floor(minimumDays / 2))); const coveragePass = uniqueDays >= requiredMeasuredDays && weeklyAudits >= 2; const baseline = object(measured[0]?.metrics); const latest = object(measured.at(-1)?.metrics);
+  const trend = (key: string): JsonObject => baseline && latest ? { status: Number(latest[key] ?? 0) <= Number(baseline[key] ?? 0) ? "pass" : "fail", baseline: Number(baseline[key] ?? 0), current: Number(latest[key] ?? 0) } : { status: "insufficient-evidence", baseline: null, current: null };
+  const stale = latest ? { status: Number(latest.stale_critical_fields ?? 0) === 0 || Number(latest.actionable_stale_fields ?? 0) >= Number(latest.stale_critical_fields ?? 0) ? "pass" : "fail", stale: Number(latest.stale_critical_fields ?? 0), actionable: Number(latest.actionable_stale_fields ?? 0) } : { status: "insufficient-evidence", stale: null, actionable: null };
+  const prompts = latest ? { status: Number(latest.unattributed_prompt_anomalies ?? 0) === 0 ? "pass" : "fail", anomalies: Number(latest.prompt_anomalies ?? 0), unattributed: Number(latest.unattributed_prompt_anomalies ?? 0) } : { status: "insufficient-evidence", anomalies: null, unattributed: null };
+  const alertLimit = Number(observation.max_high_critical_alerts ?? 5); const alerts = latest ? { status: Number(latest.high_critical_alerts ?? 0) <= alertLimit ? "pass" : "fail", current: Number(latest.high_critical_alerts ?? 0), limit: alertLimit } : { status: "insufficient-evidence", current: null, limit: alertLimit };
+  const reviewDebt = baseline && latest ? { status: Number(latest.pending_reviews ?? 0) <= Number(baseline.pending_reviews ?? 0) && Number(latest.overdue_reviews ?? 0) <= Number(baseline.overdue_reviews ?? 0) ? "pass" : "fail", baseline_pending: Number(baseline.pending_reviews ?? 0), current_pending: Number(latest.pending_reviews ?? 0), baseline_overdue: Number(baseline.overdue_reviews ?? 0), current_overdue: Number(latest.overdue_reviews ?? 0) } : { status: "insufficient-evidence", baseline_pending: null, current_pending: null, baseline_overdue: null, current_overdue: null };
+  const criteria: JsonObject = { "review-debt-not-growing": reviewDebt, "missing-critical-provenance-not-growing": trend("missing_critical_provenance"), "stale-fields-actionable": stale, "prompt-anomalies-attributable": prompts, "alert-volume-acceptable": alerts }; const criterionValues = Object.values(criteria).map((value) => String(object(value)?.status ?? "insufficient-evidence"));
+  const eligible = elapsedDays >= minimumDays && coveragePass; const overall = !eligible ? "insufficient-evidence" : criterionValues.every((value) => value === "pass") ? "preliminary-pass" : "needs-attention";
+  return { evaluated_at: now, elapsed_days: Math.floor(elapsedDays), minimum_days: minimumDays, target_days: targetDays, target_reached: elapsedDays >= targetDays, coverage: { measured_snapshots: measured.length, unique_days: uniqueDays, required_unique_days: requiredMeasuredDays, weekly_audits: weeklyAudits, required_weekly_audits: 2, status: coveragePass ? "pass" : "insufficient-evidence" }, criteria, eligible_for_final_review: eligible, overall };
+}
+
+async function updateObservation(vaultRoot: string, now: string, summary: JsonObject, quality: QualityRepository): Promise<JsonObject> {
   const file = path.join(vaultRoot, "90-System", "State", "quality-observation.json");
-  const current = await readJson<JsonObject>(file, { schema_version: 1, started_at: now, minimum_days: 14, target_days: 28, snapshots: [] });
-  const snapshots = Array.isArray(current.snapshots) ? current.snapshots : []; snapshots.push({ observed_at: now, audit_id: summary.audit_id ?? null, frequency: summary.frequency ?? null, detected: summary.detected ?? 0, resolved: summary.resolved ?? 0, by_severity: summary.by_severity ?? {} });
-  const elapsedDays = Math.max(0, (Date.parse(now) - Date.parse(String(current.started_at))) / 86_400_000);
-  const next = { ...current, updated_at: now, elapsed_days: Math.floor(elapsedDays), status: elapsedDays >= Number(current.minimum_days ?? 14) ? "ready-for-evaluation" : "observing", snapshots: snapshots.slice(-100), evaluation_criteria: ["review-debt-not-growing", "missing-critical-provenance-not-growing", "stale-fields-actionable", "prompt-anomalies-detected", "alert-volume-acceptable"] };
+  const current = await readJson<JsonObject>(file, { schema_version: 2, started_at: now, minimum_days: 14, target_days: 28, max_high_critical_alerts: 5, snapshots: [] });
+  const snapshots = Array.isArray(current.snapshots) ? current.snapshots : []; snapshots.push({ observed_at: now, audit_id: summary.audit_id ?? null, frequency: summary.frequency ?? null, detected: summary.detected ?? 0, resolved: summary.resolved ?? 0, by_severity: summary.by_severity ?? {}, metrics: await observationMetrics(vaultRoot, quality, now) });
+  const evaluation = evaluateObservationWindow({ ...current, snapshots }, now); const status = evaluation.eligible_for_final_review === true ? evaluation.overall === "preliminary-pass" ? "ready-for-evaluation" : "needs-attention" : "observing";
+  const next: JsonObject = { ...current, schema_version: 2, updated_at: now, elapsed_days: Number(evaluation.elapsed_days ?? 0), status, snapshots: snapshots.slice(-100), evaluation_criteria: Object.keys(object(evaluation.criteria) ?? {}), snapshots_retained: 100, evaluation };
   await writeJsonAtomic(file, next); return next;
 }
 
@@ -240,7 +273,7 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
     issues.sort((a, b) => priorityRank(a.severity) - priorityRank(b.severity));
     const summary: JsonObject = { audit_id: auditId, frequency, generated_at: now, detected: issues.length, resolved, by_severity: Object.fromEntries(["critical", "high", "medium", "low", "info"].map((severity) => [severity, issues.filter((item) => item.severity === severity).length])) as JsonObject };
     if (frequency !== "daily") { const report = path.join(vaultRoot, "90-System", "Logs", "Quality", `${now.slice(0, 10)}-${frequency}-${auditId}.md`); await ensureDir(path.dirname(report)); await fs.writeFile(report, reportMarkdown(frequency, auditId, summary, issues), "utf8"); summary.report_path = toVaultPath(vaultRoot, report); }
-    summary.observation = await updateObservation(vaultRoot, now, summary);
+    summary.observation = await updateObservation(vaultRoot, now, summary, repository);
     repository.finishAudit(auditId, "completed", summary); await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "quality-audit-checkpoint.json"), { schema_version: 2, last_audit_id: auditId, frequency, completed_at: now, schema_validated_paths: changedPaths.size, file_hashes: currentHashes });
     return summary;
   } catch (error) { repository.finishAudit(auditId, "failed", { error: error instanceof Error ? error.message : String(error) }); throw error; }

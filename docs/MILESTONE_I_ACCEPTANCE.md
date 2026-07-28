@@ -21,7 +21,7 @@
 - Run Details exposes the complete explanation chain.
 - Backfill is preview-first, snapshot-backed and active-data-first.
 
-Latest automated evidence: `npm test` passed 82/82 tests on 2026-07-29 (Asia/Shanghai); all three installed modules passed validation with zero warnings/failures.
+Latest automated evidence: `npm test` passed 83/83 tests on 2026-07-29 (Asia/Shanghai); all three installed modules passed validation with zero warnings/failures.
 
 ## Manual/temporal acceptance
 

@@ -6,7 +6,7 @@ Audit date: 2026-07-29 (Asia/Shanghai)
 
 - I01–I13: implemented and automatically verified.
 - I14: observing; not yet eligible for completion because the real 14–28 day window began at `2026-07-28T16:37:41.141Z`.
-- Automated regression: 82/82 tests passed; Core/module boundary audit passed; module validations passed with 30/25/25 checks and no warnings.
+- Automated regression: 83/83 tests passed; Core/module boundary audit passed; module validations passed with 30/25/25 checks and no warnings.
 
 ## Evidence by implementation stage
 
@@ -38,4 +38,4 @@ Audit date: 2026-07-29 (Asia/Shanghai)
 
 ## I14 exit gate
 
-After 14 real days, inspect `90-System/State/quality-observation.json`, weekly reports and Prompt/version metrics. Completion requires stable or decreasing Review debt and missing Critical provenance, useful stale-field follow-ups, attributable Prompt anomalies, and acceptable alert volume. Prefer continuing to 28 days before declaring production-stable.
+After 14 real days, inspect `90-System/State/quality-observation.json`, weekly reports and Prompt/version metrics. The automatic gate additionally requires at least seven distinct measured days and two weekly audits. Completion requires stable or decreasing Review debt and missing Critical provenance, useful stale-field follow-ups, attributable Prompt anomalies, and acceptable alert volume. The System Center shows each criterion and only reports `ready-for-evaluation` after coverage passes. Prefer continuing to 28 days before declaring production-stable.

@@ -8,7 +8,7 @@ import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { assertOwnedMutation } from "../core/qualityOwnership.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
+import { evaluateObservationWindow, runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 import { evaluateFreshness, resolveVerificationInterval } from "../quality/freshness.js";
 import { reviewFingerprint } from "../quality/fingerprint.js";
@@ -31,11 +31,25 @@ test("module templates expose stable user, AI, system and source ownership regio
     assert.match(template, /用户/, relative);
   }
   assert.match(await fs.readFile(path.join(ENGINE_ROOT, paths[3]!), "utf8"), /type: reading-note/);
+  assert.match(await fs.readFile(path.join(ENGINE_ROOT, "plugins", "knowledgeos-obsidian", "main.js"), "utf8"), /I14 真实观察/);
 });
 
 test("review deduplication remains stable when only new evidence arrives", () => {
   const base = { module: "application-tracker", instanceId: "demo", target: "20-Workspace/demo.md", action: "change-critical-field", proposedValue: { field: "deadline", new_value: "2027-05-01" } };
   assert.equal(reviewFingerprint({ ...base, evidence: ["old-source"] }), reviewFingerprint({ ...base, evidence: ["new-source"] }));
+});
+
+test("I14 evaluation requires real coverage and evaluates all five exit criteria", () => {
+  const metrics = (pending: number): JsonObject => ({ pending_reviews: pending, missing_critical_provenance: 0, stale_critical_fields: 1, actionable_stale_fields: 1, prompt_anomalies: 1, unattributed_prompt_anomalies: 0, high_critical_alerts: 1 });
+  const snapshots: JsonObject[] = Array.from({ length: 7 }, (_, index) => ({ observed_at: `2026-07-${String(index + 1).padStart(2, "0")}T00:00:00Z`, frequency: index === 0 || index === 6 ? "weekly" : "daily", metrics: metrics(index === 0 ? 2 : 1) }));
+  const observation: JsonObject = { started_at: "2026-07-01T00:00:00Z", minimum_days: 14, target_days: 28, max_high_critical_alerts: 5, snapshots };
+  assert.equal(evaluateObservationWindow(observation, "2026-07-10T00:00:00Z").overall, "insufficient-evidence");
+  const ready = evaluateObservationWindow(observation, "2026-07-15T00:00:00Z");
+  assert.equal(ready.overall, "preliminary-pass"); assert.equal(ready.eligible_for_final_review, true);
+  const sameWeek = Array.from({ length: 7 }, (_, index) => ({ observed_at: `2026-07-${String(index + 6).padStart(2, "0")}T00:00:00Z`, frequency: index === 0 || index === 6 ? "weekly" : "daily", metrics: metrics(1) }));
+  assert.equal(evaluateObservationWindow({ ...observation, snapshots: sameWeek }, "2026-07-15T00:00:00Z").eligible_for_final_review, false);
+  const failing = evaluateObservationWindow({ ...observation, snapshots: [...snapshots, { observed_at: "2026-07-15T00:00:00Z", frequency: "daily", metrics: metrics(3) }] }, "2026-07-15T00:00:00Z");
+  assert.equal(failing.overall, "needs-attention");
 });
 
 test("freshness distinguishes verified, due-soon, stale, historical and hierarchy", () => {
