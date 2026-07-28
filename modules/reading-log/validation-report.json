@@ -3,7 +3,7 @@
   "module_id": "reading-log",
   "module_version": "0.1.0",
   "maturity": "beta",
-  "generated_at": "2026-07-28T16:31:01.147Z",
+  "generated_at": "2026-07-28T17:03:47.716Z",
   "checks": [
     {
       "category": "manifest",

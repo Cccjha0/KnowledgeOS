@@ -14,16 +14,26 @@ next_week: []
 source_refs: []
 created_at:
 schema_version: 1
+_ownership:
+  sections:
+    原始日报引用: source-immutable
+    AI整理: ai-managed
+    系统信息: system-managed
+    用户确认结论: mixed
 ---
 
 # {{week}} 实习周报
 
-## 本周亮点
+## 原始日报引用
 
-## 工作进展
+## AI整理
 
-## 阻塞
+### 本周亮点
+### 工作进展
+### 阻碍
+### 学习
+### 下周计划
 
-## 学习
+## 系统信息
 
-## 下周计划
+## 用户确认结论

@@ -9,6 +9,7 @@ import { RuntimeRepository } from "./repository.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const local: TaskResources = { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" };
+const networked: TaskResources = { filesystem: "required", network: "required", codex: "not-required", user: "not-required" };
 
 function coreJobs(now: string): JobDefinition[] {
   const base = { source: "core" as const, module: "core", scope: "core" as const, enabled: true, task_type: "core-operation" as const, resources: local, retry: { max_attempts: 3, strategy: "exponential" }, idempotency: {}, priority: "low" as TaskPriority, updated_at: now };
@@ -18,6 +19,7 @@ function coreJobs(now: string): JobDefinition[] {
     { ...base, job_id: "core.weekly-vault-audit", workflow: "core:vault-audit", trigger: { type: "weekly", weekday: "Sun", at: "09:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:vault-audit" } },
     { ...base, job_id: "core.daily-quality-audit", workflow: "core:quality-audit-daily", trigger: { type: "daily", at: "07:30", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest" }, concurrency: { policy: "replace", key: "core:quality-audit" }, priority: "normal" },
     { ...base, job_id: "core.weekly-quality-audit", workflow: "core:quality-audit-weekly", trigger: { type: "weekly", weekday: "Sun", at: "10:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:quality-audit" } },
+    { ...base, job_id: "core.weekly-external-link-audit", workflow: "core:external-link-audit", resources: networked, trigger: { type: "weekly", weekday: "Sun", at: "10:30", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:external-link-audit" } },
     { ...base, job_id: "core.monthly-quality-audit", workflow: "core:quality-audit-monthly", trigger: { type: "monthly", day: 1, at: "04:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:quality-audit" } },
     { ...base, job_id: "core.monthly-runtime-cleanup", workflow: "core:cleanup-runtime", trigger: { type: "monthly", day: 1, at: "03:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 7 }, concurrency: { policy: "forbid", key: "core:runtime-cleanup" } },
   ];

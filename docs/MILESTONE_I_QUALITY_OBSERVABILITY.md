@@ -54,11 +54,13 @@ Metric events store IDs, states, versions, categories, counts and timings—not 
 Core registers daily, weekly and monthly quality jobs. Deterministic auditors cover:
 
 - internal broken links
+- missing WikiLink anchors
+- external links in a separately network-gated weekly Task
 - orphan and unowned files
-- exact duplicate content candidates
+- exact and near-duplicate content candidates
 - missing Critical provenance
 - stale/due-soon fields
-- invalid or old schema metadata
+- invalid entity/frontmatter schemas and entity-specific old schema metadata
 - Review SLA debt
 - missing content ownership
 - inactive-instance tasks
@@ -88,3 +90,4 @@ It performs no whole-Vault AI scan.
 
 Every audit updates `90-System/State/quality-observation.json`. It remains `observing` for at least 14 real days and becomes `ready-for-evaluation` only after the minimum window. The evaluation checks Review debt, missing Critical provenance, stale-field actionability, Prompt anomaly detection and alert volume. A 28-day window is preferred.
 
+The current real observation began at `2026-07-28T16:37:41.141Z`. I01–I13 are implementation-complete; I14 must remain open until at least 14 real days have elapsed.

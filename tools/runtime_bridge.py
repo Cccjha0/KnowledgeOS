@@ -470,9 +470,12 @@ def dispatch(command, connection, payload):
             previous = json.loads(existing["record_json"]); item["issue_id"] = existing["issue_id"]
             item["first_seen"] = existing["first_seen"]; item["last_seen"] = item.get("last_seen") or now_iso()
             item["occurrence_count"] = existing["occurrence_count"] + 1
-            if existing["status"] == "suppressed" and existing["suppressed_until"] and existing["suppressed_until"] > now_iso():
-                item["status"] = "suppressed"; item["suppressed_until"] = existing["suppressed_until"]
-            elif existing["status"] in {"resolved", "ignored"}: item["status"] = "open"
+            if existing["status"] == "suppressed" and existing["suppressed_until"]:
+                suppress_until = datetime.fromisoformat(existing["suppressed_until"].replace("Z", "+00:00"))
+                if suppress_until > datetime.now(timezone.utc): item["status"] = "suppressed"; item["suppressed_until"] = existing["suppressed_until"]
+                else: item["status"] = "open"; item["suppressed_until"] = None
+            elif existing["status"] == "resolved": item["status"] = "open"
+            elif existing["status"] == "ignored": item["status"] = "ignored"
             else: item["status"] = existing["status"]
             item["last_notified"] = previous.get("last_notified")
         else:

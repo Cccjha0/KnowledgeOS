@@ -196,9 +196,11 @@ function buildRecordPatch(
     : structuredClone(proposed.new_value ?? null);
   const patch: JsonObject = { updated: decision.decided_at };
   const currentMeta = record._field_meta && typeof record._field_meta === "object" && !Array.isArray(record._field_meta) ? record._field_meta as JsonObject : {};
+  const originGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
+  const originModule = originGeneration?.module && typeof originGeneration.module === "object" && !Array.isArray(originGeneration.module) ? originGeneration.module as JsonObject : null;
   patch._field_meta = { ...currentMeta, [field]: {
     authorship: "external-research", evidence_refs: item.evidence,
-    generation: { run_id: runId, module: { id: item.source_module, version: "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: null, processor: { id: "review-executor", version: "1.0.0" }, adapter: null, model: null, generated_at: decision.decided_at },
+    generation: { run_id: runId, module: { id: item.source_module, version: typeof originModule?.version === "string" ? originModule.version : "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: originGeneration?.prompt ?? null, processor: { id: "review-executor", version: "1.0.0", source_generation: originGeneration }, adapter: typeof originGeneration?.adapter === "string" ? originGeneration.adapter : null, model: typeof originGeneration?.model === "string" ? originGeneration.model : null, generated_at: decision.decided_at },
     review: { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision },
     verification: { last_verified: decision.decided_at, verification_interval_days: null, stale_after: null, stale: false, verification_status: "verified" },
   } };
@@ -348,11 +350,14 @@ async function recordReviewOutcome(vaultRoot: string, item: ReviewItem, decision
   try {
     const fingerprint = item.review_fingerprint ?? reviewFingerprint({ module: item.source_module, instanceId: item.instance_id, target: item.target, action: item.action, proposedValue: item.proposed_value, evidence: item.evidence });
     const evidenceHash = evidenceSnapshotHash(item.evidence);
-    repository.recordMetric({ idempotency_key: `review:${item.review_id}:${decision.decided_at}`, event_type: `review.${decision.decision}`, module: item.source_module, instance_id: item.instance_id, workflow_id: "review-resolve", workflow_version: "1.0.0", prompt_id: null, prompt_version: null, run_id: runId, occurred_at: decision.decided_at, dimensions: { priority: item.priority, action: item.action }, values: {} });
+    const generation = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
+    const workflow = generation?.workflow && typeof generation.workflow === "object" && !Array.isArray(generation.workflow) ? generation.workflow as JsonObject : null;
+    const prompt = generation?.prompt && typeof generation.prompt === "object" && !Array.isArray(generation.prompt) ? generation.prompt as JsonObject : null;
+    repository.recordMetric({ idempotency_key: `review:${item.review_id}:${decision.decided_at}`, event_type: `review.${decision.decision}`, module: item.source_module, instance_id: item.instance_id, workflow_id: typeof workflow?.id === "string" ? workflow.id : "review-resolve", workflow_version: typeof workflow?.version === "string" ? workflow.version : "1.0.0", prompt_id: typeof prompt?.id === "string" ? prompt.id : null, prompt_version: typeof prompt?.version === "string" ? prompt.version : null, run_id: runId, occurred_at: decision.decided_at, dimensions: { priority: item.priority, action: item.action }, values: {} });
     if (decision.decision === "reject") repository.rememberRejection({ fingerprint, rejected_value_hash: fingerprint, evidence_hash: evidenceHash, reason: decision.user_comment, rejected_at: decision.decided_at, suppressed_until: null });
     if (["approve", "approve-with-modification"].includes(decision.decision)) {
       const proposed = proposedObject(item); const field = fieldFromReview(item);
-      repository.recordChange({ entity_ref: item.target, field, old_value: structuredClone(proposed.old_value ?? null), new_value: decision.decision === "approve-with-modification" ? structuredClone(decision.modified_value) : structuredClone(proposed.new_value ?? null), reason: item.reason, evidence_refs: item.evidence.filter((value): value is string => typeof value === "string"), generation: { run_id: runId, module: { id: item.source_module, version: "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: null }, review: { status: decision.decision, review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at }, changed_at: decision.decided_at });
+      repository.recordChange({ entity_ref: item.target, field, old_value: structuredClone(proposed.old_value ?? null), new_value: decision.decision === "approve-with-modification" ? structuredClone(decision.modified_value) : structuredClone(proposed.new_value ?? null), reason: item.reason, evidence_refs: item.evidence.filter((value): value is string => typeof value === "string"), generation: { run_id: runId, module: { id: item.source_module, version: "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: generation?.prompt ?? null, source_generation: generation }, review: { status: decision.decision, review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at }, changed_at: decision.decided_at });
     }
   } finally { repository.close(); }
 }

@@ -9,6 +9,6 @@ function stable(value: JsonValue): string {
 
 export function qualityFingerprint(parts: JsonValue[]): string { return createHash("sha256").update(stable(parts)).digest("hex"); }
 export function reviewFingerprint(input: { module: string; instanceId: string | null; target: string; action: string; proposedValue: JsonValue; evidence: JsonValue[] }): string {
-  return qualityFingerprint([input.module, input.instanceId, input.target, input.action, input.proposedValue, input.evidence.slice(0, 1)]);
+  return qualityFingerprint([input.module, input.instanceId, input.target, input.action, input.proposedValue]);
 }
 export function evidenceSnapshotHash(evidence: JsonValue[]): string { return qualityFingerprint(evidence); }

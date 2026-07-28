@@ -6,7 +6,7 @@ import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { doctorVault } from "../core/vault.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
-import { runQualityAudit } from "../quality/audit.js";
+import { runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
 
 export interface WorkerResult {
   completion_reason: string;
@@ -42,6 +42,7 @@ const coreHandlers: Record<string, RuntimeHandler> = {
   "core:quality-audit-daily": async ({ vaultRoot }) => ({ completion_reason: "daily-quality-audit", metrics: await runQualityAudit(vaultRoot, "daily") }),
   "core:quality-audit-weekly": async ({ vaultRoot }) => ({ completion_reason: "weekly-quality-audit", metrics: await runQualityAudit(vaultRoot, "weekly") }),
   "core:quality-audit-monthly": async ({ vaultRoot }) => ({ completion_reason: "monthly-quality-audit", metrics: await runQualityAudit(vaultRoot, "monthly") }),
+  "core:external-link-audit": async ({ vaultRoot }) => ({ completion_reason: "external-link-audit", metrics: await runExternalLinkAudit(vaultRoot) }),
 };
 
 function runtimeError(error: unknown): RuntimeError {

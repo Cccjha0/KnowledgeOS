@@ -11,9 +11,17 @@ ownership:
   application-record:
     required: true
     sections:
-      原始来源: source-immutable
+      来源: source-immutable
       AI整理: ai-managed
       系统状态: system-managed
       用户确认结论: mixed
+  research-report:
+    required: true
+    sections:
+      官方原文: source-immutable
+      结论: ai-managed
+      未解决事项: ai-managed
+      系统信息: system-managed
+      用户备注: user-owned
 audits: [stale-fields, missing-provenance, invalid-status, schema-version, ownership, instance-task]
 default_verification_interval_days: 30

@@ -8,9 +8,10 @@ import { listFilesRecursive, toVaultPath, writeJsonAtomic } from "../core/files.
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, Operation, OperationPlan } from "../core/types.js";
 import { QualityRepository } from "./repository.js";
+import { qualityFingerprint } from "./fingerprint.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-interface Candidate { target: string; module: string; instanceId: string | null; ownership: JsonObject | null; fields: { field: string; sourceRefs: string[]; checkedAt: string | null }[]; }
+interface Candidate { target: string; module: string; instanceId: string | null; metadata: JsonObject; ownership: JsonObject | null; fields: { field: string; sourceRefs: string[]; checkedAt: string | null }[]; }
 
 function object(value: unknown): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null; }
 async function candidates(vaultRoot: string): Promise<{ candidates: Candidate[]; blocked_fields: JsonObject[] }> {
@@ -23,10 +24,16 @@ async function candidates(vaultRoot: string): Promise<{ candidates: Candidate[];
   const output: Candidate[] = []; const blocked: JsonObject[] = [];
   for (const root of ["20-Workspace", "30-Knowledge"]) for (const file of await listFilesRecursive(path.join(vaultRoot, root), ".md")) {
     let document; try { document = parseMarkdown(vaultRoot, file); } catch { continue; }
-    const module = String(document.data.source_module ?? document.data.module_id ?? ""); const instanceId = typeof document.data.instance_id === "string" ? document.data.instance_id : null;
+    const inferredModule = document.data.research_type === "application-update" ? "application-tracker" : "";
+    const module = String(document.data.source_module ?? document.data.module_id ?? inferredModule); const instanceId = typeof document.data.instance_id === "string" ? document.data.instance_id : null;
     if (!module || (instanceId && !active.has(instanceId))) continue;
-    const policy = policies.get(module); if (!policy) continue; const type = String(document.data.type ?? ""); const owner = object(object(policy.ownership)?.[type]);
-    const ownership = !object(document.data._ownership) && owner?.required === true ? object(owner.sections) : null;
+    const policy = policies.get(module); if (!policy) continue; const type = String(document.data.type ?? (document.data.research_type === "application-update" ? "research-report" : "")); const owner = object(object(policy.ownership)?.[type]);
+    const expectedOwnership = owner?.required === true ? object(owner.sections) : null; const currentOwnership = object(object(document.data._ownership)?.sections);
+    const ownership = expectedOwnership && JSON.stringify(currentOwnership) !== JSON.stringify(expectedOwnership) ? expectedOwnership : null;
+    const metadata: JsonObject = {};
+    if (inferredModule && typeof document.data.source_module !== "string") metadata.source_module = inferredModule;
+    if (type && typeof document.data.type !== "string") metadata.type = type;
+    if (type === "research-report" && !Number.isInteger(document.data.schema_version)) metadata.schema_version = 1;
     const fields: Candidate["fields"] = [];
     if (module === "application-tracker") for (const field of (policy.critical_fields as string[] | undefined) ?? []) {
       const fact = object(object(document.data.facts)?.[field]); const value = field in document.data ? document.data[field] : fact?.value;
@@ -36,7 +43,7 @@ async function candidates(vaultRoot: string): Promise<{ candidates: Candidate[];
       if (!refs.length) { blocked.push({ target: toVaultPath(vaultRoot, file), field, reason: "source-reference-required" }); continue; }
       fields.push({ field, sourceRefs: refs, checkedAt: typeof fact?.checked_at === "string" ? fact.checked_at : typeof object(document.data.monitoring)?.last_checked === "string" ? String(object(document.data.monitoring)!.last_checked) : null });
     }
-    if (ownership || fields.length) output.push({ target: toVaultPath(vaultRoot, file), module, instanceId, ownership, fields });
+    if (Object.keys(metadata).length || ownership || fields.length) output.push({ target: toVaultPath(vaultRoot, file), module, instanceId, metadata, ownership, fields });
   }
   return { candidates: output, blocked_fields: blocked };
 }
@@ -51,7 +58,7 @@ export async function applyQualityBackfill(vaultRoot: string): Promise<JsonObjec
   const snapshot = await createGitSnapshot(vaultRoot, runId); const quality = await QualityRepository.open(vaultRoot); const operations: Operation[] = []; const now = new Date().toISOString();
   try {
     for (const [index, candidate] of scan.candidates.entries()) {
-      const patch: JsonObject = {}; if (candidate.ownership) patch._ownership = { sections: candidate.ownership }; const fieldMeta: JsonObject = {};
+      const patch: JsonObject = { ...candidate.metadata }; if (candidate.ownership) patch._ownership = { sections: candidate.ownership }; const fieldMeta: JsonObject = {};
       for (const field of candidate.fields) {
         const evidenceIds: string[] = [];
         for (const sourceRef of field.sourceRefs) {
@@ -61,7 +68,7 @@ export async function applyQualityBackfill(vaultRoot: string): Promise<JsonObjec
         fieldMeta[field.field] = { authorship: "external-research", evidence_refs: evidenceIds, generation: { run_id: runId, module: { id: candidate.module, version: "unknown" }, workflow: null, prompt: null, processor: { id: "quality-backfill", version: "1.0.0" }, adapter: null, model: null, generated_at: now }, review: { status: "unreviewed", review_id: null, reviewed_by: null, reviewed_at: null, decision: null }, verification: { last_verified: field.checkedAt, verification_interval_days: null, stale_after: null, stale: false, verification_status: field.checkedAt ? "verified" : "unknown" } };
       }
       if (Object.keys(fieldMeta).length) patch._field_meta = fieldMeta;
-      operations.push({ operation_id: `OP-${String(index + 1).padStart(3, "0")}`, type: "update-frontmatter", target: candidate.target, risk: "yellow", confidence: 1, idempotency_key: `quality-backfill:${candidate.target}`, payload: { patch, actor: "system" }, requires_review_id: null });
+      operations.push({ operation_id: `OP-${String(index + 1).padStart(3, "0")}`, type: "update-frontmatter", target: candidate.target, risk: "yellow", confidence: 1, idempotency_key: `quality-backfill-v2:${candidate.target}:${qualityFingerprint([patch]).slice(0, 16)}`, payload: { patch, actor: "system", replace_top_level: candidate.ownership ? ["_ownership"] : [] }, requires_review_id: null });
     }
   } finally { quality.close(); }
   const plan: OperationPlan = { plan_id: planId, task_id: taskId, source_module: "core", instance_id: null, summary: "Backfill active Knowledge Quality metadata without AI scanning.", operations, review_items: [] };

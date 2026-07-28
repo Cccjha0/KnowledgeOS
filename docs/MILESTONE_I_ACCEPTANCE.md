@@ -12,11 +12,16 @@
 - Rejection memory requires a changed evidence hash before re-proposal.
 - Daily/weekly/monthly jobs use the Task Runner and do not block unrelated local work.
 - Audits find broken links, missing ownership/provenance, old schemas, stale fields, Review debt and inactive-instance tasks.
+- Entity JSON Schema validation resolves registry paths relative to each registry and daily runs only revalidate changed files.
+- External link checks use a separate network-required Task; local audits remain runnable offline.
+- Temporary issue suppression expires, while permanent ignore remains durable.
 - Stale application fields create one idempotent follow-up Task.
 - Quality Dashboard supports inspect, acknowledge, suppress and resolve.
 - Today excludes ordinary low/medium audit noise.
 - Run Details exposes the complete explanation chain.
 - Backfill is preview-first, snapshot-backed and active-data-first.
+
+Latest automated evidence: `npm test` passed 82/82 tests on 2026-07-29 (Asia/Shanghai); all three installed modules passed validation with zero warnings/failures.
 
 ## Manual/temporal acceptance
 
@@ -28,4 +33,3 @@ I14 cannot be truthfully completed in a single implementation session. Keep sche
 - A deliberately bad Prompt/test fixture is attributable to its exact version.
 - High/Critical alerts are understandable and not repeated every day.
 - Users can explain sampled important changes from Run Details without reading raw logs.
-

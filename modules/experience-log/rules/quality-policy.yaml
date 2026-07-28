@@ -17,5 +17,13 @@ ownership:
       AI整理: ai-managed
       系统信息: system-managed
       用户确认结论: mixed
+  experience-weekly-summary:
+    required: true
+    historical: true
+    sections:
+      原始日报引用: source-immutable
+      AI整理: ai-managed
+      系统信息: system-managed
+      用户确认结论: mixed
 audits: [broken-links, orphan-files, schema-version, ownership, instance-task]
 default_verification_interval_days: null

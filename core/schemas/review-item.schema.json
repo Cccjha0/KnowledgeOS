@@ -140,6 +140,7 @@
         "null"
       ]
     },
+    "generation": { "type": ["object", "null"] },
     "review_fingerprint": { "type": "string", "minLength": 16 },
     "evidence_hash": { "type": "string", "minLength": 16 },
     "first_seen": { "type": "string", "format": "date-time" },

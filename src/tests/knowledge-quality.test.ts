@@ -2,15 +2,41 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { writeMarkdown } from "../core/bridge.js";
+import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { assertOwnedMutation } from "../core/qualityOwnership.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { runQualityAudit } from "../quality/audit.js";
+import { runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
+import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 import { evaluateFreshness, resolveVerificationInterval } from "../quality/freshness.js";
+import { reviewFingerprint } from "../quality/fingerprint.js";
 import { QualityRepository } from "../quality/repository.js";
 import type { JsonObject } from "../core/types.js";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+test("module templates expose stable user, AI, system and source ownership regions", async () => {
+  const paths = [
+    "modules/application-tracker/templates/application-record.md",
+    "modules/experience-log/templates/daily-log.md",
+    "modules/experience-log/templates/weekly-summary.md",
+    "modules/reading-log/templates/record.md",
+  ];
+  for (const relative of paths) {
+    const template = await fs.readFile(path.join(ENGINE_ROOT, relative), "utf8");
+    assert.match(template, /_ownership:/, relative);
+    assert.match(template, /AI整理/, relative);
+    assert.match(template, /用户/, relative);
+  }
+  assert.match(await fs.readFile(path.join(ENGINE_ROOT, paths[3]!), "utf8"), /type: reading-note/);
+});
+
+test("review deduplication remains stable when only new evidence arrives", () => {
+  const base = { module: "application-tracker", instanceId: "demo", target: "20-Workspace/demo.md", action: "change-critical-field", proposedValue: { field: "deadline", new_value: "2027-05-01" } };
+  assert.equal(reviewFingerprint({ ...base, evidence: ["old-source"] }), reviewFingerprint({ ...base, evidence: ["new-source"] }));
+});
 
 test("freshness distinguishes verified, due-soon, stale, historical and hierarchy", () => {
   const now = new Date("2026-07-28T00:00:00Z");
@@ -36,7 +62,11 @@ test("quality repository persists evidence, deduplicates issues, aggregates metr
     const evidence = repository.upsertEvidence({ source_type: "external-research", source_ref: "Research/report.md", supports: [{ entity_ref: "20-Workspace/record.md", field: "deadline" }], locator: {}, observed_at: now, captured_at: now, collector: { type: "test" }, quality: { authority: "unknown", freshness: "current", extraction_confidence: 0.9 }, status: "active" });
     assert.match(evidence.evidence_id, /^EVD-/);
     const base = { fingerprint: "fingerprint-knowledge-quality-0001", issue_type: "missing-provenance", dimension: "provenance" as const, severity: "high" as const, module: "application-tracker", instance_id: null, target: { path: "20-Workspace/record.md", field: "deadline" }, detected_at: now, detector: { id: "test-auditor", version: "1" }, evidence: {}, status: "open" as const, recommended_action: { type: "attach-evidence" }, last_notified: null, suppressed_until: null, resolution: null };
-    assert.equal(repository.upsertIssue(base).occurrence_count, 1); assert.equal(repository.upsertIssue(base).occurrence_count, 2); assert.equal(repository.listIssues().length, 1);
+    const stored = repository.upsertIssue(base); assert.equal(stored.occurrence_count, 1); assert.equal(repository.upsertIssue(base).occurrence_count, 2); assert.equal(repository.listIssues().length, 1);
+    repository.updateIssue(stored.issue_id, "suppressed", { suppressed_until: "2000-01-01T00:00:00Z" });
+    assert.equal(repository.upsertIssue(base).status, "open");
+    repository.updateIssue(stored.issue_id, "ignored");
+    assert.equal(repository.upsertIssue(base).status, "ignored");
     repository.recordMetric({ idempotency_key: "metric:test:1", event_type: "review.rejected", module: "application-tracker", instance_id: null, workflow_id: "review", workflow_version: "1", prompt_id: "compare", prompt_version: "1", run_id: null, occurred_at: now, dimensions: {}, values: {} });
     assert.equal(Number((repository.aggregateMetrics("2020-01-01T00:00:00Z").totals as JsonObject)["review.rejected"]), 1);
     repository.rememberRejection({ fingerprint: "review-fingerprint", rejected_value_hash: "value", evidence_hash: "evidence", reason: "not useful", rejected_at: now, suppressed_until: null });
@@ -70,5 +100,61 @@ test("Quality Dashboard and issue actions expose the stable command contract", a
     assert.equal(dashboard.ok, true); assert.equal(((dashboard.data as JsonObject).overview as JsonObject).high, 1);
     const managed = await invokeCommandApi({ vaultRoot: vault, requestId: "QUALITY-MANAGE", method: "manageQualityIssue", params: { issue_id: issue.issue_id, action: "suppress", suppressed_until: "2026-08-01T00:00:00Z" } });
     assert.equal((managed.data as JsonObject).status, "suppressed");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("quality audit validates entity schemas and WikiLink anchors", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-contract-audit-"));
+  try {
+    await initializeVault(vault, "disabled");
+    writeMarkdown(vault, path.join(vault, "30-Knowledge", "Target.md"), { data: { title: "Target" }, content: "# Existing section\n" });
+    writeMarkdown(vault, path.join(vault, "30-Knowledge", "Invalid Reading.md"), {
+      data: { source_module: "reading-log", type: "reading-note", schema_id: "record", schema_version: 1 },
+      content: "[[Target#Missing section]]\n",
+    });
+    await runQualityAudit(vault, "weekly", { now: "2026-07-28T00:00:00Z" });
+    const repository = await QualityRepository.open(vault); const issues = repository.listIssues(); repository.close();
+    assert.equal(issues.some((item) => item.issue_type === "broken-internal-anchor"), true);
+    assert.equal(issues.some((item) => item.issue_type === "invalid-entity-schema" && item.severity === "high"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("quality backfill infers application research report ownership", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-backfill-"));
+  try {
+    await initializeVault(vault, "disabled");
+    writeMarkdown(vault, path.join(vault, "20-Workspace", "Research.md"), { data: { research_type: "application-update", report_id: "RPT-2026-000001", _ownership: { sections: { Legacy: "ai-managed" } } }, content: "# Research\n" });
+    const preview = await previewQualityBackfill(vault);
+    assert.equal(preview.active_files, 1);
+    assert.equal(preview.ownership_updates, 1);
+    await applyQualityBackfill(vault);
+    const updated = parseMarkdown(vault, path.join(vault, "20-Workspace", "Research.md"));
+    assert.equal(updated.data.schema_version, 1);
+    assert.equal((updated.data._ownership as JsonObject).sections !== undefined, true);
+    assert.equal("Legacy" in ((updated.data._ownership as JsonObject).sections as JsonObject), false);
+    assert.equal((await previewQualityBackfill(vault)).active_files, 0);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("external link audit is independently resource-gated and deduplicated", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-external-link-audit-"));
+  try {
+    await initializeVault(vault, "disabled");
+    writeMarkdown(vault, path.join(vault, "30-Knowledge", "Links.md"), { data: { title: "Links" }, content: "Bad https://example.invalid/missing and again https://example.invalid/missing\n" });
+    await runExternalLinkAudit(vault, { now: "2026-07-28T00:00:00Z", fetcher: async () => new Response(null, { status: 404 }) });
+    const repository = await QualityRepository.open(vault); const issues = repository.listIssues(); repository.close();
+    assert.equal(issues.filter((item) => item.issue_type === "broken-external-link").length, 1);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("prompt quality audit attributes review-rate regressions to an exact prompt version", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-prompt-quality-audit-"));
+  try {
+    await initializeVault(vault, "disabled"); const repository = await QualityRepository.open(vault);
+    for (let index = 0; index < 5; index += 1) repository.recordMetric({ idempotency_key: `prompt-call:${index}`, event_type: "codex.completed", module: "experience-log", instance_id: null, workflow_id: "normalize", workflow_version: "1.0.0", prompt_id: "normalize-daily-log", prompt_version: "1.0.0", run_id: null, occurred_at: "2026-07-27T00:00:00Z", dimensions: {}, values: {} });
+    for (let index = 0; index < 2; index += 1) repository.recordMetric({ idempotency_key: `prompt-review:${index}`, event_type: "review.created", module: "experience-log", instance_id: null, workflow_id: "normalize", workflow_version: "1.0.0", prompt_id: "normalize-daily-log", prompt_version: "1.0.0", run_id: null, occurred_at: "2026-07-27T00:00:00Z", dimensions: {}, values: {} });
+    repository.close(); await runQualityAudit(vault, "weekly", { now: "2026-07-28T00:00:00Z" });
+    const checked = await QualityRepository.open(vault); const issues = checked.listIssues(); checked.close();
+    assert.equal(issues.some((item) => item.issue_type === "prompt-quality-regression" && item.target.prompt_id === "normalize-daily-log" && item.target.prompt_version === "1.0.0"), true);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

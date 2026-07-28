@@ -119,6 +119,7 @@ export type ReviewItem = JsonObject & {
   decision_history: ReviewDecision[];
   target_observation: ReviewTargetObservation | null;
   resolution: string | null;
+  generation?: JsonObject | null;
   review_fingerprint?: string;
   evidence_hash?: string;
   first_seen?: string;

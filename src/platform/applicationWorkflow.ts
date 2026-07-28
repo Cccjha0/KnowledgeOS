@@ -306,14 +306,14 @@ export async function processApplicationReport(
     now,
     allocateReviewId: () => allocateId(vaultRoot, "REV"),
   });
-  for (const review of update.review_items) {
-    validateSchema(vaultRoot, SCHEMAS.review, review);
-  }
-  validateSchema(vaultRoot, SCHEMAS.update, update);
-
   const taskId = await allocateId(vaultRoot, "TASK");
   const planId = await allocateId(vaultRoot, "PLAN");
   const runId = await allocateId(vaultRoot, "RUN");
+  for (const review of update.review_items) {
+    review.generation = { run_id: runId, module: { id: "application-tracker", version: "0.2.0" }, workflow: { id: "compare-research-update", version: "1.0.0" }, prompt: null, processor: { id: "application-compare", version: "1.0.0" }, generated_at: now };
+    validateSchema(vaultRoot, SCHEMAS.review, review);
+  }
+  validateSchema(vaultRoot, SCHEMAS.update, update);
   const plan = buildOperationPlan(vaultRoot, reportAbsolute, destination, report, update, {
     taskId,
     planId,

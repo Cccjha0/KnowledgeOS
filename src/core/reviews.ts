@@ -4,6 +4,7 @@ import type { MarkdownDocument, ReviewItem, ReviewStatus } from "./types.js";
 import { parseMarkdown, validateSchema, writeMarkdown } from "./bridge.js";
 import { ensureDir, exists } from "./files.js";
 import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
+import { QualityRepository } from "../quality/repository.js";
 
 const REVIEW_SCHEMA = "https://pkb.local/schemas/core/review-item.schema.json";
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -57,8 +58,8 @@ function renderReviewContent(item: ReviewItem): string {
 }
 
 export async function writeReviewItems(vaultRoot: string, items: ReviewItem[]): Promise<string[]> {
-  const paths: string[] = [];
-  for (const raw of items) {
+  const paths: string[] = []; const quality = await QualityRepository.open(vaultRoot);
+  try { for (const raw of items) {
     const now = raw.created || new Date().toISOString();
     const fingerprint = raw.review_fingerprint ?? reviewFingerprint({ module: raw.source_module, instanceId: raw.instance_id, target: raw.target, action: raw.action, proposedValue: raw.proposed_value, evidence: raw.evidence });
     const evidenceHash = evidenceSnapshotHash(raw.evidence);
@@ -77,8 +78,11 @@ export async function writeReviewItems(vaultRoot: string, items: ReviewItem[]): 
     const filePath = path.join(directory, `${item.review_id}.md`);
     writeMarkdown(vaultRoot, filePath, { data: item, content: renderReviewContent(item) });
     paths.push(filePath);
-  }
-  return paths;
+    const generation = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation : null;
+    const workflow = generation?.workflow && typeof generation.workflow === "object" && !Array.isArray(generation.workflow) ? generation.workflow : null;
+    const prompt = generation?.prompt && typeof generation.prompt === "object" && !Array.isArray(generation.prompt) ? generation.prompt : null;
+    quality.recordMetric({ idempotency_key: `review:${item.review_id}:created`, event_type: "review.created", module: item.source_module, instance_id: item.instance_id, workflow_id: typeof workflow?.id === "string" ? workflow.id : null, workflow_version: typeof workflow?.version === "string" ? workflow.version : null, prompt_id: typeof prompt?.id === "string" ? prompt.id : null, prompt_version: typeof prompt?.version === "string" ? prompt.version : null, run_id: typeof generation?.run_id === "string" ? generation.run_id : null, occurred_at: item.created, dimensions: { priority: item.priority, action: item.action }, values: {} });
+  } return paths; } finally { quality.close(); }
 }
 
 async function findReviewByFingerprint(vaultRoot: string, fingerprint: string): Promise<LocatedReview | null> {

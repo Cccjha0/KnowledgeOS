@@ -21,6 +21,9 @@
     "summary"
   ],
   "properties": {
+    "source_module": { "const": "application-tracker" },
+    "type": { "const": "research-report" },
+    "schema_version": { "const": 1 },
     "report_id": {
       "type": "string",
       "pattern": "^RPT-\\d{4}-\\d{6,}$"
@@ -82,7 +85,9 @@
     },
     "summary": {
       "type": "string"
-    }
+    },
+    "generation": { "type": ["object", "null"] },
+    "_ownership": { "type": "object" }
   },
   "$defs": {
     "source": {
