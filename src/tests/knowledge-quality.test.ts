@@ -55,7 +55,17 @@ test("I14 evaluation requires real coverage and evaluates all five exit criteria
     { observed_at: "2026-07-29T07:00:00Z", frequency: "daily", metrics: metrics(1) },
   ] }, "2026-08-15T00:00:00Z");
   assert.equal((sameShanghaiDay.coverage as JsonObject).unique_days, 1);
+  assert.equal((sameShanghaiDay.coverage as JsonObject).measured_snapshots, 1);
+  assert.equal((sameShanghaiDay.coverage as JsonObject).raw_measured_snapshots, 2);
   assert.equal(sameShanghaiDay.timezone, "Asia/Shanghai");
+  const sameDayNoise: JsonObject[] = [
+    { observed_at: "2026-07-01T00:00:00Z", frequency: "weekly", metrics: metrics(5) },
+    { observed_at: "2026-07-01T12:00:00Z", frequency: "daily", metrics: metrics(1) },
+    ...Array.from({ length: 6 }, (_, index) => ({ observed_at: `2026-07-${String(index + 2).padStart(2, "0")}T12:00:00Z`, frequency: index === 5 ? "weekly" : "daily", metrics: metrics(2) })),
+  ];
+  const dailyTrend = evaluateObservationWindow({ ...observation, snapshots: sameDayNoise }, "2026-07-15T12:00:00Z");
+  assert.equal(dailyTrend.overall, "needs-attention");
+  assert.equal(((dailyTrend.criteria as JsonObject)["review-debt-not-growing"] as JsonObject).baseline_pending, 1);
 });
 
 test("freshness distinguishes verified, due-soon, stale, historical and hierarchy", () => {
