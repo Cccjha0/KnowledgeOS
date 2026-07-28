@@ -1,0 +1,5 @@
+id: comparison-table
+version: 1.0.0
+maturity: beta
+owns_business_data: false
+capabilities: [structured-comparison]

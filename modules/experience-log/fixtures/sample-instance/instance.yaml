@@ -1,0 +1,13 @@
+instance_id: sample-experience
+module_id: experience-log
+status: active
+display_name: Sample Experience
+content_root: 20-Workspace/Experience Log/sample-experience
+inbox_path: 20-Workspace/Experience Log/sample-experience/Inbox
+organization: Example
+role: Intern
+start_date: "2026-01-01"
+end_date: null
+timezone: Asia/Shanghai
+created: "2026-01-01T00:00:00Z"
+updated: "2026-01-01T00:00:00Z"

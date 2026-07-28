@@ -1,0 +1,8 @@
+owned_roots:
+- 20-Workspace/Reading Log/{instance_id}
+inbox: '{content_root}/Inbox'
+records: '{content_root}/Records'
+notes: '{content_root}/Notes'
+index: '{content_root}/Index.md'
+weekly: '{content_root}/Weekly'
+archive: '{content_root}/Archive'

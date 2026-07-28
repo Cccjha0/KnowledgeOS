@@ -1,0 +1,83 @@
+id: reading-log
+name: Reading Log
+version: 0.1.0
+maturity: beta
+status: enabled
+description: Turn scattered reading captures into sourced reading notes, a lightweight title index, and weekly summaries.
+engine:
+  api_version: 1
+  min_version: 0.1.0
+  max_version: 0.x
+data:
+  schema_version: 1
+module_type: configuration
+capabilities:
+- capture-processing
+- metadata-enrichment
+- dashboard-items
+- periodic-summary
+- event-publishing
+accepted_inputs:
+- markdown
+- text
+inbox:
+  module_level:
+    enabled: true
+    path: 20-Workspace/Reading Log/Inbox
+  instance_level:
+    enabled: true
+    path_pattern: '{content_root}/Inbox'
+  allow_global_routing: true
+routing:
+  matcher: workflows/classify/v1.0.0.yaml
+  auto_route_threshold: 0.85
+  review_threshold: 0.6
+entry_workflows:
+  capture: workflows/normalize/v1.0.0.yaml
+schemas:
+  registry: schemas/index.yaml
+  instance: schemas/instance.schema.json
+  record: schemas/record.schema.json
+  reading_index: schemas/reading-index.schema.json
+  weekly_summary: schemas/weekly-summary.schema.json
+prompts:
+  registry: prompts/index.yaml
+workflows:
+  registry: workflows/index.yaml
+rules:
+  paths: rules/paths.yaml
+  review: rules/review-policy.yaml
+  permissions: rules/permissions.yaml
+dashboard:
+  provider: dashboard/provider.yaml
+jobs:
+  registry: jobs/jobs.yaml
+events:
+  publishes:
+  - reading-log.record-created
+  - reading-log.weekly-summary-created
+  subscribes:
+  - capture.created
+dependencies:
+  components:
+    periodic-rollup: ^1.0.0
+scheduled_jobs: []
+permissions:
+  max_read_level: 0
+  network: false
+  codex: optional
+  delete: false
+  cross_module_write: false
+  max_default_read_level: 0
+  allow_external_network: false
+  allow_delete: false
+  allow_bulk_move: false
+instance_form:
+  content_root_pattern: 20-Workspace/Reading Log/{instance_id}
+  inbox_path_pattern: '{content_root}/Inbox'
+  fields:
+  - key: timezone
+    label: Timezone
+    type: timezone
+    required: true
+    default: Asia/Shanghai

@@ -116,9 +116,10 @@ export interface RollbackRunParams {
 
 export interface ManageModuleParams {
   module_id: string;
-  action: "enable" | "disable" | "validate";
+  action: "enable" | "disable" | "validate" | "upgrade" | "rollback";
   preview_only?: boolean;
   confirm?: boolean;
+  package_path?: string;
 }
 
 export interface CreateInstanceParams {

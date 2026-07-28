@@ -1,0 +1,13 @@
+workflow_id: weekly-summary
+workflow_version: 1.0.0
+inputs: [instance, iso_week]
+resources: { filesystem: required, network: not-required, codex: required, user: not-required }
+steps:
+  - id: collect-notes
+    uses: core.find-by-fields
+    with: { root: "{instance.content_root}/Notes", fields: [instance_id, created] }
+  - id: summarize
+    uses: codex.prompt
+    with: { prompt_id: weekly-summary, output_schema: "https://pkb.local/schemas/reading-log/weekly-summary.schema.json" }
+  - { id: build-plan, uses: core.build-operation-plan }
+outputs: [operation_plan, dashboard_items, events]

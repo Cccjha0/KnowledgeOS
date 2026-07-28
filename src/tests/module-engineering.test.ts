@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { parseYaml, writeYaml } from "../core/bridge.js";
+import { readJson } from "../core/files.js";
+import type { JsonObject, Operation } from "../core/types.js";
+import { initializeVault } from "../core/vault.js";
+import { invokeCommandApi } from "../platform/commandApi.js";
+import { installModulePackage, packModule, rollbackModulePackage } from "../modules/packageManager.js";
+import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
+import { createModuleScaffold } from "../modules/scaffold.js";
+import { ModuleSdk } from "../modules/sdk.js";
+import { validateModule } from "../modules/validator.js";
+
+const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+async function temporaryEngine(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-engine-"));
+  await fs.mkdir(path.join(root, "core", "schemas"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "core", "schemas", "module-manifest.schema.json"), path.join(root, "core", "schemas", "module-manifest.schema.json"));
+  await fs.cp(path.join(SOURCE_ROOT, "components"), path.join(root, "components"), { recursive: true });
+  await fs.mkdir(path.join(root, "tools"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "tools", "module_bridge.py"), path.join(root, "tools", "module_bridge.py"));
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0" }), "utf8");
+  return root;
+}
+
+test("all scaffold templates generate manifests that satisfy the base contract", async () => {
+  const engine = await temporaryEngine();
+  try {
+    for (const [id, template] of [["sample-config", "minimal-config"], ["sample-workflow", "workflow"], ["sample-integration", "integration"]] as const) {
+      await createModuleScaffold(engine, id, template, id);
+      const report = await validateModule(engine, path.join(engine, "modules", id));
+      assert.notEqual(report.overall, "FAIL", `${template} scaffold should validate`);
+    }
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("validation fails before enable when a registered prompt is missing", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "broken-reference", "minimal-config");
+    await fs.rm(path.join(engine, "modules", "broken-reference", "prompts", "normalize", "v1.0.0.md"));
+    const report = await validateModule(engine, path.join(engine, "modules", "broken-reference"));
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "MODULE_REFERENCE_NOT_FOUND" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Module SDK allows structured plans but rejects cross-boundary and red operations", () => {
+  const sdk = new ModuleSdk({ vaultRoot: "C:/vault", moduleId: "reading-log", moduleVersion: "0.1.0", instanceId: "reading-2026", allowedReadRoots: ["20-Workspace/Reading Log/reading-2026"], ownedWriteRoots: ["20-Workspace/Reading Log/reading-2026"], maxReadLevel: 0 });
+  const operation: Operation = { operation_id: "OP-001", type: "create-file", target: "20-Workspace/Reading Log/reading-2026/Notes/a.md", risk: "green", confidence: 1, idempotency_key: "reading:a", payload: { format: "text", text: "A" }, requires_review_id: null };
+  const plan = sdk.buildOperationPlan({ planId: "PLAN-001", taskId: "TASK-001", summary: "Create reading note", operations: [operation] });
+  assert.equal(plan.source_module, "reading-log");
+  assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-002", taskId: "TASK-002", summary: "bad", operations: [{ ...operation, target: "20-Workspace/Applications/secret.md" }] }), /cannot propose a write/);
+  assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-003", taskId: "TASK-003", summary: "bad", operations: [{ ...operation, type: "delete-file" }] }), /delete operations/);
+});
+
+test("Prompt and Workflow registries support default, pin, testing and generation trace", async () => {
+  const root = path.join(SOURCE_ROOT, "modules", "reading-log");
+  const manifest = parseYaml(root, path.join(root, "module.yaml"));
+  const prompt = await resolveVersionedEntry({ moduleRoot: root, manifest, section: "prompts", id: "normalize-record", instancePins: { "normalize-record": "1.0.0" } });
+  const workflow = await resolveVersionedEntry({ moduleRoot: root, manifest, section: "workflows", id: "normalize", testingVersions: { normalize: "1.0.0" } });
+  assert.equal(prompt.source, "instance-pinned");
+  assert.equal(workflow.source, "testing");
+  const trace = generationTrace({ moduleId: "reading-log", moduleVersion: "0.1.0", workflow, prompt, adapter: "codex-cli", runId: "RUN-001", generatedAt: "2026-07-28T00:00:00Z" });
+  assert.equal(trace.prompt_version, "1.0.0");
+  assert.equal(trace.workflow_version, "1.0.0");
+});
+
+test("reading-log test instance can be created, paused, resumed and archived without losing data", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-reading-life-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READING-CREATE", method: "createInstance", params: { module_id: "reading-log", instance_id: "reading-2026", display_name: "Reading 2026", fields: { timezone: "Asia/Shanghai" } } });
+    assert.equal(create.ok, true);
+    const contentFile = path.join(vault, "20-Workspace", "Reading Log", "reading-2026", "Inbox", "capture.md");
+    await fs.writeFile(contentFile, "A sourced reading note", "utf8");
+    const pause = await invokeCommandApi({ vaultRoot: vault, requestId: "READING-PAUSE", method: "manageInstance", params: { instance_id: "reading-2026", action: "pause" } });
+    const resume = await invokeCommandApi({ vaultRoot: vault, requestId: "READING-RESUME", method: "manageInstance", params: { instance_id: "reading-2026", action: "resume" } });
+    const archive = await invokeCommandApi({ vaultRoot: vault, requestId: "READING-ARCHIVE", method: "manageInstance", params: { instance_id: "reading-2026", action: "archive", confirm: true } });
+    assert.equal(pause.ok, true); assert.equal(resume.ok, true); assert.equal(archive.ok, true);
+    assert.equal(await fs.readFile(contentFile, "utf8"), "A sourced reading note");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("local package install, upgrade and rollback preserve an exact module lock", async () => {
+  const engine = await temporaryEngine();
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-vault-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const root = path.join(engine, "modules", "package-sample");
+    await createModuleScaffold(engine, "package-sample", "minimal-config");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.maturity = "beta"; manifest.status = "enabled";
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const firstPackage = path.join(engine, "package-sample-0.1.0.pkb-module");
+    await packModule(engine, "package-sample", firstPackage);
+    const installed = await installModulePackage(engine, vault, firstPackage, { enable: true });
+    assert.equal(installed.status, "installed");
+
+    manifest.version = "0.2.0";
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const secondPackage = path.join(engine, "package-sample-0.2.0.pkb-module");
+    await packModule(engine, "package-sample", secondPackage);
+    const upgraded = await installModulePackage(engine, vault, secondPackage, { enable: true, upgrade: true });
+    assert.equal(upgraded.previous_version, "0.1.0");
+    const rolledBack = await rollbackModulePackage(engine, vault, "package-sample");
+    assert.equal(rolledBack.status, "rolled-back");
+    const lock = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
+    assert.equal(lock.modules["package-sample"]?.version, "0.1.0");
+    assert.equal(typeof lock.modules["package-sample"]?.checksum, "string");
+  } finally {
+    await fs.rm(engine, { recursive: true, force: true });
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});

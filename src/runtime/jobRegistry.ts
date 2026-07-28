@@ -24,6 +24,8 @@ function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | nul
   const id = String(raw.id);
   const instanceId = instance ? String(instance.instance_id) : null;
   const trigger = structuredClone(raw.trigger as JsonObject);
+  if (typeof raw.workflow_id === "string") trigger.workflow_id = raw.workflow_id;
+  if (typeof raw.workflow_version === "string") trigger.workflow_version = raw.workflow_version;
   if (trigger.timezone === "instance") trigger.timezone = String(instance?.timezone ?? "Asia/Shanghai");
   const concurrency = structuredClone((raw.concurrency ?? {}) as JsonObject);
   if (typeof concurrency.key === "string" && instanceId) concurrency.key = concurrency.key.replaceAll("{instance}", instanceId);

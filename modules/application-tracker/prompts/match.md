@@ -31,3 +31,11 @@
 # 输出
 
 严格返回符合 core/match-result.schema.json 的 JSON。
+---
+prompt_id: match-capture
+prompt_version: 1.0.0
+module: application-tracker
+task_type: classification
+output_schema: https://pkb.local/schemas/core/match-result.schema.json
+status: active
+---

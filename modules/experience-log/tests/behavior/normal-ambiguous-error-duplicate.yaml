@@ -1,0 +1,2 @@
+evidence: src/tests/experience-module.test.ts
+cases: [normal, ambiguous, invalid, duplicate]

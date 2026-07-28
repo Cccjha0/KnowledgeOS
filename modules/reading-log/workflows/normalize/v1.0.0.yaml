@@ -1,0 +1,22 @@
+workflow_id: normalize
+workflow_version: 1.0.0
+inputs:
+- capture
+- instance
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+steps:
+- id: normalize
+  uses: codex.prompt
+  with:
+    prompt_id: normalize-record
+    output_schema: https://pkb.local/schemas/reading-log/record.schema.json
+- id: plan
+  uses: core.build-operation-plan
+outputs:
+- operation_plan
+- dashboard_items
+- events

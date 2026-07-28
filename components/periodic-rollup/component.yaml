@@ -1,0 +1,5 @@
+id: periodic-rollup
+version: 1.0.0
+maturity: stable
+owns_business_data: false
+capabilities: [period-window, aggregation-policy]

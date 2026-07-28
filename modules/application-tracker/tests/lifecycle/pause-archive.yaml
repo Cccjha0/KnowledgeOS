@@ -1,0 +1,2 @@
+evidence: src/tests/lifecycle.test.ts
+expected: [paused-stops-jobs, archived-retains-data]

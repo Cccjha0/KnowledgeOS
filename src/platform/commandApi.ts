@@ -1,11 +1,11 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, parseYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
-import { fromVaultPath, listFilesRecursive, toVaultPath, writeJsonAtomic } from "../core/files.js";
+import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { rollbackTransaction } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, ReviewItem, RunLog } from "../core/types.js";
 import { allocateId } from "../core/ids.js";
@@ -28,6 +28,7 @@ import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
 import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
 import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
+import { validateModule } from "../modules/validator.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -43,6 +44,15 @@ function stringParam(params: JsonObject, key: string): string {
   const value = params[key];
   if (typeof value !== "string" || value.length === 0) throw new PkbError("INVALID_REQUEST", `${key} is required.`);
   return value;
+}
+
+function promptVersionSummary(moduleRoot: string, manifest: JsonObject): JsonObject {
+  try {
+    const prompts = manifest.prompts as JsonObject;
+    const registry = parseYaml(moduleRoot, path.join(moduleRoot, ...String(prompts.registry).split("/")));
+    const entries = registry.prompts as JsonObject;
+    return Object.fromEntries(Object.entries(entries).map(([id, value]) => [id, String((value as JsonObject).active_version)])) as JsonObject;
+  } catch { return {}; }
 }
 
 async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
@@ -243,16 +253,30 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   if (method === "getModules") {
     const instances = await discoverInstances(vaultRoot);
     const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
-    return modules.map((module) => ({
+    const moduleLock = await readJson<{ modules?: Record<string, JsonObject> }>(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { modules: {} });
+    return await Promise.all(modules.map(async (module) => {
+      const report = await validateModule(ENGINE_ROOT, path.dirname(module.path));
+      return ({
       id: module.data.id,
       name: module.data.name,
       version: module.data.version,
       status: module.data.status,
       description: module.data.description,
+      maturity: module.data.maturity,
+      schema_version: (module.data.data as JsonObject)?.schema_version ?? null,
+      engine_api_version: (module.data.engine as JsonObject)?.api_version ?? null,
+      health: report.overall,
+      validation_counts: report.counts,
+      beta_eligible: report.beta_eligible,
+      stable_eligible: report.stable_eligible,
+      prompt_versions: promptVersionSummary(path.dirname(module.path), module.data),
+      last_test_at: report.generated_at,
+      checksum: moduleLock.modules?.[String(module.data.id)]?.checksum ?? null,
+      previous_version: moduleLock.modules?.[String(module.data.id)]?.previous_version ?? null,
       active_instance_count: instances.filter((instance) => instance.data.module_id === module.data.id && instance.data.status === "active").length,
       instance_form: module.data.instance_form ?? null,
-      available_actions: module.data.status === "enabled" ? ["disable", "validate", "create-instance"] : ["enable", "validate"],
-    })) as JsonValue;
+      available_actions: [module.data.status === "enabled" ? "disable" : "enable", "validate", "upgrade", ...(moduleLock.modules?.[String(module.data.id)]?.previous_version ? ["rollback"] : []), ...(module.data.status === "enabled" && module.data.instance_form ? ["create-instance"] : [])],
+    }); })) as JsonValue;
   }
   if (method === "getInstances") {
     const moduleId = typeof params.module_id === "string" ? params.module_id : null;

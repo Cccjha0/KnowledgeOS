@@ -1,0 +1,14 @@
+jobs:
+  - id: weekly-summary
+    scope: instance
+    enabled: true
+    task_type: workflow
+    workflow: reading-log:weekly-summary
+    workflow_id: weekly-summary
+    workflow_version: 1.0.0
+    trigger: { type: weekly, weekday: Sun, at: "18:00", timezone: instance }
+    resources: { filesystem: required, network: not-required, codex: required, user: not-required }
+    catch_up: { policy: aggregate, max_age_days: 21 }
+    retry: { max_attempts: 3, strategy: exponential }
+    concurrency: { policy: forbid, key: "reading-log:{instance}:weekly-summary" }
+    priority: normal

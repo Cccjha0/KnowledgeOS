@@ -1,0 +1,4 @@
+workflows:
+  match: { active_version: 1.0.0, path: match/v1.0.0.yaml, versions: { 1.0.0: match/v1.0.0.yaml } }
+  build-daily-log: { active_version: 1.0.0, path: build-daily-log/v1.0.0.yaml, versions: { 1.0.0: build-daily-log/v1.0.0.yaml } }
+  build-weekly-summary: { active_version: 1.0.0, path: build-weekly-summary/v1.0.0.yaml, versions: { 1.0.0: build-weekly-summary/v1.0.0.yaml } }

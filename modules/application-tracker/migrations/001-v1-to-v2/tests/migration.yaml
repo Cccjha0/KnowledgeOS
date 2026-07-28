@@ -1,0 +1,1 @@
+expected: [old-data-readable, new-schema-valid, idempotent, interrupted-recoverable, reversible]

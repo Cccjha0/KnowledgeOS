@@ -73,7 +73,7 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     return repository.finishRun(run.run_id, {
       runStatus: "completed", taskStatus: "completed", operationPlanId: result.operation_plan_id,
       gitSnapshotId: result.git_snapshot_id, inputFiles: result.input_files, outputFiles: result.output_files,
-      metrics: { ...(result.metrics ?? {}), duration_ms: performance.now() - started }, completionReason: result.completion_reason,
+      metrics: { ...(result.metrics ?? {}), duration_ms: performance.now() - started, workflow_id: task.trigger.workflow_id ?? task.workflow, workflow_version: task.trigger.workflow_version ?? null }, completionReason: result.completion_reason,
     }).task;
   } catch (error) {
     clearInterval(heartbeat);

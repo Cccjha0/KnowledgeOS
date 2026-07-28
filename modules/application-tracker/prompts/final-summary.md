@@ -19,3 +19,11 @@
 - 未解决事项。
 
 不得重新读取所有原始网页快照，除非已有总结无法支持结论。
+---
+prompt_id: final-summary
+prompt_version: 1.0.0
+module: application-tracker
+task_type: summarization
+output_schema: https://pkb.local/schemas/core/dashboard-item.schema.json
+status: active
+---

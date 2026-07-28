@@ -1,0 +1,218 @@
+{
+  "report_version": 1,
+  "module_id": "experience-log",
+  "module_version": "0.2.0",
+  "maturity": "beta",
+  "generated_at": "2026-07-28T15:22:59.393Z",
+  "checks": [
+    {
+      "category": "manifest",
+      "code": "MANIFEST_V1_VALID",
+      "status": "pass",
+      "message": "Manifest v1 schema passed.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "compatibility",
+      "code": "ENGINE_COMPATIBILITY",
+      "status": "pass",
+      "message": "Compatible with Core 0.1.0 API v1.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "schema",
+      "code": "MODULE_SCHEMA_VALID",
+      "status": "pass",
+      "message": "experience-instance schema is parseable and has a stable $id.",
+      "critical": false,
+      "path": "schemas/experience-instance.schema.json"
+    },
+    {
+      "category": "schema",
+      "code": "MODULE_SCHEMA_VALID",
+      "status": "pass",
+      "message": "experience-entry schema is parseable and has a stable $id.",
+      "critical": false,
+      "path": "schemas/experience-entry.schema.json"
+    },
+    {
+      "category": "schema",
+      "code": "MODULE_SCHEMA_VALID",
+      "status": "pass",
+      "message": "daily-log schema is parseable and has a stable $id.",
+      "critical": false,
+      "path": "schemas/daily-log.schema.json"
+    },
+    {
+      "category": "schema",
+      "code": "MODULE_SCHEMA_VALID",
+      "status": "pass",
+      "message": "weekly-summary schema is parseable and has a stable $id.",
+      "critical": false,
+      "path": "schemas/weekly-summary.schema.json"
+    },
+    {
+      "category": "references",
+      "code": "MODULE_SCHEMAS_REGISTRY_VALID",
+      "status": "pass",
+      "message": "schemas registry references resolve.",
+      "critical": false,
+      "path": "schemas/index.yaml"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "PROMPT_METADATA_VALID",
+      "status": "pass",
+      "message": "match-capture@1.0.0 has versioned metadata.",
+      "critical": false,
+      "path": "prompts/classify/v1.0.0.md"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "PROMPT_METADATA_VALID",
+      "status": "pass",
+      "message": "normalize-daily-log@1.0.0 has versioned metadata.",
+      "critical": false,
+      "path": "prompts/normalize/v1.0.0.md"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "PROMPT_METADATA_VALID",
+      "status": "pass",
+      "message": "weekly-summary@1.0.0 has versioned metadata.",
+      "critical": false,
+      "path": "prompts/summarize/v1.0.0.md"
+    },
+    {
+      "category": "references",
+      "code": "MODULE_PROMPTS_REGISTRY_VALID",
+      "status": "pass",
+      "message": "prompts registry references resolve.",
+      "critical": false,
+      "path": "prompts/index.yaml"
+    },
+    {
+      "category": "references",
+      "code": "MODULE_WORKFLOWS_REGISTRY_VALID",
+      "status": "pass",
+      "message": "workflows registry references resolve.",
+      "critical": false,
+      "path": "workflows/index.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "NO_CUSTOM_EXECUTABLES",
+      "status": "pass",
+      "message": "No module-owned execution scripts found.",
+      "critical": false,
+      "path": null
+    },
+    {
+      "category": "contracts",
+      "code": "CAPABILITY_CONSISTENCY",
+      "status": "pass",
+      "message": "Declared capabilities have required registries.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "compatibility",
+      "code": "COMPONENT_COMPATIBLE",
+      "status": "pass",
+      "message": "timeline 1.0.0 satisfies ^1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "documentation",
+      "code": "DOC_README_MD",
+      "status": "pass",
+      "message": "README.md exists.",
+      "critical": false,
+      "path": "README.md"
+    },
+    {
+      "category": "documentation",
+      "code": "DOC_CHANGELOG_MD",
+      "status": "pass",
+      "message": "CHANGELOG.md exists.",
+      "critical": false,
+      "path": "CHANGELOG.md"
+    },
+    {
+      "category": "documentation",
+      "code": "DOC_DOCS_USE_CASE_MD",
+      "status": "pass",
+      "message": "docs/use-case.md exists.",
+      "critical": false,
+      "path": "docs/use-case.md"
+    },
+    {
+      "category": "behavior",
+      "code": "FIXTURES_PRESENT",
+      "status": "pass",
+      "message": "1 fixture file(s) found.",
+      "critical": false,
+      "path": "fixtures"
+    },
+    {
+      "category": "contracts",
+      "code": "TEST_CONTRACT",
+      "status": "pass",
+      "message": "contract test fixture exists.",
+      "critical": false,
+      "path": "tests/contract"
+    },
+    {
+      "category": "behavior",
+      "code": "TEST_BEHAVIOR",
+      "status": "pass",
+      "message": "behavior test fixture exists.",
+      "critical": false,
+      "path": "tests/behavior"
+    },
+    {
+      "category": "permissions",
+      "code": "TEST_PERMISSION",
+      "status": "pass",
+      "message": "permission test fixture exists.",
+      "critical": false,
+      "path": "tests/permission"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "TEST_PROMPT_REGRESSION",
+      "status": "pass",
+      "message": "prompt-regression test fixture exists.",
+      "critical": false,
+      "path": "tests/prompt-regression"
+    },
+    {
+      "category": "lifecycle",
+      "code": "TEST_LIFECYCLE",
+      "status": "pass",
+      "message": "lifecycle test fixture exists.",
+      "critical": false,
+      "path": "tests/lifecycle"
+    },
+    {
+      "category": "migration",
+      "code": "TEST_MIGRATION",
+      "status": "pass",
+      "message": "migration test fixture exists.",
+      "critical": false,
+      "path": "tests/migration"
+    }
+  ],
+  "counts": {
+    "pass": 25,
+    "warning": 0,
+    "fail": 0,
+    "critical": 0
+  },
+  "overall": "PASS",
+  "beta_eligible": true,
+  "stable_eligible": false
+}

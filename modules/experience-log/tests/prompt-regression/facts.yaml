@@ -1,0 +1,1 @@
+invariants: [preserve-facts, no-invented-completion, uncertainty-preserved, schema-valid]

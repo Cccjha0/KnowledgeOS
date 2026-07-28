@@ -1,0 +1,2 @@
+evidence: src/tests/production-stability.test.ts
+expected: [no-op-when-current, snapshot-before-future-migration]

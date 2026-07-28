@@ -1,0 +1,17 @@
+workflow_id: classify
+workflow_version: 1.0.0
+inputs:
+- capture
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+steps:
+- id: classify
+  uses: codex.prompt
+  with:
+    prompt_id: classify-capture
+    output_schema: https://pkb.local/schemas/core/match-result.schema.json
+outputs:
+- match_result

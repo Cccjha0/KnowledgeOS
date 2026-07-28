@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/reading-log/reading-index.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "entries", "updated"],
+  "properties": {
+    "id": { "type": "string" },
+    "type": { "const": "reading-index" },
+    "schema_id": { "const": "reading-index" },
+    "schema_version": { "const": 1 },
+    "module_version": { "type": "string" },
+    "instance_id": { "type": "string" },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "kind", "note_ref"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["book", "article", "paper", "other"] },
+          "note_ref": { "type": "string" }
+        }
+      }
+    },
+    "updated": { "type": "string", "format": "date-time" }
+  }
+}

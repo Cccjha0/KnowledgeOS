@@ -1,0 +1,7 @@
+schemas:
+  application-instance: { version: 1, path: application-instance.schema.json, entity_type: application-instance }
+  application-record: { version: 2, path: application-record.schema.json, entity_type: application-record }
+  research-report: { version: 1, path: research-report.schema.json, entity_type: research-report }
+  application-document: { version: 1, path: application-document.schema.json, entity_type: application-document }
+  research-request: { version: 1, path: research-request.schema.json, entity_type: research-request }
+  update-result: { version: 1, path: update-result.schema.json, entity_type: update-result }

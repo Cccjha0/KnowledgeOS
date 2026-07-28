@@ -1,0 +1,2 @@
+evidence: src/tests/production-stability.test.ts
+expected: [snapshot, idempotent, validated, rollback]

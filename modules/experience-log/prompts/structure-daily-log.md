@@ -15,3 +15,11 @@
 - 保留全部 `entry_ids` 和 Vault 相对 `source_refs`；
 - 将内容归入 accomplishments、blockers、learnings、next_actions；
 - 输出一个 Operation Plan，创建日报并把原始条目移动到实例 Archive。
+---
+prompt_id: normalize-daily-log
+prompt_version: 1.0.0
+module: experience-log
+task_type: normalization
+output_schema: https://pkb.local/schemas/experience-log/daily-log.schema.json
+status: active
+---

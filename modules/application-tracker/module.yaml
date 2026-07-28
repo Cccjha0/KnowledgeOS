@@ -1,6 +1,7 @@
 id: application-tracker
 name: 申请跟踪
 version: 0.2.0
+maturity: beta
 status: enabled
 
 description: >
@@ -8,8 +9,12 @@ description: >
   MVP 先实现外部研究报告的路由、比较、审核和复查提醒。
 
 engine:
+  api_version: 1
   min_version: 0.1.0
   max_version: 0.x
+
+data:
+  schema_version: 2
 
 module_type: workflow
 
@@ -39,22 +44,32 @@ inbox:
   allow_global_routing: true
 
 routing:
-  matcher: workflows/match.yaml
+  matcher: workflows/match/v1.0.0.yaml
   auto_route_threshold: 0.90
   review_threshold: 0.65
 
 entry_workflows:
-  capture: workflows/process-research-report.yaml
-  review_resolve: workflows/review-resolve.yaml
-  archive: workflows/archive-instance.yaml
+  capture: workflows/process-research-report/v1.0.0.yaml
+  review_resolve: workflows/review-resolve/v1.0.0.yaml
+  archive: workflows/archive-instance/v1.0.0.yaml
 
 schemas:
+  registry: schemas/index.yaml
   instance: schemas/application-instance.schema.json
   application_record: schemas/application-record.schema.json
   research_report: schemas/research-report.schema.json
   application_document: schemas/application-document.schema.json
   research_request: schemas/research-request.schema.json
   update_result: schemas/update-result.schema.json
+
+prompts:
+  registry: prompts/index.yaml
+
+workflows:
+  registry: workflows/index.yaml
+
+jobs:
+  registry: jobs.yaml
 
 rules:
   paths: rules/paths.yaml
@@ -76,13 +91,18 @@ events:
 
 dependencies:
   components:
-    - status-machine
-    - research-request
-    - comparison-table
+    status-machine: ^1.0.0
+    research-request: ^1.0.0
+    comparison-table: ^1.0.0
 
 scheduled_jobs: []
 
 permissions:
+  max_read_level: 0
+  network: false
+  codex: optional
+  delete: false
+  cross_module_write: false
   max_default_read_level: 0
   allow_external_network: false
   allow_delete: false

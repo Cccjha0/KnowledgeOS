@@ -4,6 +4,8 @@ jobs:
     enabled: true
     task_type: workflow
     workflow: experience-log:weekly-summary
+    workflow_id: build-weekly-summary
+    workflow_version: 1.0.0
     trigger: { type: weekly, weekday: Fri, at: "18:00", timezone: instance }
     resources: { filesystem: required, network: not-required, codex: required, user: not-required }
     catch_up: { policy: aggregate, max_age_days: 21 }

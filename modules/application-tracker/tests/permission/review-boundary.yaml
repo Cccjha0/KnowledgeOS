@@ -1,0 +1,2 @@
+evidence: src/tests/review.test.ts
+expected: [green-executes, yellow-reviews, red-blocked, no-cross-module-write]

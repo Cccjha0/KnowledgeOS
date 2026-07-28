@@ -8,3 +8,11 @@
 - 不读取 Vault 外内容，不联网。
 
 输出 Core Match Result。
+---
+prompt_id: match-capture
+prompt_version: 1.0.0
+module: experience-log
+task_type: classification
+output_schema: https://pkb.local/schemas/core/match-result.schema.json
+status: active
+---

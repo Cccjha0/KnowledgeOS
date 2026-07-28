@@ -1,0 +1,2 @@
+evidence: [src/tests/application-daily.test.ts, src/tests/compare.test.ts]
+cases: [normal, ambiguous, invalid, duplicate]

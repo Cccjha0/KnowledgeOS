@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/reading-log/weekly-summary.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "iso_week", "note_refs", "themes", "questions", "generation", "created"],
+  "properties": {
+    "id": { "type": "string" },
+    "type": { "const": "reading-weekly-summary" },
+    "schema_id": { "const": "weekly-summary" },
+    "schema_version": { "const": 1 },
+    "module_version": { "type": "string" },
+    "instance_id": { "type": "string" },
+    "iso_week": { "type": "string", "pattern": "^\\d{4}-W\\d{2}$" },
+    "note_refs": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "themes": { "type": "array", "items": { "type": "string" } },
+    "questions": { "type": "array", "items": { "type": "string" } },
+    "generation": { "type": "object" },
+    "created": { "type": "string", "format": "date-time" }
+  }
+}

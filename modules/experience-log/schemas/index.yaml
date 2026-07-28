@@ -1,0 +1,5 @@
+schemas:
+  experience-instance: { version: 1, path: experience-instance.schema.json, entity_type: experience-instance }
+  experience-entry: { version: 1, path: experience-entry.schema.json, entity_type: experience-entry }
+  daily-log: { version: 1, path: daily-log.schema.json, entity_type: experience-daily-log }
+  weekly-summary: { version: 1, path: weekly-summary.schema.json, entity_type: experience-weekly-summary }

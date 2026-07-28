@@ -1,0 +1,3 @@
+default_level: 0
+allowed_roots:
+- '{content_root}'

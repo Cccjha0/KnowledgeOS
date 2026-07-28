@@ -1,0 +1,6 @@
+provider_id: reading-log-dashboard
+version: 1.0.0
+items:
+- inbox
+- waiting-review
+- recent-records

@@ -1174,7 +1174,12 @@ class SystemCenterView extends ItemView {
     root.createEl("h3", { text: "模块" });
     for (const module of this.data.modules) {
       const stats = this.moduleStats(module.id);
+      const engineeringHealth = `v${module.version} · ${module.maturity || "unknown"} · 健康 ${module.health || "UNKNOWN"} · Schema v${module.schema_version ?? "?"}`;
       const card = root.createDiv({ cls: "knowledgeos-card knowledgeos-system-card" });
+      card.createDiv({ cls: "knowledgeos-review-meta", text: engineeringHealth });
+      const promptCount = Object.keys(module.prompt_versions || {}).length;
+      card.createDiv({ cls: "knowledgeos-review-meta", text: `Core API v${module.engine_api_version ?? "?"} · Prompt ${promptCount} 个` });
+      if (module.validation_counts) card.createDiv({ cls: "knowledgeos-review-meta", text: `验证：通过 ${module.validation_counts.pass || 0} · 警告 ${module.validation_counts.warning || 0} · 失败 ${module.validation_counts.fail || 0}` });
       card.createEl("strong", { text: `${module.name} · ${module.status}` });
       card.createDiv({ cls: "knowledgeos-review-meta", text: `v${module.version} · 活跃实例 ${module.active_instance_count} · Inbox ${stats.inbox} · 审核 ${stats.reviews}` });
       if (module.description) card.createDiv({ cls: "knowledgeos-description", text: module.description.trim() });
@@ -1184,6 +1189,28 @@ class SystemCenterView extends ItemView {
       validate.onclick = () => this.validateModule(module);
       const toggle = actions.createEl("button", { text: module.status === "enabled" ? "停用模块" : "启用模块" });
       toggle.onclick = () => this.moduleAction(module, module.status === "enabled" ? "disable" : "enable");
+      const upgrade = actions.createEl("button", { text: "Upgrade package" });
+      upgrade.onclick = async () => {
+        const packagePath = window.prompt("Local .pkb-module path");
+        if (!packagePath) return;
+        let response = await this.plugin.client.invoke("manageModule", { module_id: module.id, action: "upgrade", package_path: packagePath });
+        if (!response.ok && response.error?.code === "MODULE_UPGRADE_CONFIRMATION_REQUIRED" && window.confirm(response.error.message)) {
+          response = await this.plugin.client.invoke("manageModule", { module_id: module.id, action: "upgrade", package_path: packagePath, confirm: true });
+        }
+        if (!response.ok) this.plugin.notify(response.error?.message || "Module upgrade failed", { error: true });
+        else this.plugin.notify(`${module.name} upgraded to ${response.data.version}`);
+        await this.refresh();
+      };
+      if ((module.available_actions || []).includes("rollback")) {
+        const rollback = actions.createEl("button", { text: "Rollback" });
+        rollback.onclick = async () => {
+          if (!window.confirm(`Rollback ${module.name} to ${module.previous_version}?`)) return;
+          const response = await this.plugin.client.invoke("manageModule", { module_id: module.id, action: "rollback", confirm: true });
+          if (!response.ok) this.plugin.notify(response.error?.message || "Module rollback failed", { error: true });
+          else this.plugin.notify(`${module.name} rolled back to ${response.data.version}`);
+          await this.refresh();
+        };
+      }
       if (module.status === "enabled" && module.instance_form) {
         const add = actions.createEl("button", { text: "创建实例" });
         add.onclick = () => new CreateInstanceModal(this.app, this.plugin, this.data.modules, () => this.refresh(), module.id).open();
@@ -1226,7 +1253,10 @@ class SystemCenterView extends ItemView {
   async validateModule(module) {
     const response = await this.plugin.client.invoke("manageModule", { module_id: module.id, action: "validate" });
     if (!response.ok) { this.plugin.notify(response.error?.message || "模块验证失败", { error: true }); return; }
-    this.plugin.notify(`${module.name} 验证通过：${response.data.checks.join("、")}`);
+    const report = response.data.report;
+    this.plugin.notify(`${module.name}：${report.overall}（通过 ${report.counts.pass} / 警告 ${report.counts.warning} / 失败 ${report.counts.fail}）`, { error: report.overall === "FAIL" });
+    await this.refresh();
+    return;
   }
   async moduleAction(module, action) {
     const response = await this.plugin.client.invoke("manageModule", { module_id: module.id, action, preview_only: true });

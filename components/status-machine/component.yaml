@@ -1,0 +1,5 @@
+id: status-machine
+version: 1.0.0
+maturity: stable
+owns_business_data: false
+capabilities: [state-transition-validation]

@@ -1,0 +1,2 @@
+evidence: src/tests/application-daily.test.ts
+expected: structured-operation-plan

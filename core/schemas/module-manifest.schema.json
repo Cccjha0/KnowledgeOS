@@ -8,8 +8,10 @@
     "id",
     "name",
     "version",
+    "maturity",
     "status",
     "engine",
+    "data",
     "module_type",
     "capabilities",
     "accepted_inputs",
@@ -17,6 +19,9 @@
     "routing",
     "entry_workflows",
     "schemas",
+    "prompts",
+    "workflows",
+    "jobs",
     "permissions"
   ],
   "properties": {
@@ -29,6 +34,10 @@
     "version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "maturity": {
+      "type": "string",
+      "enum": ["experimental", "beta", "stable", "deprecated"]
     },
     "status": {
       "type": "string",
@@ -44,16 +53,29 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "api_version",
         "min_version",
         "max_version"
       ],
       "properties": {
+        "api_version": {
+          "type": "integer",
+          "const": 1
+        },
         "min_version": {
           "type": "string"
         },
         "max_version": {
           "type": "string"
         }
+      }
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version"],
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 1 }
       }
     },
     "module_type": {
@@ -158,6 +180,30 @@
         "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
       }
     },
+    "prompts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry"],
+      "properties": {
+        "registry": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" }
+      }
+    },
+    "workflows": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry"],
+      "properties": {
+        "registry": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" }
+      }
+    },
+    "jobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["registry"],
+      "properties": {
+        "registry": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" }
+      }
+    },
     "rules": {
       "type": "object",
       "additionalProperties": {
@@ -201,11 +247,17 @@
       "additionalProperties": false,
       "properties": {
         "components": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": {
-            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId"
-          }
+          "anyOf": [
+            {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" }
+            },
+            {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^(?:\\^|~)?\\d+\\.\\d+\\.\\d+$" }
+            }
+          ]
         }
       }
     },
@@ -241,12 +293,20 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "max_default_read_level",
-        "allow_external_network",
-        "allow_delete",
-        "allow_bulk_move"
+        "max_read_level",
+        "network",
+        "codex",
+        "delete",
+        "cross_module_write"
       ],
       "properties": {
+        "max_read_level": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+        },
+        "network": { "type": "boolean" },
+        "codex": { "type": "string", "enum": ["required", "optional", "disabled"] },
+        "delete": { "type": "boolean" },
+        "cross_module_write": { "type": "boolean" },
         "max_default_read_level": {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
         },

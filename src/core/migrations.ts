@@ -18,6 +18,8 @@ export interface MigrationDefinition extends JsonObject {
   to_version: number;
   roots: string[];
   steps: JsonObject[];
+  reversible: boolean;
+  requires: JsonObject;
 }
 
 export interface MigrationRun {
@@ -43,17 +45,34 @@ function assertDefinition(value: JsonObject, source: string): MigrationDefinitio
     throw new PkbError("INVALID_MIGRATION", `${source} must migrate exactly one schema version.`);
   }
   if (!Array.isArray(value.roots) || !Array.isArray(value.steps)) throw new PkbError("INVALID_MIGRATION", `${source} requires roots and steps arrays.`);
+  if (value.reversible !== true && value.reversible !== false) value.reversible = false;
+  if (!value.requires || typeof value.requires !== "object" || Array.isArray(value.requires)) value.requires = { git_snapshot: true, user_confirmation: !value.reversible };
   return value as MigrationDefinition;
 }
 
 export async function discoverMigrationDefinitions(engineRoot: string): Promise<MigrationDefinition[]> {
   const definitions: MigrationDefinition[] = [];
   for (const file of await listFilesRecursive(path.join(engineRoot, "modules"), ".yaml")) {
-    if (!file.split(path.sep).includes("migrations")) continue;
+    const parts = file.split(path.sep); const migrationsIndex = parts.lastIndexOf("migrations");
+    if (migrationsIndex < 0) continue;
+    const belowMigrations = parts.slice(migrationsIndex + 1);
+    if (belowMigrations.length > 2) continue;
+    if (path.basename(file) !== "migration.yaml" && !path.basename(file).match(/v\d+-to-v\d+\.yaml$/)) continue;
     definitions.push(assertDefinition(parseYaml(engineRoot, file), toVaultPath(engineRoot, file)));
   }
   definitions.sort((a, b) => a.migration_id.localeCompare(b.migration_id));
   return definitions;
+}
+
+export async function rollbackMigration(vaultRoot: string, migrationRunId: string): Promise<MigrationRun> {
+  const file = path.join(vaultRoot, "90-System", "State", "Migrations", `${migrationRunId}.json`);
+  const run = await readJson<MigrationRun | null>(file, null);
+  if (!run) throw new PkbError("MIGRATION_NOT_FOUND", `Migration run ${migrationRunId} was not found.`);
+  if (run.status !== "completed") throw new PkbError("MIGRATION_ROLLBACK_INVALID", `Migration run is ${run.status}.`);
+  await rollbackTransaction(vaultRoot, run.plan.plan_id);
+  run.status = "rolled-back"; run.updated_at = new Date().toISOString(); run.error = null;
+  await writeJsonAtomic(file, run);
+  return run;
 }
 
 export async function planMigrations(vaultRoot: string, engineRoot: string): Promise<MigrationRun[]> {

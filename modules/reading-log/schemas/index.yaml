@@ -1,0 +1,17 @@
+schemas:
+  instance:
+    version: 1
+    path: instance.schema.json
+    entity_type: instance
+  record:
+    version: 1
+    path: record.schema.json
+    entity_type: reading-note
+  reading-index:
+    version: 1
+    path: reading-index.schema.json
+    entity_type: reading-index
+  weekly-summary:
+    version: 1
+    path: weekly-summary.schema.json
+    entity_type: reading-weekly-summary

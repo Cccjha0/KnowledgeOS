@@ -13,6 +13,8 @@ import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, Operation, OperationPlan, RunLog } from "../core/types.js";
 import { rebuildTodayDashboard } from "./dashboard.js";
+import { validateModule } from "../modules/validator.js";
+import { installModulePackage, rollbackModulePackage } from "../modules/packageManager.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const BASE_INSTANCE_SCHEMA = "https://pkb.local/schemas/core/instance.schema.json";
@@ -148,7 +150,16 @@ export async function manageModule(vaultRoot: string, params: ManageModuleParams
   const impact = await moduleImpact(vaultRoot, moduleId);
   if (params.action === "validate") {
     const schemaId = await moduleInstanceSchema(module);
-    return { status: "valid", module_id: moduleId, checks: ["manifest-schema", "instance-schema", "dependency-declarations"], instance_schema: schemaId, impact };
+    const report = await validateModule(ENGINE_ROOT, path.dirname(module.path), { writeReport: true });
+    return { status: report.overall === "FAIL" ? "invalid" : "valid", module_id: moduleId, instance_schema: schemaId, report, impact };
+  }
+  if (params.action === "upgrade") {
+    if (!params.package_path) throw new PkbError("INVALID_REQUEST", "package_path is required for a Module upgrade.");
+    return { ...await installModulePackage(ENGINE_ROOT, vaultRoot, path.resolve(params.package_path), { enable: true, upgrade: true, confirmBreaking: params.confirm === true }), impact };
+  }
+  if (params.action === "rollback") {
+    if (params.confirm !== true) throw new PkbError("MODULE_CONFIRMATION_REQUIRED", "Module rollback requires explicit confirmation.", { module_id: moduleId, impact });
+    return { ...await rollbackModulePackage(ENGINE_ROOT, vaultRoot, moduleId), impact };
   }
   if (!['enable', 'disable'].includes(params.action)) throw new PkbError("INVALID_REQUEST", "Invalid module lifecycle action.");
   const targetStatus = params.action === "enable" ? "enabled" : "disabled";

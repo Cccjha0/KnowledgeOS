@@ -1,0 +1,2 @@
+record: '{date}-{slug}.md'
+duplicate_key: '{instance_id}:{source_hash}'

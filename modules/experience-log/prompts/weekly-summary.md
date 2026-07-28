@@ -10,3 +10,11 @@
 - 只输出 highlights、progress、blockers、learnings、next_week；
 - 不生成简历、STAR 故事、技能图谱、月报或最终实习报告；
 - 返回创建周报的 Operation Plan。
+---
+prompt_id: weekly-summary
+prompt_version: 1.0.0
+module: experience-log
+task_type: summarization
+output_schema: https://pkb.local/schemas/experience-log/weekly-summary.schema.json
+status: active
+---

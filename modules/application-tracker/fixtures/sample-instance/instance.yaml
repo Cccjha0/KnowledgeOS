@@ -1,0 +1,13 @@
+instance_id: sample-applications
+module_id: application-tracker
+status: active
+display_name: Sample Applications
+content_root: 20-Workspace/Applications/sample-applications
+inbox_path: 20-Workspace/Applications/sample-applications/Inbox
+application_type: masters
+region: Australia
+intake: 2027
+default_currency: AUD
+monitoring: { enabled: true, default_check_interval_days: 30 }
+created: "2026-01-01T00:00:00Z"
+updated: "2026-01-01T00:00:00Z"

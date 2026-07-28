@@ -1,0 +1,5 @@
+prompts:
+  match-capture: { active_version: 1.0.0, path: classify/v1.0.0.md, versions: { 1.0.0: classify/v1.0.0.md }, status: active }
+  compare-update: { active_version: 1.0.0, path: compare/v1.0.0.md, versions: { 1.0.0: compare/v1.0.0.md }, status: active }
+  resolve-review: { active_version: 1.0.0, path: review/v1.0.0.md, versions: { 1.0.0: review/v1.0.0.md }, status: active }
+  final-summary: { active_version: 1.0.0, path: summarize/v1.0.0.md, versions: { 1.0.0: summarize/v1.0.0.md }, status: active }

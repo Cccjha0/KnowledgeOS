@@ -12,7 +12,7 @@ import { startResearchRequest, syncDueResearchRequests } from "./platform/resear
 import { syncInstalledConfiguration } from "./platform/configuration.js";
 import { PkbError } from "./core/errors.js";
 import { doctorVault, initializeVault, type GitMode } from "./core/vault.js";
-import { applyMigration, planMigrations } from "./core/migrations.js";
+import { applyMigration, planMigrations, rollbackMigration } from "./core/migrations.js";
 import { recoverInterruptedTransactions, rollbackTransaction } from "./core/operationExecutor.js";
 import { createVaultBackup, restoreVaultBackup, verifyVaultBackup } from "./core/backup.js";
 import type { JsonValue, ReviewDecisionKind } from "./types.js";
@@ -26,6 +26,10 @@ import { platformRuntimeHandlers } from "./platform/runtimeHandlers.js";
 import { probeRuntimeResources } from "./runtime/resourceMonitor.js";
 import { materializeFieldDueJobs, materializeStartupJobs } from "./runtime/triggers.js";
 import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
+import { createModuleScaffold } from "./modules/scaffold.js";
+import { installModulePackage, packModule, rollbackModulePackage } from "./modules/packageManager.js";
+import { validateModule } from "./modules/validator.js";
+import type { ModuleTemplate } from "./modules/types.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -38,6 +42,7 @@ interface ParsedArgs {
   modifiedValue: JsonValue | undefined;
   apiInput: Record<string, JsonValue>;
   requestId: string;
+  confirm: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -51,6 +56,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let modifiedValue: JsonValue | undefined;
   let apiInput: Record<string, JsonValue> = {};
   let requestId = `REQ-${randomUUID()}`;
+  let confirm = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]!;
     if (value === "--vault") {
@@ -63,6 +69,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       index += 1;
     } else if (value === "--dry-run") {
       dryRun = true;
+    } else if (value === "--confirm") {
+      confirm = true;
     } else if (value === "--git-mode") {
       const next = argv[index + 1];
       if (next !== "initialize" && next !== "existing" && next !== "disabled") {
@@ -120,11 +128,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     modifiedValue,
     apiInput,
     requestId,
+    confirm,
   };
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test ID\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -168,6 +177,35 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "module" && subcommand === "create") {
+    if (!value) throw new Error("module create requires MODULE_ID");
+    const template = parsed.positional[3] as ModuleTemplate | undefined;
+    if (!template) throw new Error("module create requires a template");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await createModuleScaffold(engineRoot, value, template, parsed.positional[4] ?? value), null, 2)); return;
+  }
+  if (command === "module" && ["validate", "test"].includes(subcommand ?? "")) {
+    if (!value) throw new Error(`module ${subcommand} requires MODULE_ID`);
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const report = await validateModule(engineRoot, path.join(engineRoot, "modules", value), { writeReport: true });
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
+  }
+  if (command === "module" && subcommand === "pack") {
+    if (!value) throw new Error("module pack requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await packModule(engineRoot, value, parsed.positional[3] ? path.resolve(parsed.positional[3]!) : undefined), null, 2)); return;
+  }
+  if (command === "module" && ["install", "upgrade"].includes(subcommand ?? "")) {
+    if (!value) throw new Error(`module ${subcommand} requires PACKAGE`);
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await installModulePackage(engineRoot, parsed.vault, path.resolve(value), { enable: true, upgrade: subcommand === "upgrade", confirmBreaking: parsed.confirm }), null, 2)); return;
+  }
+  if (command === "module" && subcommand === "rollback") {
+    if (!value) throw new Error("module rollback requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await rollbackModulePackage(engineRoot, parsed.vault, value), null, 2)); return;
+  }
+
   if (command === "migration" && subcommand === "plan") {
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     console.log(JSON.stringify(await planMigrations(parsed.vault, engineRoot), null, 2));
@@ -178,6 +216,11 @@ async function main(): Promise<void> {
     if (!value) throw new Error("migration apply requires MIGRATION_RUN_ID");
     console.log(JSON.stringify(await applyMigration(parsed.vault, value), null, 2));
     return;
+  }
+
+  if (command === "migration" && subcommand === "rollback") {
+    if (!value) throw new Error("migration rollback requires MIGRATION_RUN_ID");
+    console.log(JSON.stringify(await rollbackMigration(parsed.vault, value), null, 2)); return;
   }
 
   if (command === "transaction" && subcommand === "recover") {

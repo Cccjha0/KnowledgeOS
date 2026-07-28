@@ -1,0 +1,9 @@
+instance_id: sample-instance
+module_id: reading-log
+status: active
+display_name: Sample Instance
+content_root: 20-Workspace/Reading Log/sample-instance
+inbox_path: 20-Workspace/Reading Log/sample-instance/Inbox
+timezone: Asia/Shanghai
+created: '2026-01-01T00:00:00Z'
+updated: '2026-01-01T00:00:00Z'

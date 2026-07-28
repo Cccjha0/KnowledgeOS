@@ -1,0 +1,5 @@
+migrations:
+  application-record-v1-to-v2:
+    from_schema_version: 1
+    to_schema_version: 2
+    path: 001-v1-to-v2/migration.yaml

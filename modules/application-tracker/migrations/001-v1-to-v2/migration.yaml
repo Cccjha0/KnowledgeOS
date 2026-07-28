@@ -4,6 +4,7 @@ entity_type: application-record
 schema_id: https://pkb.local/schemas/application-tracker/application-record.schema.json
 from_version: 1
 to_version: 2
-roots:
-  - 20-Workspace/Applications
+reversible: true
+roots: [20-Workspace/Applications]
+requires: { git_snapshot: true, user_confirmation: false }
 steps: []

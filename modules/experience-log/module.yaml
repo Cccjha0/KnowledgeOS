@@ -1,12 +1,17 @@
 id: experience-log
 name: 实习经历日志
 version: 0.2.0
+maturity: beta
 status: enabled
 description: 将零散实习记录整理为结构化日报，并按周生成总结。
 
 engine:
+  api_version: 1
   min_version: 0.1.0
   max_version: 0.x
+
+data:
+  schema_version: 1
 
 module_type: workflow
 
@@ -32,19 +37,29 @@ inbox:
   allow_global_routing: true
 
 routing:
-  matcher: workflows/match.yaml
+  matcher: workflows/match/v1.0.0.yaml
   auto_route_threshold: 0.85
   review_threshold: 0.60
 
 entry_workflows:
-  capture: workflows/build-daily-log.yaml
-  weekly_summary: workflows/build-weekly-summary.yaml
+  capture: workflows/build-daily-log/v1.0.0.yaml
+  weekly_summary: workflows/build-weekly-summary/v1.0.0.yaml
 
 schemas:
+  registry: schemas/index.yaml
   instance: schemas/experience-instance.schema.json
   experience_entry: schemas/experience-entry.schema.json
   daily_log: schemas/daily-log.schema.json
   weekly_summary: schemas/weekly-summary.schema.json
+
+prompts:
+  registry: prompts/index.yaml
+
+workflows:
+  registry: workflows/index.yaml
+
+jobs:
+  registry: jobs.yaml
 
 rules:
   paths: rules/paths.yaml
@@ -63,7 +78,7 @@ events:
 
 dependencies:
   components:
-    - timeline
+    timeline: ^1.0.0
 
 scheduled_jobs:
   - id: weekly-summary
@@ -72,6 +87,11 @@ scheduled_jobs:
     timezone: instance
 
 permissions:
+  max_read_level: 0
+  network: false
+  codex: optional
+  delete: false
+  cross_module_write: false
   max_default_read_level: 0
   allow_external_network: false
   allow_delete: false

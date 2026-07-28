@@ -1,0 +1,4 @@
+checks:
+  - entity_type: application-record
+  - schema_version: 1
+  - worktree_snapshot: required

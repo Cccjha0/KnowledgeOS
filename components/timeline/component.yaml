@@ -1,0 +1,5 @@
+id: timeline
+version: 1.0.0
+maturity: stable
+owns_business_data: false
+capabilities: [timeline-projection]

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/reading-log/instance.schema.json",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "instance_id",
+    "module_id",
+    "status",
+    "display_name",
+    "content_root",
+    "inbox_path",
+    "created",
+    "updated",
+    "timezone"
+  ],
+  "properties": {
+    "instance_id": {
+      "type": "string"
+    },
+    "module_id": {
+      "const": "reading-log"
+    },
+    "status": {
+      "enum": [
+        "planned",
+        "active",
+        "paused",
+        "completed",
+        "archived",
+        "error"
+      ]
+    },
+    "display_name": {
+      "type": "string"
+    },
+    "content_root": {
+      "type": "string"
+    },
+    "inbox_path": {
+      "type": "string"
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "timezone": {
+      "type": "string"
+    }
+  }
+}

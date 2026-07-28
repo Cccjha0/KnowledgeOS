@@ -1,0 +1,6 @@
+workflows:
+  match: { active_version: 1.0.0, path: match/v1.0.0.yaml, versions: { 1.0.0: match/v1.0.0.yaml } }
+  process-research-report: { active_version: 1.0.0, path: process-research-report/v1.0.0.yaml, versions: { 1.0.0: process-research-report/v1.0.0.yaml } }
+  review-resolve: { active_version: 1.0.0, path: review-resolve/v1.0.0.yaml, versions: { 1.0.0: review-resolve/v1.0.0.yaml } }
+  archive-instance: { active_version: 1.0.0, path: archive-instance/v1.0.0.yaml, versions: { 1.0.0: archive-instance/v1.0.0.yaml } }
+  sync-due-research: { active_version: 1.0.0, path: sync-due-research/v1.0.0.yaml, versions: { 1.0.0: sync-due-research/v1.0.0.yaml } }

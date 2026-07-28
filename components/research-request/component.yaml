@@ -1,0 +1,5 @@
+id: research-request
+version: 1.0.0
+maturity: stable
+owns_business_data: false
+capabilities: [research-request-lifecycle]

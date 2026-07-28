@@ -9,3 +9,11 @@
 - 不要修改审核项或目标档案；
 - 明确列出仍需回答的问题；
 - 不把讨论结果伪装成最终决定。
+---
+prompt_id: resolve-review
+prompt_version: 1.0.0
+module: application-tracker
+task_type: review-resolution
+output_schema: https://pkb.local/schemas/core/operation-plan.schema.json
+status: active
+---

@@ -31,3 +31,11 @@
 
 严格返回符合 schemas/update-result.schema.json 的 JSON。
 review_id 使用 REV-YYYY-六位序号的占位格式，由核心平台最终替换。
+---
+prompt_id: compare-update
+prompt_version: 1.0.0
+module: application-tracker
+task_type: comparison
+output_schema: https://pkb.local/schemas/application-tracker/update-result.schema.json
+status: active
+---
