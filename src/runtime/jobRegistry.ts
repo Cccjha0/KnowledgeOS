@@ -16,6 +16,9 @@ function coreJobs(now: string): JobDefinition[] {
     { ...base, job_id: "core.startup-today", workflow: "core:build-today", trigger: { type: "startup" }, catch_up: { policy: "none" }, concurrency: { policy: "replace", key: "core:today" }, priority: "high" },
     { ...base, job_id: "core.daily-today", workflow: "core:build-today", trigger: { type: "daily", at: "08:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest" }, concurrency: { policy: "replace", key: "core:today" } },
     { ...base, job_id: "core.weekly-vault-audit", workflow: "core:vault-audit", trigger: { type: "weekly", weekday: "Sun", at: "09:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:vault-audit" } },
+    { ...base, job_id: "core.daily-quality-audit", workflow: "core:quality-audit-daily", trigger: { type: "daily", at: "07:30", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest" }, concurrency: { policy: "replace", key: "core:quality-audit" }, priority: "normal" },
+    { ...base, job_id: "core.weekly-quality-audit", workflow: "core:quality-audit-weekly", trigger: { type: "weekly", weekday: "Sun", at: "10:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:quality-audit" } },
+    { ...base, job_id: "core.monthly-quality-audit", workflow: "core:quality-audit-monthly", trigger: { type: "monthly", day: 1, at: "04:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 14 }, concurrency: { policy: "forbid", key: "core:quality-audit" } },
     { ...base, job_id: "core.monthly-runtime-cleanup", workflow: "core:cleanup-runtime", trigger: { type: "monthly", day: 1, at: "03:00", timezone: "Asia/Shanghai" }, catch_up: { policy: "latest", max_age_days: 7 }, concurrency: { policy: "forbid", key: "core:runtime-cleanup" } },
   ];
 }
@@ -47,7 +50,8 @@ export async function registerDeclaredJobs(vaultRoot: string): Promise<JobDefini
     const instances = await discoverInstances(vaultRoot);
     for (const module of await discoverModulesForVault(ENGINE_ROOT, vaultRoot)) {
       const moduleId = String(module.data.id);
-      const file = path.join(path.dirname(module.path), "jobs.yaml");
+      const jobs = module.data.jobs as JsonObject | undefined;
+      const file = path.join(path.dirname(module.path), ...String(jobs?.registry ?? "jobs.yaml").split("/"));
       if (!(await exists(file))) continue;
       const document = parseYaml(ENGINE_ROOT, file);
       for (const raw of (document.jobs as JsonObject[] | undefined) ?? []) {

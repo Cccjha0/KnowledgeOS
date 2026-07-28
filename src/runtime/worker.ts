@@ -6,6 +6,7 @@ import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { doctorVault } from "../core/vault.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
+import { runQualityAudit } from "../quality/audit.js";
 
 export interface WorkerResult {
   completion_reason: string;
@@ -38,6 +39,9 @@ const coreHandlers: Record<string, RuntimeHandler> = {
     try { return { completion_reason: "runtime-history-cleaned", metrics: repository.cleanupHistory(90) }; }
     finally { repository.close(); }
   },
+  "core:quality-audit-daily": async ({ vaultRoot }) => ({ completion_reason: "daily-quality-audit", metrics: await runQualityAudit(vaultRoot, "daily") }),
+  "core:quality-audit-weekly": async ({ vaultRoot }) => ({ completion_reason: "weekly-quality-audit", metrics: await runQualityAudit(vaultRoot, "weekly") }),
+  "core:quality-audit-monthly": async ({ vaultRoot }) => ({ completion_reason: "monthly-quality-audit", metrics: await runQualityAudit(vaultRoot, "monthly") }),
 };
 
 function runtimeError(error: unknown): RuntimeError {
@@ -51,6 +55,7 @@ function runtimeError(error: unknown): RuntimeError {
 export async function executeTask(vaultRoot: string, repository: RuntimeRepository, task: RuntimeTask, workerId: string, resourcesChecked: JsonObject, handlers: Record<string, RuntimeHandler> = {}): Promise<RuntimeTask> {
   const handler = handlers[task.workflow] ?? coreHandlers[task.workflow];
   const run = repository.startRun(task.task_id, workerId, resourcesChecked);
+  repository.recordMetricEvent({ idempotency_key: `${run.run_id}:started`, event_type: "task.started", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: run.started_at, dimensions: { priority: task.priority, trigger_type: task.trigger.type ?? "unknown" }, values: {} });
   const started = performance.now();
   const checkpoint = () => {
     const current = repository.getTask(task.task_id);
@@ -70,11 +75,13 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     const result = await handler({ vaultRoot, task, checkpoint });
     checkpoint();
     clearInterval(heartbeat);
-    return repository.finishRun(run.run_id, {
+    const finished = repository.finishRun(run.run_id, {
       runStatus: "completed", taskStatus: "completed", operationPlanId: result.operation_plan_id,
       gitSnapshotId: result.git_snapshot_id, inputFiles: result.input_files, outputFiles: result.output_files,
       metrics: { ...(result.metrics ?? {}), duration_ms: performance.now() - started, workflow_id: task.trigger.workflow_id ?? task.workflow, workflow_version: task.trigger.workflow_version ?? null }, completionReason: result.completion_reason,
     }).task;
+    repository.recordMetricEvent({ idempotency_key: `${run.run_id}:completed`, event_type: "task.completed", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { priority: task.priority }, values: { duration_ms: performance.now() - started } });
+    return finished;
   } catch (error) {
     clearInterval(heartbeat);
     const classified = runtimeError(error);
@@ -85,9 +92,11 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     const delays = [5, 15, 45];
     const retry = classified.retryable && attempt < task.max_attempts;
     const nextRetryAt = retry ? new Date(Date.now() + (delays[Math.min(attempt - 1, delays.length - 1)] ?? 45) * 60_000).toISOString() : null;
-    return repository.finishRun(run.run_id, {
+    const finished = repository.finishRun(run.run_id, {
       runStatus: "failed", taskStatus: retry ? "queued" : "failed", error: classified, nextRetryAt,
       metrics: { duration_ms: performance.now() - started }, completionReason: retry ? "retry-scheduled" : "worker-failed",
     }).task;
+    repository.recordMetricEvent({ idempotency_key: `${run.run_id}:failed`, event_type: "task.failed", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { error_code: classified.code, retryable: classified.retryable }, values: { duration_ms: performance.now() - started } });
+    return finished;
   }
 }

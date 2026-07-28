@@ -3,6 +3,7 @@ import path from "node:path";
 import type { MarkdownDocument, ReviewItem, ReviewStatus } from "./types.js";
 import { parseMarkdown, validateSchema, writeMarkdown } from "./bridge.js";
 import { ensureDir, exists } from "./files.js";
+import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
 
 const REVIEW_SCHEMA = "https://pkb.local/schemas/core/review-item.schema.json";
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -57,7 +58,19 @@ function renderReviewContent(item: ReviewItem): string {
 
 export async function writeReviewItems(vaultRoot: string, items: ReviewItem[]): Promise<string[]> {
   const paths: string[] = [];
-  for (const item of items) {
+  for (const raw of items) {
+    const now = raw.created || new Date().toISOString();
+    const fingerprint = raw.review_fingerprint ?? reviewFingerprint({ module: raw.source_module, instanceId: raw.instance_id, target: raw.target, action: raw.action, proposedValue: raw.proposed_value, evidence: raw.evidence });
+    const evidenceHash = evidenceSnapshotHash(raw.evidence);
+    const slaDays = raw.priority === "critical" ? 1 : raw.priority === "high" ? 3 : raw.priority === "medium" ? 14 : 30;
+    let item: ReviewItem = { ...raw, review_fingerprint: fingerprint, evidence_hash: evidenceHash, first_seen: raw.first_seen ?? now, last_seen: now, occurrence_count: raw.occurrence_count ?? 1, sla_due_at: raw.sla_due_at ?? new Date(Date.parse(now) + slaDays * 86_400_000).toISOString(), overdue: false, suppressed_until: raw.suppressed_until ?? null };
+    const existing = await findReviewByFingerprint(vaultRoot, fingerprint);
+    if (existing && ["pending", "deferred", "error"].includes(existing.item.status)) {
+      item = { ...existing.item, evidence: [...new Map([...existing.item.evidence, ...item.evidence].map((value) => [JSON.stringify(value), value])).values()], proposed_value: item.proposed_value, reason: item.reason, priority: item.priority, last_seen: now, occurrence_count: Number(existing.item.occurrence_count ?? 1) + 1, evidence_hash: evidenceSnapshotHash([...existing.item.evidence, ...item.evidence]) };
+      paths.push(await persistReviewItem(vaultRoot, existing, item));
+      continue;
+    }
+    if (existing?.item.status === "rejected" && existing.item.evidence_hash === evidenceHash) { paths.push(existing.filePath); continue; }
     validateSchema(vaultRoot, REVIEW_SCHEMA, item);
     const directory = path.join(vaultRoot, "90-System", "Review Queue", directoryForStatus(item.status));
     await ensureDir(directory);
@@ -66,6 +79,21 @@ export async function writeReviewItems(vaultRoot: string, items: ReviewItem[]): 
     paths.push(filePath);
   }
   return paths;
+}
+
+async function findReviewByFingerprint(vaultRoot: string, fingerprint: string): Promise<LocatedReview | null> {
+  for (const directory of REVIEW_DIRECTORIES) {
+    const root = path.join(vaultRoot, "90-System", "Review Queue", directory);
+    if (!(await exists(root))) continue;
+    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+      const filePath = path.join(root, entry.name); const document = parseMarkdown(vaultRoot, filePath);
+      const item = document.data as unknown as ReviewItem;
+      const candidate = item.review_fingerprint ?? reviewFingerprint({ module: item.source_module, instanceId: item.instance_id, target: item.target, action: item.action, proposedValue: item.proposed_value, evidence: item.evidence ?? [] });
+      if (candidate === fingerprint) return { filePath, document, item };
+    }
+  }
+  return null;
 }
 
 export async function locateReviewItem(vaultRoot: string, reviewId: string): Promise<LocatedReview> {

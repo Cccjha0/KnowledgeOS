@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/change-record.schema.json",
+  "title": "Change Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["change_id", "entity_ref", "field", "old_value", "new_value", "reason", "evidence_refs", "generation", "review", "changed_at"],
+  "properties": {
+    "change_id": { "type": "string", "pattern": "^CHG-\\d{4}-\\d{6,}$" },
+    "entity_ref": { "type": "string" },
+    "field": { "type": "string" },
+    "old_value": {}, "new_value": {},
+    "reason": { "type": "string" },
+    "evidence_refs": { "type": "array", "items": { "type": "string" } },
+    "generation": { "type": ["object", "null"] },
+    "review": { "type": ["object", "null"] },
+    "changed_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }
+  }
+}

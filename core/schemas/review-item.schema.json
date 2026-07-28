@@ -139,6 +139,14 @@
         "string",
         "null"
       ]
-    }
+    },
+    "review_fingerprint": { "type": "string", "minLength": 16 },
+    "evidence_hash": { "type": "string", "minLength": 16 },
+    "first_seen": { "type": "string", "format": "date-time" },
+    "last_seen": { "type": "string", "format": "date-time" },
+    "occurrence_count": { "type": "integer", "minimum": 1 },
+    "sla_due_at": { "type": "string", "format": "date-time" },
+    "overdue": { "type": "boolean" },
+    "suppressed_until": { "type": ["string", "null"], "format": "date-time" }
   }
 }

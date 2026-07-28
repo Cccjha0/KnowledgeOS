@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/evidence-record.schema.json",
+  "title": "Evidence Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["evidence_id", "source_type", "source_ref", "supports", "locator", "observed_at", "captured_at", "collector", "quality", "status"],
+  "properties": {
+    "evidence_id": { "type": "string", "pattern": "^EVD-\\d{4}-\\d{6,}$" },
+    "source_type": { "enum": ["user", "ai", "system", "official-source", "external-research"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "supports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["entity_ref", "field"],
+        "properties": {
+          "entity_ref": { "type": "string" },
+          "field": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "locator": { "type": "object" },
+    "observed_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "captured_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "collector": { "type": "object" },
+    "quality": {
+      "type": "object",
+      "required": ["authority", "freshness", "extraction_confidence"],
+      "properties": {
+        "authority": { "enum": ["primary-official", "secondary-official", "authoritative-third-party", "user-observation", "external-research", "unverified-third-party", "unknown"] },
+        "freshness": { "enum": ["current", "due-soon", "stale", "historical", "unknown"] },
+        "extraction_confidence": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/confidence" }
+      }
+    },
+    "status": { "enum": ["active", "superseded", "conflicting", "unavailable", "withdrawn"] }
+  }
+}

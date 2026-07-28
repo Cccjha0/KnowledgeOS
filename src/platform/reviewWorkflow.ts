@@ -40,6 +40,8 @@ import {
   requeueDueReviews,
   type LocatedReview,
 } from "../core/reviews.js";
+import { QualityRepository } from "../quality/repository.js";
+import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
 
 const SCHEMAS = {
   decision: "https://pkb.local/schemas/core/review-decision.schema.json",
@@ -184,6 +186,8 @@ function buildRecordPatch(
   record: ApplicationRecord,
   item: ReviewItem,
   decision: ReviewDecision,
+  runId: string,
+  sourceEvidence: JsonValue[],
 ): { patch: JsonObject; effectiveValue: JsonValue; field: string } {
   const proposed = proposedObject(item);
   const field = fieldFromReview(item);
@@ -191,6 +195,13 @@ function buildRecordPatch(
     ? structuredClone(decision.modified_value ?? null)
     : structuredClone(proposed.new_value ?? null);
   const patch: JsonObject = { updated: decision.decided_at };
+  const currentMeta = record._field_meta && typeof record._field_meta === "object" && !Array.isArray(record._field_meta) ? record._field_meta as JsonObject : {};
+  patch._field_meta = { ...currentMeta, [field]: {
+    authorship: "external-research", evidence_refs: item.evidence,
+    generation: { run_id: runId, module: { id: item.source_module, version: "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: null, processor: { id: "review-executor", version: "1.0.0" }, adapter: null, model: null, generated_at: decision.decided_at },
+    review: { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision },
+    verification: { last_verified: decision.decided_at, verification_interval_days: null, stale_after: null, stale: false, verification_status: "verified" },
+  } };
   const status = expectedApplicationStatus(field, effectiveValue, proposed);
   if (status !== null && status !== record.application_status) {
     assertApplicationTransition(record.application_status as ApplicationStatus, status as ApplicationStatus);
@@ -207,7 +218,7 @@ function buildRecordPatch(
     const current = record.facts[field];
     const sourceRefs = uniqueJsonValues([
       ...(current?.source_refs ?? []),
-      ...item.evidence,
+      ...sourceEvidence,
     ]).filter((value): value is string => typeof value === "string");
     const fact: ApplicationFact = {
       value: effectiveValue,
@@ -225,15 +236,29 @@ function buildRecordPatch(
   return { patch, effectiveValue, field };
 }
 
+async function materializeReviewEvidence(vaultRoot: string, item: ReviewItem, field: string, observedAt: string): Promise<string[]> {
+  const repository = await QualityRepository.open(vaultRoot);
+  try {
+    const existing = repository.listEvidence(5000); const ids: string[] = [];
+    for (const raw of item.evidence.filter((value): value is string => typeof value === "string")) {
+      if (/^EVD-\d{4}-\d{6,}$/.test(raw)) { ids.push(raw); continue; }
+      const match = existing.find((entry) => entry.source_ref === raw && entry.supports.some((support) => support.entity_ref === item.target && support.field === field));
+      const record = match ?? repository.upsertEvidence({ source_type: "external-research", source_ref: raw, supports: [{ entity_ref: item.target, field }], locator: {}, observed_at: observedAt, captured_at: observedAt, collector: { type: "review-evidence", review_id: item.review_id }, quality: { authority: "unknown", freshness: "current", extraction_confidence: item.confidence }, status: "active" });
+      ids.push(record.evidence_id);
+    }
+    return [...new Set(ids)];
+  } finally { repository.close(); }
+}
+
 function buildReviewPlan(
   item: ReviewItem,
   decision: ReviewDecision,
   record: ApplicationRecord,
-  ids: { taskId: string; planId: string },
+  ids: { taskId: string; planId: string; runId: string; sourceEvidence: JsonValue[] },
 ): OperationPlan {
   const operations: Operation[] = [];
   if (decision.decision === "approve" || decision.decision === "approve-with-modification") {
-    const { patch, effectiveValue, field } = buildRecordPatch(record, item, decision);
+    const { patch, effectiveValue, field } = buildRecordPatch(record, item, decision, ids.runId, ids.sourceEvidence);
     operations.push(
       {
         operation_id: "OP-001",
@@ -318,6 +343,20 @@ function withDecision(item: ReviewItem, decision: ReviewDecision, status: Review
   };
 }
 
+async function recordReviewOutcome(vaultRoot: string, item: ReviewItem, decision: ReviewDecision, runId: string | null): Promise<void> {
+  const repository = await QualityRepository.open(vaultRoot);
+  try {
+    const fingerprint = item.review_fingerprint ?? reviewFingerprint({ module: item.source_module, instanceId: item.instance_id, target: item.target, action: item.action, proposedValue: item.proposed_value, evidence: item.evidence });
+    const evidenceHash = evidenceSnapshotHash(item.evidence);
+    repository.recordMetric({ idempotency_key: `review:${item.review_id}:${decision.decided_at}`, event_type: `review.${decision.decision}`, module: item.source_module, instance_id: item.instance_id, workflow_id: "review-resolve", workflow_version: "1.0.0", prompt_id: null, prompt_version: null, run_id: runId, occurred_at: decision.decided_at, dimensions: { priority: item.priority, action: item.action }, values: {} });
+    if (decision.decision === "reject") repository.rememberRejection({ fingerprint, rejected_value_hash: fingerprint, evidence_hash: evidenceHash, reason: decision.user_comment, rejected_at: decision.decided_at, suppressed_until: null });
+    if (["approve", "approve-with-modification"].includes(decision.decision)) {
+      const proposed = proposedObject(item); const field = fieldFromReview(item);
+      repository.recordChange({ entity_ref: item.target, field, old_value: structuredClone(proposed.old_value ?? null), new_value: decision.decision === "approve-with-modification" ? structuredClone(decision.modified_value) : structuredClone(proposed.new_value ?? null), reason: item.reason, evidence_refs: item.evidence.filter((value): value is string => typeof value === "string"), generation: { run_id: runId, module: { id: item.source_module, version: "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: null }, review: { status: decision.decision, review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at }, changed_at: decision.decided_at });
+    }
+  } finally { repository.close(); }
+}
+
 async function decideReviewUnlocked(options: DecideReviewOptions): Promise<ReviewActionResult> {
   const vaultRoot = path.resolve(options.vaultRoot);
   const decidedAt = options.now ?? new Date().toISOString();
@@ -347,6 +386,7 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
     }
     const item = withDecision(located.item, decision, "deferred", `延后至 ${decision.review_after}。`);
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
+    await recordReviewOutcome(vaultRoot, item, decision, null);
     const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status: item.status,
@@ -362,6 +402,7 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
   if (decision.decision === "discuss") {
     const item = withDecision(located.item, decision, "pending", "等待进一步讨论，尚未执行任何修改。");
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
+    await recordReviewOutcome(vaultRoot, item, decision, null);
     const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status: item.status,
@@ -381,7 +422,8 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
   const taskId = await allocateId(vaultRoot, "TASK");
   const planId = await allocateId(vaultRoot, "PLAN");
   const runId = await allocateId(vaultRoot, "RUN");
-  const plan = buildReviewPlan(located.item, decision, record, { taskId, planId });
+  const tracedItem: ReviewItem = { ...located.item, evidence: await materializeReviewEvidence(vaultRoot, located.item, fieldFromReview(located.item), decidedAt) };
+  const plan = buildReviewPlan(tracedItem, decision, record, { taskId, planId, runId, sourceEvidence: located.item.evidence });
   validateSchema(vaultRoot, SCHEMAS.plan, plan);
   const planAbsolute = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
   await writeJsonAtomic(planAbsolute, plan);
@@ -402,9 +444,10 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
     const resolution = decision.decision === "reject"
       ? `用户拒绝建议；正式字段保持不变。${decision.user_comment ? ` 原因：${decision.user_comment}` : ""}`
       : `最终 Operation Plan ${planId} 已执行。`;
-    const item = withDecision(located.item, decision, status, resolution);
+    const item = withDecision(tracedItem, decision, status, resolution);
     const reviewPath = await persistReviewItem(vaultRoot, located, item);
     await writeReviewRunLog(vaultRoot, runId, item, decision, plan, snapshot);
+    await recordReviewOutcome(vaultRoot, item, decision, runId);
     const todayPath = await rebuildTodayDashboard(vaultRoot);
     return {
       status,

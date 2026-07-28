@@ -345,6 +345,12 @@
           }
         }
       }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy"],
+      "properties": { "policy": { "type": "string", "pattern": "^rules/.+\\.ya?ml$" } }
     }
   },
   "$defs": {

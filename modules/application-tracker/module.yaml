@@ -77,6 +77,9 @@ rules:
   reading: rules/reading-policy.yaml
   application_state_machine: rules/application-state-machine.yaml
 
+quality:
+  policy: rules/quality-policy.yaml
+
 dashboard:
   provider: dashboard/today-provider.yaml
 

@@ -127,6 +127,21 @@ export class RuntimeRepository {
   startCodexInvocation(invocation: JsonObject): void { this.call("start-codex-invocation", invocation); }
   finishCodexInvocation(invocation: JsonObject): void { this.call("finish-codex-invocation", invocation); }
   listCodexInvocations(taskId: string): JsonObject[] { return this.call("list-codex-invocations", { task_id: taskId }); }
+  upsertEvidence(record: JsonObject): JsonObject { return this.call("upsert-evidence", record); }
+  getEvidence(evidenceId: string): JsonObject | null { return this.call("get-evidence", { evidence_id: evidenceId }); }
+  listEvidence(limit = 100): JsonObject[] { return this.call("list-evidence", { limit }); }
+  upsertQualityIssue(issue: JsonObject): JsonObject { return this.call("upsert-quality-issue", issue); }
+  listQualityIssues(filters: JsonObject = {}): JsonObject[] { return this.call("list-quality-issues", filters); }
+  updateQualityIssue(patch: JsonObject): JsonObject { return this.call("update-quality-issue", patch); }
+  recordMetricEvent(event: JsonObject): JsonObject { return this.call("record-metric-event", event); }
+  aggregateMetrics(since: string): JsonObject { return this.call("aggregate-metrics", { since }); }
+  recordChange(record: JsonObject): JsonObject { return this.call("record-change", record); }
+  listChanges(filters: JsonObject = {}): JsonObject[] { return this.call("list-changes", filters); }
+  startQualityAudit(frequency: string): JsonObject { return this.call("start-audit", { frequency }); }
+  finishQualityAudit(auditId: string, status: string, summary: JsonObject): JsonObject { return this.call("finish-audit", { audit_id: auditId, status, summary }); }
+  listQualityAudits(limit = 50): JsonObject[] { return this.call("list-audits", { limit }); }
+  rememberReviewRejection(memory: JsonObject): JsonObject { return this.call("remember-rejection", memory); }
+  getReviewRejection(fingerprint: string): JsonObject | null { return this.call("get-rejection-memory", { fingerprint }); }
   cleanupHistory(retainDays = 90): JsonObject { return this.call("cleanup-history", { retain_days: retainDays }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));

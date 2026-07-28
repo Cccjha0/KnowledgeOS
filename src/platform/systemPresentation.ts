@@ -2,6 +2,8 @@ import path from "node:path";
 import { parseMarkdown } from "../core/bridge.js";
 import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath } from "../core/files.js";
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
+import { QualityRepository } from "../quality/repository.js";
+import { RuntimeRepository } from "../runtime/repository.js";
 
 interface TransactionSnapshot extends JsonObject {
   vault_path: string;
@@ -193,6 +195,17 @@ export async function getRunView(vaultRoot: string, runId: string, developerMode
     status: transaction?.operations[index]?.status ?? (located.log.status === "completed" ? "completed" : "unknown"),
     error: transaction?.operations[index]?.error ?? null,
   }));
+  const runtime = await RuntimeRepository.open(vaultRoot);
+  const quality = await QualityRepository.open(vaultRoot);
+  let task = null; let runtimeRun = null; let codexInvocations: JsonObject[] = []; let changes: JsonObject[] = [];
+  try {
+    task = located.log.task_id ? runtime.getTask(located.log.task_id) : null;
+    runtimeRun = located.log.task_id ? runtime.getRuns(located.log.task_id).find((entry) => entry.run_id === runId) ?? null : null;
+    codexInvocations = located.log.task_id ? runtime.listCodexInvocations(located.log.task_id).filter((entry) => entry.run_id === runId) : [];
+    changes = quality.listChanges().filter((entry) => entry.generation?.run_id === runId || entry.review?.review_id === located.log.review_id);
+  } finally { runtime.close(); quality.close(); }
+  const blockedOperations = operations.filter((operation) => operation.status !== "completed");
+  const triggerReason = task?.trigger?.type === "schedule" ? "周期任务到期" : task?.trigger?.type === "event" ? "系统事件触发" : task?.trigger?.type === "startup" ? "启动补偿" : located.log.review_id ? "用户审核恢复" : task?.trigger?.type === "manual" ? "用户手动触发" : "Core 操作触发";
   return {
     ...summary,
     task_id: located.log.task_id,
@@ -200,7 +213,7 @@ export async function getRunView(vaultRoot: string, runId: string, developerMode
     review_id: located.log.review_id,
     git_snapshot: located.log.git_snapshot,
     input_summary: plan?.summary ?? firstSummaryLine(located.content),
-    execution_context: { read_level: null, ai_usage: "not-recorded" },
+    execution_context: { read_level: runtimeRun?.metrics?.read_level ?? null, input_files: runtimeRun?.input_files ?? [], ai_usage: codexInvocations.length ? "recorded" : "none", codex_invocations: codexInvocations.map((entry) => ({ prompt_id: entry.prompt_id ?? null, prompt_version: entry.prompt_version ?? null, adapter: entry.adapter ?? null, model: entry.model ?? "unknown", status: entry.status ?? null })) },
     affected_files: transaction?.snapshots.map((snapshot) => ({
       path: snapshot.vault_path,
       existed_before: snapshot.existed,
@@ -208,6 +221,15 @@ export async function getRunView(vaultRoot: string, runId: string, developerMode
     })) ?? [],
     operations,
     reviews: plan?.review_items.map((review) => ({ review_id: review.review_id, action: review.action, target: review.target })) ?? [],
+    explanation_chain: {
+      trigger: { reason: triggerReason, details: task?.trigger ?? {} },
+      inputs: runtimeRun?.input_files ?? [],
+      decision: { module: located.log.source_module, workflow: task?.workflow ?? null, prompts: codexInvocations.map((entry) => ({ id: entry.prompt_id ?? null, version: entry.prompt_version ?? null })), risks: operations.map((entry) => ({ operation: entry.type, risk: entry.risk })) },
+      review: { review_id: located.log.review_id, created: (plan?.review_items.length ?? 0) > 0 },
+      execution: { plan_id: located.log.plan_id, git_snapshot: located.log.git_snapshot, operations },
+      changes,
+      not_changed: blockedOperations.map((entry) => ({ operation_id: entry.operation_id, reason: entry.error ?? entry.status })),
+    },
     error_summary: transaction?.error ?? (located.log.status === "failed" ? firstSummaryLine(located.content) : null),
     developer: developerMode ? { log_content: located.content, transaction, plan } : null,
   };

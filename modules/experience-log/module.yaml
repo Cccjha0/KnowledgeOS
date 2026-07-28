@@ -66,6 +66,9 @@ rules:
   aggregation: rules/aggregation.yaml
   review: rules/review-policy.yaml
 
+quality:
+  policy: rules/quality-policy.yaml
+
 dashboard:
   provider: dashboard/today-provider.yaml
 

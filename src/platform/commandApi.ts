@@ -29,6 +29,10 @@ import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
 import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
 import { validateModule } from "../modules/validator.js";
+import { runQualityAudit as executeQualityAudit, type AuditFrequency } from "../quality/audit.js";
+import { getFieldProvenance, getQualityDashboard } from "../quality/presentation.js";
+import { QualityRepository } from "../quality/repository.js";
+import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -173,6 +177,30 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const snapshot = await getTodaySnapshot(vaultRoot);
     if (params.refresh_markdown !== false) await writeTodayMarkdown(vaultRoot, snapshot);
     return snapshot;
+  }
+  if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
+  if (method === "getFieldProvenance") return getFieldProvenance(vaultRoot, stringParam(params, "target"), stringParam(params, "field"));
+  if (method === "backfillQualityMetadata") {
+    if (params.confirm === true) return applyQualityBackfill(vaultRoot);
+    return previewQualityBackfill(vaultRoot);
+  }
+  if (method === "runQualityAudit") {
+    const frequency = String(params.frequency ?? "daily");
+    if (!["daily", "weekly", "monthly"].includes(frequency)) throw new PkbError("INVALID_REQUEST", "frequency must be daily, weekly, or monthly.");
+    return executeQualityAudit(vaultRoot, frequency as AuditFrequency);
+  }
+  if (method === "listQualityIssues") {
+    const repository = await QualityRepository.open(vaultRoot);
+    try { return repository.listIssues({ statuses: Array.isArray(params.statuses) ? params.statuses as never[] : undefined, severities: Array.isArray(params.severities) ? params.severities.filter((item): item is string => typeof item === "string") : undefined, modules: Array.isArray(params.modules) ? params.modules.filter((item): item is string => typeof item === "string") : undefined, instanceId: typeof params.instance_id === "string" ? params.instance_id : undefined, limit: typeof params.limit === "number" ? params.limit : 500 }) as unknown as JsonValue; }
+    finally { repository.close(); }
+  }
+  if (method === "manageQualityIssue") {
+    const issueId = stringParam(params, "issue_id"); const action = String(params.action);
+    const statuses: Record<string, "acknowledged" | "scheduled" | "resolved" | "ignored" | "suppressed" | "open"> = { acknowledge: "acknowledged", schedule: "scheduled", resolve: "resolved", ignore: "ignored", suppress: "suppressed", reopen: "open" };
+    if (!statuses[action]) throw new PkbError("INVALID_REQUEST", "Unknown Quality Issue action.");
+    const repository = await QualityRepository.open(vaultRoot);
+    try { return repository.updateIssue(issueId, statuses[action], { suppressed_until: typeof params.suppressed_until === "string" ? params.suppressed_until : null, resolution: action === "resolve" ? { type: "user-resolved", resolved_at: new Date().toISOString(), comment: typeof params.comment === "string" ? params.comment : "" } : null }) as unknown as JsonValue; }
+    finally { repository.close(); }
   }
   if (method === "listInboxItems") {
     return listInbox(vaultRoot, params);

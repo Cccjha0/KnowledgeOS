@@ -34,7 +34,13 @@ export type CommandApiMethod =
   | "manageTask"
   | "getTaskRuntimeStatus"
   | "enqueueTask"
-  | "runTaskCycle";
+  | "runTaskCycle"
+  | "getQualityDashboard"
+  | "listQualityIssues"
+  | "manageQualityIssue"
+  | "runQualityAudit"
+  | "getFieldProvenance"
+  | "backfillQualityMetadata";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;

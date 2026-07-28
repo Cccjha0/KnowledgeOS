@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/quality-issue.schema.json",
+  "title": "Quality Issue",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["issue_id", "fingerprint", "issue_type", "dimension", "severity", "module", "instance_id", "target", "detected_at", "detector", "evidence", "status", "recommended_action", "first_seen", "last_seen", "occurrence_count", "last_notified", "suppressed_until", "resolution"],
+  "properties": {
+    "issue_id": { "type": "string", "pattern": "^QI-\\d{4}-\\d{6,}$" },
+    "fingerprint": { "type": "string", "minLength": 16 },
+    "issue_type": { "type": "string", "minLength": 1 },
+    "dimension": { "enum": ["provenance", "freshness", "validity", "consistency", "completeness", "connectivity", "reviewability"] },
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "module": { "type": "string" },
+    "instance_id": { "type": ["string", "null"] },
+    "target": { "type": "object" },
+    "detected_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "detector": { "type": "object", "required": ["id", "version", "run_id"] },
+    "evidence": { "type": "object" },
+    "status": { "enum": ["open", "acknowledged", "scheduled", "resolved", "ignored", "suppressed"] },
+    "recommended_action": { "type": "object" },
+    "first_seen": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "last_seen": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+    "occurrence_count": { "type": "integer", "minimum": 1 },
+    "last_notified": { "type": ["string", "null"], "format": "date-time" },
+    "suppressed_until": { "type": ["string", "null"], "format": "date-time" },
+    "resolution": { "type": ["object", "null"] }
+  }
+}

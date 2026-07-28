@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/provenance-record.schema.json",
+  "title": "Knowledge Provenance Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authorship", "evidence_refs", "generation", "review", "verification"],
+  "properties": {
+    "authorship": { "enum": ["user", "ai", "system", "official-source", "external-research"] },
+    "evidence_refs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^EVD-\\d{4}-\\d{6,}$" } },
+    "generation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["run_id", "module", "workflow", "prompt", "processor", "adapter", "model", "generated_at"],
+      "properties": {
+        "run_id": { "type": ["string", "null"] },
+        "module": { "type": ["object", "null"] },
+        "workflow": { "type": ["object", "null"] },
+        "prompt": { "type": ["object", "null"] },
+        "processor": { "type": ["object", "null"] },
+        "adapter": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "generated_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }
+      }
+    },
+    "review": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["status", "review_id", "reviewed_by", "reviewed_at", "decision"],
+      "properties": {
+        "status": { "enum": ["unreviewed", "pending", "approved", "approved-with-modification", "rejected", "not-required"] },
+        "review_id": { "type": ["string", "null"] },
+        "reviewed_by": { "type": ["string", "null"] },
+        "reviewed_at": { "type": ["string", "null"], "format": "date-time" },
+        "decision": { "type": ["string", "null"] }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["last_verified", "verification_interval_days", "stale_after", "stale", "verification_status"],
+      "properties": {
+        "last_verified": { "type": ["string", "null"], "format": "date-time" },
+        "verification_interval_days": { "type": ["integer", "null"], "minimum": 1 },
+        "stale_after": { "type": ["string", "null"], "format": "date-time" },
+        "stale": { "type": "boolean" },
+        "verification_status": { "enum": ["verified", "due-soon", "stale", "unverifiable", "historical", "unknown"] }
+      }
+    }
+  }
+}

@@ -15,6 +15,7 @@
     "tags": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
     "source_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
     "captured_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
-    "schema_version": { "const": 1 }
+    "schema_version": { "const": 1 },
+    "_ownership": { "type": "object" }
   }
 }

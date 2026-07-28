@@ -1,5 +1,25 @@
 prompts:
-  match-capture: { active_version: 1.0.0, path: classify/v1.0.0.md, versions: { 1.0.0: classify/v1.0.0.md }, status: active }
-  compare-update: { active_version: 1.0.0, path: compare/v1.0.0.md, versions: { 1.0.0: compare/v1.0.0.md }, status: active }
-  resolve-review: { active_version: 1.0.0, path: review/v1.0.0.md, versions: { 1.0.0: review/v1.0.0.md }, status: active }
-  final-summary: { active_version: 1.0.0, path: summarize/v1.0.0.md, versions: { 1.0.0: summarize/v1.0.0.md }, status: active }
+  match-capture:
+    active_version: 1.0.0
+    path: classify/v1.0.0.md
+    versions: { 1.0.0: classify/v1.0.0.md }
+    status: active
+    quality: { max_schema_failure_rate: 0.02, max_review_rate: 0.35, max_rejection_rate: 0.20, minimum_fixture_pass_rate: 1.0, protected_invariants: [preserve-user-facts] }
+  compare-update:
+    active_version: 1.0.0
+    path: compare/v1.0.0.md
+    versions: { 1.0.0: compare/v1.0.0.md }
+    status: active
+    quality: { max_schema_failure_rate: 0.02, max_review_rate: 0.60, max_rejection_rate: 0.20, minimum_fixture_pass_rate: 1.0, protected_invariants: [no-fabricated-numbers, preserve-user-facts] }
+  resolve-review:
+    active_version: 1.0.0
+    path: review/v1.0.0.md
+    versions: { 1.0.0: review/v1.0.0.md }
+    status: active
+    quality: { max_schema_failure_rate: 0.01, max_review_rate: null, max_rejection_rate: null, minimum_fixture_pass_rate: 1.0, protected_invariants: [preserve-user-facts] }
+  final-summary:
+    active_version: 1.0.0
+    path: summarize/v1.0.0.md
+    versions: { 1.0.0: summarize/v1.0.0.md }
+    status: active
+    quality: { max_schema_failure_rate: 0.02, max_review_rate: 0.20, max_rejection_rate: 0.15, minimum_fixture_pass_rate: 1.0, protected_invariants: [no-fabricated-numbers, preserve-user-facts] }

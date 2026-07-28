@@ -99,8 +99,9 @@ export interface MarkdownDocument {
   content: string;
 }
 
-export interface ReviewItem extends JsonObject {
+export type ReviewItem = JsonObject & {
   review_id: string;
+  origin_task_id?: string | null;
   schema_version: number;
   source_module: string;
   instance_id: string | null;
@@ -118,7 +119,15 @@ export interface ReviewItem extends JsonObject {
   decision_history: ReviewDecision[];
   target_observation: ReviewTargetObservation | null;
   resolution: string | null;
-}
+  review_fingerprint?: string;
+  evidence_hash?: string;
+  first_seen?: string;
+  last_seen?: string;
+  occurrence_count?: number;
+  sla_due_at?: string;
+  overdue?: boolean;
+  suppressed_until?: string | null;
+};
 
 export interface Operation extends JsonObject {
   operation_id: string;

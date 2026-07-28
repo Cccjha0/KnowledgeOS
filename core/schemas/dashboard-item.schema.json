@@ -90,7 +90,10 @@
           "run",
           "dismiss",
           "reconcile",
-          "retry"
+          "retry",
+          "acknowledge",
+          "suppress",
+          "resolve"
         ]
       }
     },
@@ -110,6 +113,10 @@
     },
     "active_context": {
       "type": "boolean"
+    },
+    "quality_issue_id": {
+      "type": "string",
+      "pattern": "^QI-\\d{4}-\\d{6,}$"
     }
   }
 }

@@ -5,7 +5,7 @@ import json
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -128,6 +128,59 @@ def migrate(connection):
           UPDATE runtime_metadata SET value='2' WHERE key='schema_version';
           COMMIT;
         """)
+        current = 2
+    if current < 3:
+        if original_version >= 2:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE TABLE IF NOT EXISTS evidence_records (
+            evidence_id TEXT PRIMARY KEY, status TEXT NOT NULL, observed_at TEXT NOT NULL,
+            source_ref TEXT NOT NULL, record_json TEXT NOT NULL, updated_at TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS quality_issues (
+            issue_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE, issue_type TEXT NOT NULL,
+            dimension TEXT NOT NULL, severity TEXT NOT NULL, status TEXT NOT NULL, module TEXT NOT NULL,
+            instance_id TEXT, target_ref TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+            occurrence_count INTEGER NOT NULL, last_notified TEXT, suppressed_until TEXT,
+            record_json TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS metric_events (
+            metric_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, event_type TEXT NOT NULL,
+            module TEXT NOT NULL, instance_id TEXT, workflow_id TEXT, workflow_version TEXT,
+            prompt_id TEXT, prompt_version TEXT, run_id TEXT, occurred_at TEXT NOT NULL,
+            dimensions_json TEXT NOT NULL, values_json TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS change_records (
+            change_id TEXT PRIMARY KEY, entity_ref TEXT NOT NULL, field TEXT NOT NULL,
+            changed_at TEXT NOT NULL, record_json TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS audit_runs (
+            audit_id TEXT PRIMARY KEY, frequency TEXT NOT NULL, status TEXT NOT NULL,
+            started_at TEXT NOT NULL, ended_at TEXT, summary_json TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS review_memories (
+            fingerprint TEXT PRIMARY KEY, rejected_value_hash TEXT NOT NULL, evidence_hash TEXT NOT NULL,
+            reason TEXT NOT NULL, rejected_at TEXT NOT NULL, suppressed_until TEXT
+          );
+          CREATE INDEX IF NOT EXISTS idx_quality_status_severity ON quality_issues(status,severity,last_seen DESC);
+          CREATE INDEX IF NOT EXISTS idx_quality_module ON quality_issues(module,instance_id,status);
+          CREATE INDEX IF NOT EXISTS idx_metric_time ON metric_events(occurred_at,event_type);
+          CREATE INDEX IF NOT EXISTS idx_metric_prompt ON metric_events(module,prompt_id,prompt_version,occurred_at);
+          CREATE INDEX IF NOT EXISTS idx_change_entity ON change_records(entity_ref,field,changed_at DESC);
+          UPDATE runtime_metadata SET value='3' WHERE key='schema_version';
+          COMMIT;
+        """)
+        current = 3
 
 
 def decode_json(value, fallback):
@@ -398,6 +451,111 @@ def dispatch(command, connection, payload):
     if command == "list-codex-invocations":
         return [{**dict(row), "error": decode_json(row["error_json"], None), "token_usage": decode_json(row["token_usage_json"], {})}
           for row in connection.execute("SELECT * FROM codex_invocations WHERE task_id=? ORDER BY started_at", (payload["task_id"],))]
+    if command == "upsert-evidence":
+        item = dict(payload)
+        if not item.get("evidence_id"): item["evidence_id"] = allocate_id(connection, "EVD")
+        connection.execute("""INSERT INTO evidence_records(evidence_id,status,observed_at,source_ref,record_json,updated_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(evidence_id) DO UPDATE SET status=excluded.status,observed_at=excluded.observed_at,
+          source_ref=excluded.source_ref,record_json=excluded.record_json,updated_at=excluded.updated_at""",
+          (item["evidence_id"], item["status"], item["observed_at"], item["source_ref"], json.dumps(item), now_iso()))
+        connection.commit(); return item
+    if command == "get-evidence":
+        row = connection.execute("SELECT record_json FROM evidence_records WHERE evidence_id=?", (payload["evidence_id"],)).fetchone()
+        return json.loads(row[0]) if row else None
+    if command == "list-evidence":
+        return [json.loads(row[0]) for row in connection.execute("SELECT record_json FROM evidence_records ORDER BY observed_at DESC LIMIT ?", (int(payload.get("limit", 100)),))]
+    if command == "upsert-quality-issue":
+        item = dict(payload); existing = connection.execute("SELECT * FROM quality_issues WHERE fingerprint=?", (item["fingerprint"],)).fetchone()
+        if existing:
+            previous = json.loads(existing["record_json"]); item["issue_id"] = existing["issue_id"]
+            item["first_seen"] = existing["first_seen"]; item["last_seen"] = item.get("last_seen") or now_iso()
+            item["occurrence_count"] = existing["occurrence_count"] + 1
+            if existing["status"] == "suppressed" and existing["suppressed_until"] and existing["suppressed_until"] > now_iso():
+                item["status"] = "suppressed"; item["suppressed_until"] = existing["suppressed_until"]
+            elif existing["status"] in {"resolved", "ignored"}: item["status"] = "open"
+            else: item["status"] = existing["status"]
+            item["last_notified"] = previous.get("last_notified")
+        else:
+            item["issue_id"] = item.get("issue_id") or allocate_id(connection, "QI")
+            item["first_seen"] = item.get("first_seen") or now_iso(); item["last_seen"] = item.get("last_seen") or item["first_seen"]
+            item["occurrence_count"] = 1; item.setdefault("last_notified", None); item.setdefault("suppressed_until", None)
+        target = item.get("target") or {}; target_ref = target.get("entity_ref") or target.get("path")
+        connection.execute("""INSERT INTO quality_issues(issue_id,fingerprint,issue_type,dimension,severity,status,module,instance_id,target_ref,
+          first_seen,last_seen,occurrence_count,last_notified,suppressed_until,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(fingerprint) DO UPDATE SET issue_type=excluded.issue_type,dimension=excluded.dimension,severity=excluded.severity,
+          status=excluded.status,module=excluded.module,instance_id=excluded.instance_id,target_ref=excluded.target_ref,last_seen=excluded.last_seen,
+          occurrence_count=excluded.occurrence_count,last_notified=excluded.last_notified,suppressed_until=excluded.suppressed_until,record_json=excluded.record_json""",
+          (item["issue_id"], item["fingerprint"], item["issue_type"], item["dimension"], item["severity"], item["status"], item["module"],
+           item.get("instance_id"), target_ref, item["first_seen"], item["last_seen"], item["occurrence_count"], item.get("last_notified"),
+           item.get("suppressed_until"), json.dumps(item)))
+        connection.commit(); return item
+    if command == "list-quality-issues":
+        clauses=[]; values=[]
+        for column,key in [("status","statuses"),("severity","severities"),("module","modules")]:
+            selected=payload.get(key) or []
+            if selected:
+                clauses.append(f"{column} IN ({','.join('?' for _ in selected)})"); values.extend(selected)
+        if payload.get("instance_id") is not None: clauses.append("instance_id=?"); values.append(payload["instance_id"])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(int(payload.get("limit", 500)))
+        return [json.loads(row[0]) for row in connection.execute(f"SELECT record_json FROM quality_issues{where} ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,last_seen DESC LIMIT ?", values)]
+    if command == "update-quality-issue":
+        row=connection.execute("SELECT record_json FROM quality_issues WHERE issue_id=?",(payload["issue_id"],)).fetchone()
+        if not row: fail("QUALITY_ISSUE_NOT_FOUND", f"Quality Issue {payload['issue_id']} was not found.")
+        item=json.loads(row[0]); item["status"]=payload["status"]
+        if "suppressed_until" in payload: item["suppressed_until"]=payload.get("suppressed_until")
+        if "last_notified" in payload: item["last_notified"]=payload.get("last_notified")
+        if "resolution" in payload: item["resolution"]=payload.get("resolution")
+        connection.execute("UPDATE quality_issues SET status=?,suppressed_until=?,last_notified=?,record_json=? WHERE issue_id=?",
+          (item["status"],item.get("suppressed_until"),item.get("last_notified"),json.dumps(item),item["issue_id"]))
+        connection.commit(); return item
+    if command == "record-metric-event":
+        item=dict(payload); item["metric_id"]=item.get("metric_id") or allocate_id(connection,"MET")
+        connection.execute("""INSERT OR IGNORE INTO metric_events(metric_id,idempotency_key,event_type,module,instance_id,workflow_id,workflow_version,
+          prompt_id,prompt_version,run_id,occurred_at,dimensions_json,values_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+          (item["metric_id"],item["idempotency_key"],item["event_type"],item["module"],item.get("instance_id"),item.get("workflow_id"),
+           item.get("workflow_version"),item.get("prompt_id"),item.get("prompt_version"),item.get("run_id"),item["occurred_at"],
+           json.dumps(item.get("dimensions") or {}),json.dumps(item.get("values") or {})))
+        connection.commit(); return item
+    if command == "aggregate-metrics":
+        since=payload.get("since") or "1970-01-01T00:00:00Z"; rows=connection.execute("SELECT * FROM metric_events WHERE occurred_at>=? ORDER BY occurred_at",(since,))
+        totals={}; grouped={}
+        for row in rows:
+            totals[row["event_type"]]=totals.get(row["event_type"],0)+1
+            key="|".join(str(row[name] or "unknown") for name in ["module","workflow_id","prompt_id","prompt_version"])
+            entry=grouped.setdefault(key,{"module":row["module"],"workflow_id":row["workflow_id"],"prompt_id":row["prompt_id"],"prompt_version":row["prompt_version"],"events":{}})
+            entry["events"][row["event_type"]]=entry["events"].get(row["event_type"],0)+1
+            values=decode_json(row["values_json"],{})
+            for name,value in values.items():
+                if isinstance(value,(int,float)): entry[name]=entry.get(name,0)+value
+        return {"since":since,"totals":totals,"groups":list(grouped.values())}
+    if command == "record-change":
+        item=dict(payload); item["change_id"]=item.get("change_id") or allocate_id(connection,"CHG")
+        connection.execute("INSERT OR IGNORE INTO change_records(change_id,entity_ref,field,changed_at,record_json) VALUES(?,?,?,?,?)",
+          (item["change_id"],item["entity_ref"],item["field"],item["changed_at"],json.dumps(item)))
+        connection.commit(); return item
+    if command == "list-changes":
+        if payload.get("entity_ref"):
+            rows=connection.execute("SELECT record_json FROM change_records WHERE entity_ref=? ORDER BY changed_at DESC LIMIT ?",(payload["entity_ref"],int(payload.get("limit",100))))
+        else: rows=connection.execute("SELECT record_json FROM change_records ORDER BY changed_at DESC LIMIT ?",(int(payload.get("limit",100)),))
+        return [json.loads(row[0]) for row in rows]
+    if command == "start-audit":
+        audit_id=allocate_id(connection,"AUD"); item={"audit_id":audit_id,"frequency":payload["frequency"],"status":"running","started_at":now_iso(),"ended_at":None,"summary":{}}
+        connection.execute("INSERT INTO audit_runs(audit_id,frequency,status,started_at,ended_at,summary_json) VALUES(?,?,?,?,NULL,'{}')",(audit_id,item["frequency"],item["status"],item["started_at"]))
+        connection.commit(); return item
+    if command == "finish-audit":
+        ended=now_iso(); connection.execute("UPDATE audit_runs SET status=?,ended_at=?,summary_json=? WHERE audit_id=?",(payload["status"],ended,json.dumps(payload.get("summary") or {}),payload["audit_id"]))
+        connection.commit(); return {"audit_id":payload["audit_id"],"status":payload["status"],"ended_at":ended,"summary":payload.get("summary") or {}}
+    if command == "list-audits":
+        return [{**dict(row),"summary":decode_json(row["summary_json"],{})} for row in connection.execute("SELECT * FROM audit_runs ORDER BY started_at DESC LIMIT ?",(int(payload.get("limit",50)),))]
+    if command == "remember-rejection":
+        connection.execute("""INSERT INTO review_memories(fingerprint,rejected_value_hash,evidence_hash,reason,rejected_at,suppressed_until)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(fingerprint) DO UPDATE SET rejected_value_hash=excluded.rejected_value_hash,evidence_hash=excluded.evidence_hash,
+          reason=excluded.reason,rejected_at=excluded.rejected_at,suppressed_until=excluded.suppressed_until""",
+          (payload["fingerprint"],payload["rejected_value_hash"],payload["evidence_hash"],payload["reason"],payload["rejected_at"],payload.get("suppressed_until")))
+        connection.commit(); return payload
+    if command == "get-rejection-memory":
+        row=connection.execute("SELECT * FROM review_memories WHERE fingerprint=?",(payload["fingerprint"],)).fetchone(); return dict(row) if row else None
     if command == "retry-task":
         row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
         if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
@@ -428,7 +586,10 @@ def dispatch(command, connection, payload):
         days = max(30, int(payload.get("retain_days", 90)))
         cursor = connection.execute("""DELETE FROM task_runs WHERE status IN ('completed','cancelled')
           AND ended_at IS NOT NULL AND ended_at < datetime('now', ?)""", (f"-{days} days",))
-        connection.commit(); return {"deleted_runs": cursor.rowcount, "retain_days": days}
+        deleted_runs = cursor.rowcount
+        metric_cursor = connection.execute("DELETE FROM metric_events WHERE occurred_at < datetime('now', ?)", (f"-{days} days",))
+        audit_cursor = connection.execute("DELETE FROM audit_runs WHERE status='completed' AND ended_at < datetime('now', '-365 days')")
+        connection.commit(); return {"deleted_runs": deleted_runs, "deleted_metric_events": metric_cursor.rowcount, "deleted_audits": audit_cursor.rowcount, "retain_days": days}
     if command == "checkpoint":
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
     fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")

@@ -141,6 +141,13 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 2
+    },
+    "_field_meta": {
+      "type": "object",
+      "additionalProperties": { "$ref": "https://pkb.local/schemas/core/provenance-record.schema.json" }
+    },
+    "_ownership": {
+      "type": "object"
     }
   },
   "$defs": {

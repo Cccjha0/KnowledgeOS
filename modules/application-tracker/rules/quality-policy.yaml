@@ -1,0 +1,19 @@
+critical_fields: [application_status, application_open, deadline, tuition, academic_requirement, english_requirement]
+provenance_required: [application_status, application_open, deadline, tuition, academic_requirement, english_requirement]
+freshness:
+  application_open: { interval_days: 7 }
+  application_status: { interval_days: 7 }
+  deadline: { interval_days: 14 }
+  tuition: { interval_days: 60 }
+  academic_requirement: { interval_days: 60 }
+  english_requirement: { interval_days: 60 }
+ownership:
+  application-record:
+    required: true
+    sections:
+      原始来源: source-immutable
+      AI整理: ai-managed
+      系统状态: system-managed
+      用户确认结论: mixed
+audits: [stale-fields, missing-provenance, invalid-status, schema-version, ownership, instance-task]
+default_verification_interval_days: 30

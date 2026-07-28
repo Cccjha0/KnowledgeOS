@@ -831,6 +831,20 @@ class RunDetailsModal extends Modal {
     root.createDiv({ cls: "knowledgeos-review-meta", text: `${run.source_module}${run.instance_id ? ` / ${run.instance_id}` : ""} · ${run.completed_at}` });
     root.createEl("p", { text: run.input_summary || run.source_action || "Core operation" });
 
+    if (run.explanation_chain) {
+      root.createEl("h4", { text: "为什么系统这样做" });
+      const chain = run.explanation_chain;
+      const steps = [
+        ["触发", chain.trigger?.reason], ["输入", `${(chain.inputs || []).length} 个文件`],
+        ["判断", `${chain.decision?.module || "core"} / ${chain.decision?.workflow || "deterministic"}`],
+        ["风险", `${(chain.decision?.risks || []).map((item) => item.risk).join("、") || "无写入"}`],
+        ["审核", chain.review?.review_id || (chain.review?.created ? "已创建" : "无需审核")],
+        ["执行", `${(chain.execution?.operations || []).filter((item) => item.status === "completed").length} 个操作完成`],
+        ["变更", `${(chain.changes || []).length} 条 Change Record`],
+      ];
+      for (const [label, value] of steps) root.createDiv({ cls: "knowledgeos-run-operation", text: `${label} → ${value}` });
+    }
+
     root.createEl("h4", { text: `修改文件 (${run.affected_files.length})` });
     if (!run.affected_files.length) root.createDiv({ cls: "knowledgeos-empty", text: "此 Run 没有可展示的事务文件。" });
     for (const file of run.affected_files) {
@@ -1079,7 +1093,7 @@ class SystemCenterView extends ItemView {
     const root = this.contentEl;
     root.empty();
     markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" }));
-    const [modules, instances, inbox, reviews, runs, tasks, runtime] = await Promise.all([
+    const [modules, instances, inbox, reviews, runs, tasks, runtime, quality] = await Promise.all([
       this.plugin.client.invoke("getModules", {}),
       this.plugin.client.invoke("getInstances", {}),
       this.plugin.client.invoke("listInboxItems", {}),
@@ -1087,10 +1101,11 @@ class SystemCenterView extends ItemView {
       this.plugin.client.invoke("getRecentRuns", { limit: 20 }),
       this.plugin.client.invoke("listTasks", { limit: 200 }),
       this.plugin.client.invoke("getTaskRuntimeStatus", {}),
+      this.plugin.client.invoke("getQualityDashboard", {}),
     ]);
-    const failed = [modules, instances, inbox, reviews, runs, tasks, runtime].find((response) => !response.ok);
+    const failed = [modules, instances, inbox, reviews, runs, tasks, runtime, quality].find((response) => !response.ok);
     if (failed) { this.renderFailure(failed.error); return; }
-    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data, tasks: tasks.data, runtime: runtime.data };
+    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data, tasks: tasks.data, runtime: runtime.data, quality: quality.data };
     this.render();
     if (openRunId) new RunDetailsModal(this.app, this.plugin, openRunId, () => this.refresh()).open();
     if (openTaskId) new TaskDetailsModal(this.app, this.plugin, openTaskId, () => this.refresh()).open();
@@ -1133,6 +1148,7 @@ class SystemCenterView extends ItemView {
     health.createDiv({ text: `模块 ${this.data.modules.length} · 实例 ${this.data.instances.length} · Inbox ${this.data.inbox.counts.total} · 待审核 ${this.data.reviews.length}` });
     health.createDiv({ text: `Task Runtime ${this.data.runtime.integrity} · 队列 ${this.data.runtime.counts.queued || 0} · 等待 AI ${this.data.runtime.counts["waiting-for-ai"] || 0} · 失败 ${this.data.runtime.counts.failed || 0}` });
 
+    this.renderQuality(root);
     root.createEl("h3", { text: "Task Center" });
     const taskGroups = [
       ["Active", ["queued", "running"]], ["Waiting", ["waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"]],
@@ -1238,6 +1254,32 @@ class SystemCenterView extends ItemView {
     root.createEl("h3", { text: "最近运行" });
     if (!this.data.runs.length) root.createDiv({ cls: "knowledgeos-empty", text: "尚无运行记录。" });
     for (const run of this.data.runs) this.renderRun(root, run);
+  }
+
+  renderQuality(root) {
+    const quality = this.data.quality;
+    const section = root.createDiv({ cls: "knowledgeos-quality" });
+    const header = section.createDiv({ cls: "knowledgeos-header" });
+    header.createEl("h3", { text: "Knowledge Quality" });
+    const audit = header.createEl("button", { text: "运行每周审计" });
+    audit.onclick = async () => { audit.disabled = true; const response = await this.plugin.client.invoke("runQualityAudit", { frequency: "weekly" }); if (!response.ok) this.plugin.notify(response.error?.message || "质量审计失败", { error: true }); await this.refresh(); };
+    section.createDiv({ cls: "knowledgeos-system-health", text: `Active ${quality.overview.active_issues} · Critical ${quality.overview.critical} · High ${quality.overview.high} · 本周解决 ${quality.overview.resolved_this_week}` });
+    const panels = [
+      ["Freshness", quality.freshness, ["due_soon", "stale"]], ["Provenance", quality.provenance, ["missing", "conflicts", "unavailable"]],
+      ["Reviews", quality.reviews, ["pending", "overdue", "average_resolution_ms"]], ["Links & Ownership", quality.links_ownership, ["broken_links", "orphan_files", "unowned_files", "missing_ownership"]],
+      ["Schemas & Migrations", quality.schemas_migrations, ["outdated", "invalid"]], ["AI Quality", quality.ai_quality, []], ["Audit History", { count: (quality.audit_history || []).length }, ["count"]],
+    ];
+    for (const [title, data, keys] of panels) {
+      const details = section.createEl("details"); details.createEl("summary", { text: title });
+      if (keys.length) details.createDiv({ cls: "knowledgeos-review-meta", text: keys.map((key) => `${key}: ${data?.[key] ?? 0}`).join(" · ") });
+      for (const issue of (data?.items || data?.anomalies || []).slice(0, 20)) {
+        const row = details.createDiv({ cls: `knowledgeos-card quality-${issue.severity}` });
+        row.createEl("strong", { text: `${issue.severity} · ${issue.issue_type}` });
+        row.createDiv({ cls: "knowledgeos-review-meta", text: String(issue.target?.path || issue.target?.entity_ref || issue.target?.field || issue.issue_id) });
+        const actions = row.createDiv({ cls: "knowledgeos-review-actions" });
+        for (const action of ["acknowledge", "suppress", "resolve"]) { const button = actions.createEl("button", { text: action }); button.onclick = async () => { await this.plugin.client.invoke("manageQualityIssue", { issue_id: issue.issue_id, action }); await this.refresh(); }; }
+      }
+    }
   }
 
   renderRun(root, run) {

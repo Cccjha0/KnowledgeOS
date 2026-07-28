@@ -43,6 +43,11 @@ PUBLIC_SCHEMAS = (
     "dashboard-item",
     "event",
     "run-log",
+    "provenance-record",
+    "evidence-record",
+    "quality-issue",
+    "change-record",
+    "metric-event",
 )
 
 LEGACY_PUBLIC_FIELDS = (

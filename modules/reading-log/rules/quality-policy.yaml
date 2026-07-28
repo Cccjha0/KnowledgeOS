@@ -1,0 +1,13 @@
+critical_fields: []
+provenance_required: [source_refs]
+freshness: {}
+ownership:
+  reading-note:
+    required: true
+    sections:
+      原始摘录: source-immutable
+      AI整理: ai-managed
+      用户笔记: user-owned
+      用户确认结论: mixed
+audits: [broken-links, orphan-files, missing-provenance, schema-version, ownership, duplicate-content]
+default_verification_interval_days: null

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { JsonObject, MarkdownDocument, Operation, OperationPlan } from "./types.js";
 import { parseMarkdown, parseYaml, validateSchema, writeMarkdown, writeYaml } from "./bridge.js";
 import { PkbError } from "./errors.js";
+import { assertOwnedMutation } from "./qualityOwnership.js";
 import { deepMerge, ensureDir, exists, fromVaultPath, readJson, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import { appendToSection } from "./markdown.js";
 
@@ -258,7 +259,9 @@ async function executeOperation(vaultRoot: string, operation: Operation): Promis
   }
   if (operation.type === "update-frontmatter") {
     const document = parseMarkdown(vaultRoot, target);
-    const updated: MarkdownDocument = { data: deepMerge(document.data, requireObject(operation.payload.patch, operation, "patch")), content: document.content };
+    const patch = requireObject(operation.payload.patch, operation, "patch");
+    assertOwnedMutation(document.data, { actor: operation.payload.actor === "ai" ? "ai" : operation.payload.actor === "user" ? "user" : "system", fields: Object.keys(patch), reviewId: operation.requires_review_id });
+    const updated: MarkdownDocument = { data: deepMerge(document.data, patch), content: document.content };
     if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, updated.data);
     writeMarkdown(vaultRoot, target, updated);
     return;
@@ -296,6 +299,7 @@ async function executeOperation(vaultRoot: string, operation: Operation): Promis
   }
   if (operation.type === "append-section") {
     const document = parseMarkdown(vaultRoot, target);
+    assertOwnedMutation(document.data, { actor: operation.payload.actor === "ai" ? "ai" : operation.payload.actor === "user" ? "user" : "system", section: String(operation.payload.section ?? "Changes"), reviewId: operation.requires_review_id });
     writeMarkdown(vaultRoot, target, {
       data: document.data,
       content: appendToSection(document.content, String(operation.payload.section ?? "Changes"), String(operation.payload.content ?? ""), String(operation.payload.marker ?? operation.idempotency_key)),
