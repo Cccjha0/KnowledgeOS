@@ -35,7 +35,15 @@ function fieldMeta(data: JsonObject, field: string): JsonObject | null {
 function normalizeContent(value: string): string { return value.toLowerCase().replace(/<!--.*?-->/gs, "").replace(/\s+/g, " ").trim(); }
 function contentShingles(value: string): Set<string> { const compact = value.replace(/\s+/g, ""); const output = new Set<string>(); for (let index = 0; index <= compact.length - 5; index += 1) output.add(compact.slice(index, index + 5)); return output; }
 function jaccard(left: Set<string>, right: Set<string>): number { let intersection = 0; for (const value of left) if (right.has(value)) intersection += 1; const union = left.size + right.size - intersection; return union ? intersection / union : 0; }
-function weekKey(value: string): string { const date = new Date(value); if (!Number.isFinite(date.getTime())) return ""; const mondayOffset = (date.getUTCDay() + 6) % 7; date.setUTCDate(date.getUTCDate() - mondayOffset); return date.toISOString().slice(0, 10); }
+function localDayKey(value: string, timezone: string): string {
+  const date = new Date(value); if (!Number.isFinite(date.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  } catch { return date.toISOString().slice(0, 10); }
+}
+function weekKey(value: string, timezone: string): string { const localDay = localDayKey(value, timezone); if (!localDay) return ""; const date = new Date(`${localDay}T00:00:00Z`); const mondayOffset = (date.getUTCDay() + 6) % 7; date.setUTCDate(date.getUTCDate() - mondayOffset); return date.toISOString().slice(0, 10); }
 function priorityRank(value: QualitySeverity): number { return { critical: 0, high: 1, medium: 2, low: 3, info: 4 }[value]; }
 
 async function policies(vaultRoot: string): Promise<Map<string, ModuleQuality>> {
@@ -222,7 +230,7 @@ async function observationMetrics(vaultRoot: string, quality: QualityRepository,
 export function evaluateObservationWindow(observation: JsonObject, now: string): JsonObject {
   const snapshots = (Array.isArray(observation.snapshots) ? observation.snapshots : []).filter((item): item is JsonObject => Boolean(item && typeof item === "object" && !Array.isArray(item))); const startedAt = String(observation.started_at ?? now);
   const elapsedDays = Math.max(0, (Date.parse(now) - Date.parse(startedAt)) / 86_400_000); const minimumDays = Number(observation.minimum_days ?? 14); const targetDays = Number(observation.target_days ?? 28);
-  const measured = snapshots.filter((item) => object(item.metrics)); const uniqueDays = new Set(measured.map((item) => String(item.observed_at ?? "").slice(0, 10)).filter(Boolean)).size; const weeklyAuditWindows = new Set(snapshots.filter((item) => item.frequency === "weekly").map((item) => weekKey(String(item.observed_at ?? ""))).filter(Boolean)); const weeklyAudits = weeklyAuditWindows.size;
+  const timezone = String(observation.timezone ?? "Asia/Shanghai"); const measured = snapshots.filter((item) => object(item.metrics)); const uniqueDays = new Set(measured.map((item) => localDayKey(String(item.observed_at ?? ""), timezone)).filter(Boolean)).size; const weeklyAuditWindows = new Set(snapshots.filter((item) => item.frequency === "weekly").map((item) => weekKey(String(item.observed_at ?? ""), timezone)).filter(Boolean)); const weeklyAudits = weeklyAuditWindows.size;
   const requiredMeasuredDays = Math.min(7, Math.max(2, Math.floor(minimumDays / 2))); const coveragePass = uniqueDays >= requiredMeasuredDays && weeklyAudits >= 2; const baseline = object(measured[0]?.metrics); const latest = object(measured.at(-1)?.metrics);
   const trend = (key: string): JsonObject => baseline && latest ? { status: Number(latest[key] ?? 0) <= Number(baseline[key] ?? 0) ? "pass" : "fail", baseline: Number(baseline[key] ?? 0), current: Number(latest[key] ?? 0) } : { status: "insufficient-evidence", baseline: null, current: null };
   const stale = latest ? { status: Number(latest.stale_critical_fields ?? 0) === 0 || Number(latest.actionable_stale_fields ?? 0) >= Number(latest.stale_critical_fields ?? 0) ? "pass" : "fail", stale: Number(latest.stale_critical_fields ?? 0), actionable: Number(latest.actionable_stale_fields ?? 0) } : { status: "insufficient-evidence", stale: null, actionable: null };
@@ -231,15 +239,15 @@ export function evaluateObservationWindow(observation: JsonObject, now: string):
   const reviewDebt = baseline && latest ? { status: Number(latest.pending_reviews ?? 0) <= Number(baseline.pending_reviews ?? 0) && Number(latest.overdue_reviews ?? 0) <= Number(baseline.overdue_reviews ?? 0) ? "pass" : "fail", baseline_pending: Number(baseline.pending_reviews ?? 0), current_pending: Number(latest.pending_reviews ?? 0), baseline_overdue: Number(baseline.overdue_reviews ?? 0), current_overdue: Number(latest.overdue_reviews ?? 0) } : { status: "insufficient-evidence", baseline_pending: null, current_pending: null, baseline_overdue: null, current_overdue: null };
   const criteria: JsonObject = { "review-debt-not-growing": reviewDebt, "missing-critical-provenance-not-growing": trend("missing_critical_provenance"), "stale-fields-actionable": stale, "prompt-anomalies-attributable": prompts, "alert-volume-acceptable": alerts }; const criterionValues = Object.values(criteria).map((value) => String(object(value)?.status ?? "insufficient-evidence"));
   const eligible = elapsedDays >= minimumDays && coveragePass; const overall = !eligible ? "insufficient-evidence" : criterionValues.every((value) => value === "pass") ? "preliminary-pass" : "needs-attention";
-  return { evaluated_at: now, elapsed_days: Math.floor(elapsedDays), minimum_days: minimumDays, target_days: targetDays, target_reached: elapsedDays >= targetDays, coverage: { measured_snapshots: measured.length, unique_days: uniqueDays, required_unique_days: requiredMeasuredDays, weekly_audits: weeklyAudits, required_weekly_audits: 2, status: coveragePass ? "pass" : "insufficient-evidence" }, criteria, eligible_for_final_review: eligible, overall };
+  return { evaluated_at: now, timezone, elapsed_days: Math.floor(elapsedDays), minimum_days: minimumDays, target_days: targetDays, target_reached: elapsedDays >= targetDays, coverage: { measured_snapshots: measured.length, unique_days: uniqueDays, required_unique_days: requiredMeasuredDays, weekly_audits: weeklyAudits, required_weekly_audits: 2, status: coveragePass ? "pass" : "insufficient-evidence" }, criteria, eligible_for_final_review: eligible, overall };
 }
 
 async function updateObservation(vaultRoot: string, now: string, summary: JsonObject, quality: QualityRepository): Promise<JsonObject> {
   const file = path.join(vaultRoot, "90-System", "State", "quality-observation.json");
-  const current = await readJson<JsonObject>(file, { schema_version: 2, started_at: now, minimum_days: 14, target_days: 28, max_high_critical_alerts: 5, snapshots: [] });
+  const current = await readJson<JsonObject>(file, { schema_version: 2, timezone: "Asia/Shanghai", started_at: now, minimum_days: 14, target_days: 28, max_high_critical_alerts: 5, snapshots: [] });
   const snapshots = Array.isArray(current.snapshots) ? current.snapshots : []; snapshots.push({ observed_at: now, audit_id: summary.audit_id ?? null, frequency: summary.frequency ?? null, detected: summary.detected ?? 0, resolved: summary.resolved ?? 0, by_severity: summary.by_severity ?? {}, metrics: await observationMetrics(vaultRoot, quality, now) });
   const evaluation = evaluateObservationWindow({ ...current, snapshots }, now); const status = evaluation.eligible_for_final_review === true ? evaluation.overall === "preliminary-pass" ? "ready-for-evaluation" : "needs-attention" : "observing";
-  const next: JsonObject = { ...current, schema_version: 2, updated_at: now, elapsed_days: Number(evaluation.elapsed_days ?? 0), status, snapshots: snapshots.slice(-100), evaluation_criteria: Object.keys(object(evaluation.criteria) ?? {}), snapshots_retained: 100, evaluation };
+  const next: JsonObject = { ...current, schema_version: 2, timezone: String(current.timezone ?? "Asia/Shanghai"), updated_at: now, elapsed_days: Number(evaluation.elapsed_days ?? 0), status, snapshots: snapshots.slice(-100), evaluation_criteria: Object.keys(object(evaluation.criteria) ?? {}), snapshots_retained: 100, evaluation };
   await writeJsonAtomic(file, next); return next;
 }
 

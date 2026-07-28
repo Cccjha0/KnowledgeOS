@@ -50,6 +50,12 @@ test("I14 evaluation requires real coverage and evaluates all five exit criteria
   assert.equal(evaluateObservationWindow({ ...observation, snapshots: sameWeek }, "2026-07-15T00:00:00Z").eligible_for_final_review, false);
   const failing = evaluateObservationWindow({ ...observation, snapshots: [...snapshots, { observed_at: "2026-07-15T00:00:00Z", frequency: "daily", metrics: metrics(3) }] }, "2026-07-15T00:00:00Z");
   assert.equal(failing.overall, "needs-attention");
+  const sameShanghaiDay = evaluateObservationWindow({ ...observation, snapshots: [
+    { observed_at: "2026-07-28T16:10:00Z", frequency: "daily", metrics: metrics(1) },
+    { observed_at: "2026-07-29T07:00:00Z", frequency: "daily", metrics: metrics(1) },
+  ] }, "2026-08-15T00:00:00Z");
+  assert.equal((sameShanghaiDay.coverage as JsonObject).unique_days, 1);
+  assert.equal(sameShanghaiDay.timezone, "Asia/Shanghai");
 });
 
 test("freshness distinguishes verified, due-soon, stale, historical and hierarchy", () => {

@@ -1269,7 +1269,7 @@ class SystemCenterView extends ItemView {
     const coverage = evaluation.coverage || {};
     const observationPanel = section.createEl("details");
     observationPanel.createEl("summary", { text: "I14 真实观察" });
-    observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
+    observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 时区 ${evaluation.timezone || observation.timezone || "Asia/Shanghai"} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
     observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `初步结论 ${evaluation.overall || "insufficient-evidence"} · 最终评估资格 ${evaluation.eligible_for_final_review ? "已满足" : "未满足"}` });
     for (const [criterion, result] of Object.entries(evaluation.criteria || {})) observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `${criterion}: ${result?.status || "insufficient-evidence"}` });
     const panels = [
