@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -70,6 +71,63 @@ test("System Center run models are user-readable and expose safe rollback", asyn
     assert.match(String(parseMarkdown(vault, path.join(vault, "record.md")).data.value), /old/);
     assert.equal(typeof (rolledBack.data as JsonObject).rollback_run_id, "string");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("System Center snapshot consolidates all read models into one API response", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-snapshot-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const response = await invokeCommandApi({
+      vaultRoot: vault,
+      requestId: "SYS-SNAPSHOT",
+      method: "getSystemCenterSnapshot",
+      params: {},
+    });
+    assert.equal(response.ok, true, JSON.stringify(response.error));
+    const snapshot = response.data as JsonObject;
+    for (const key of ["modules", "instances", "inbox", "reviews", "runs", "tasks", "runtime", "quality"]) {
+      assert.equal(key in snapshot, true, `snapshot should include ${key}`);
+    }
+    assert.equal((snapshot.runtime as JsonObject).integrity, "ok");
+    assert.equal(Array.isArray(snapshot.tasks), true);
+    assert.equal(typeof ((snapshot.quality as JsonObject).overview as JsonObject).active_issues, "number");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Core API server correlates multiple requests over one process", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-api-server-"));
+  let server: ReturnType<typeof spawn> | null = null;
+  try {
+    await initializeVault(vault, "disabled");
+    server = spawn(process.execPath, [path.resolve("dist/cli.js"), "api-server", "--vault", vault], {
+      stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+    });
+    const responses = await new Promise<JsonObject[]>((resolve, reject) => {
+      const result: JsonObject[] = []; let buffer = ""; let stderr = "";
+      const timer = setTimeout(() => reject(new Error(`API server timed out: ${stderr}`)), 30_000);
+      server!.stderr!.on("data", (chunk) => { stderr += String(chunk); });
+      server!.on("error", reject);
+      server!.stdout!.on("data", (chunk) => {
+        buffer += String(chunk);
+        while (buffer.includes("\n")) {
+          const newline = buffer.indexOf("\n"); const line = buffer.slice(0, newline).trim(); buffer = buffer.slice(newline + 1);
+          if (line) result.push(JSON.parse(line) as JsonObject);
+          if (result.length === 2) { clearTimeout(timer); resolve(result); }
+        }
+      });
+      for (const requestId of ["SERVER-ONE", "SERVER-TWO"]) {
+        server!.stdin!.write(`${JSON.stringify({ request_id: requestId, method: "getInstances", params: {} })}\n`);
+      }
+    });
+    assert.deepEqual(responses.map((response) => response.request_id), ["SERVER-ONE", "SERVER-TWO"]);
+    assert.equal(responses.every((response) => response.ok === true), true);
+    server.stdin!.end();
+    await new Promise<void>((resolve) => server!.once("exit", () => resolve()));
+    server = null;
+  } finally {
+    if (server && !server.killed) server.kill();
+    await fs.rm(vault, { recursive: true, force: true });
+  }
 });
 
 test("rollback refuses changed files and requires confirmation for later overlapping runs", async () => {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -155,6 +156,35 @@ async function main(): Promise<void> {
     });
     console.log(JSON.stringify(response, null, 2));
     process.exitCode = response.ok ? 0 : 1;
+    return;
+  }
+
+  if (command === "api-server") {
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    for await (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const request = JSON.parse(line) as { request_id?: string; method?: string; params?: Record<string, JsonValue> };
+        if (!request.request_id || !request.method) throw new Error("request_id and method are required");
+        const response = await invokeCommandApi({
+          vaultRoot: parsed.vault,
+          requestId: request.request_id,
+          method: request.method as CommandApiMethod,
+          params: request.params ?? {},
+        });
+        process.stdout.write(`${JSON.stringify(response)}\n`);
+      } catch (error) {
+        process.stdout.write(`${JSON.stringify({
+          api_version: "1",
+          request_id: null,
+          method: "unknown",
+          state: "failed",
+          ok: false,
+          data: null,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        })}\n`);
+      }
+    }
     return;
   }
 

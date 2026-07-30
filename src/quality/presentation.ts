@@ -22,23 +22,32 @@ async function reviewSummary(vaultRoot: string): Promise<JsonObject> {
 }
 
 export async function getQualityDashboard(vaultRoot: string): Promise<JsonObject> {
-  const quality = await QualityRepository.open(vaultRoot); const runtime = await RuntimeRepository.open(vaultRoot);
+  const runtime = await RuntimeRepository.open(vaultRoot);
   try {
-    const active = quality.listIssues({ statuses: ["open", "acknowledged", "scheduled", "suppressed"] });
-    const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString(); const metrics = quality.aggregateMetrics(sevenDays); const reviews = await reviewSummary(vaultRoot);
+    const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    return getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtime.systemCenterData(sevenDays));
+  } finally { runtime.close(); }
+}
+
+export async function getQualityDashboardFromRuntimeSnapshot(vaultRoot: string, snapshot: JsonObject): Promise<JsonObject> {
+    const active = (snapshot.quality_active ?? []) as unknown as QualityIssue[];
+    const resolved = (snapshot.quality_resolved ?? []) as unknown as QualityIssue[];
+    const tasks = (snapshot.tasks ?? []) as unknown as JsonObject[];
+    const metrics = (snapshot.metrics ?? {}) as JsonObject;
+    const reviews = await reviewSummary(vaultRoot);
     const byType = groupCount(active, (item) => item.issue_type); const byModule = groupCount(active, (item) => item.module); const bySeverity = groupCount(active, (item) => item.severity);
+    const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString();
     return {
       generated_at: new Date().toISOString(),
-      overview: { active_issues: active.length, critical: Number(bySeverity.critical ?? 0), high: Number(bySeverity.high ?? 0), new_this_week: active.filter((item) => Date.parse(item.first_seen) >= Date.parse(sevenDays)).length, resolved_this_week: quality.listIssues({ statuses: ["resolved"] }).filter((item) => Date.parse(String(item.resolution?.resolved_at ?? 0)) >= Date.parse(sevenDays)).length, failed_tasks: runtime.listTasks(["failed"]).length, modules: byModule },
+      overview: { active_issues: active.length, critical: Number(bySeverity.critical ?? 0), high: Number(bySeverity.high ?? 0), new_this_week: active.filter((item) => Date.parse(item.first_seen) >= Date.parse(sevenDays)).length, resolved_this_week: resolved.filter((item) => Date.parse(String(item.resolution?.resolved_at ?? 0)) >= Date.parse(sevenDays)).length, failed_tasks: tasks.filter((task) => task.status === "failed").length, modules: byModule },
       freshness: { due_soon: Number(byType["due-soon-field"] ?? 0), stale: Number(byType["stale-critical-field"] ?? 0), items: active.filter((item) => item.dimension === "freshness") },
       provenance: { missing: Number(byType["missing-provenance"] ?? 0), conflicts: Number(byType["conflicting-evidence"] ?? 0), unavailable: Number(byType["unavailable-evidence"] ?? 0), items: active.filter((item) => item.dimension === "provenance" || item.dimension === "consistency") },
       reviews,
       links_ownership: { broken_links: Number(byType["broken-internal-link"] ?? 0) + Number(byType["broken-internal-anchor"] ?? 0) + Number(byType["broken-external-link"] ?? 0) + Number(byType["external-link-unreachable"] ?? 0), orphan_files: Number(byType["orphan-file"] ?? 0), unowned_files: Number(byType["unowned-file"] ?? 0), missing_ownership: Number(byType["missing-content-ownership"] ?? 0) + Number(byType["invalid-content-ownership"] ?? 0), items: active.filter((item) => item.dimension === "connectivity" || item.issue_type.includes("ownership")) },
       schemas_migrations: { outdated: Number(byType["outdated-schema"] ?? 0), invalid: Number(byType["invalid-frontmatter"] ?? 0) + Number(byType["invalid-entity-schema"] ?? 0), items: active.filter((item) => item.dimension === "validity" && !item.issue_type.startsWith("prompt")) },
       ai_quality: { metrics, anomalies: active.filter((item) => item.issue_type === "prompt-quality-regression") },
-      operational: runtime.runtimeStats(), audit_history: quality.listAudits(50), observation: await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-observation.json"), {}), by_severity: bySeverity,
+      operational: (snapshot.runtime_stats ?? {}) as JsonObject, audit_history: (snapshot.audits ?? []) as JsonObject[], observation: await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-observation.json"), {}), by_severity: bySeverity,
     };
-  } finally { quality.close(); runtime.close(); }
 }
 
 export async function getFieldProvenance(vaultRoot: string, target: string, field: string): Promise<JsonObject> {

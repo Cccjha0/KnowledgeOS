@@ -29,8 +29,9 @@ import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
 import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
 import { validateModule } from "../modules/validator.js";
+import type { ModuleValidationReport } from "../modules/types.js";
 import { runQualityAudit as executeQualityAudit, type AuditFrequency } from "../quality/audit.js";
-import { getFieldProvenance, getQualityDashboard } from "../quality/presentation.js";
+import { getFieldProvenance, getQualityDashboard, getQualityDashboardFromRuntimeSnapshot } from "../quality/presentation.js";
 import { QualityRepository } from "../quality/repository.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 
@@ -57,6 +58,61 @@ function promptVersionSummary(moduleRoot: string, manifest: JsonObject): JsonObj
     const entries = registry.prompts as JsonObject;
     return Object.fromEntries(Object.entries(entries).map(([id, value]) => [id, String((value as JsonObject).active_version)])) as JsonObject;
   } catch { return {}; }
+}
+
+async function moduleViews(
+  vaultRoot: string,
+  instances?: Awaited<ReturnType<typeof discoverInstances>>,
+): Promise<JsonValue> {
+  const discoveredInstances = instances ?? await discoverInstances(vaultRoot);
+  const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
+  const moduleLock = await readJson<{ modules?: Record<string, JsonObject> }>(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { modules: {} });
+  return await Promise.all(modules.map(async (module) => {
+    const moduleId = String(module.data.id);
+    const lockEntry = moduleLock.modules?.[moduleId];
+    const configuredReport = typeof lockEntry?.validation_report === "string"
+      ? path.join(vaultRoot, ...lockEntry.validation_report.split("/"))
+      : path.join(path.dirname(module.path), "validation-report.json");
+    const cachedReport = await readJson<ModuleValidationReport | null>(configuredReport, null);
+    const report = cachedReport?.module_id === moduleId && cachedReport.module_version === String(module.data.version)
+      ? cachedReport
+      : await validateModule(ENGINE_ROOT, path.dirname(module.path));
+    return {
+      id: module.data.id,
+      name: module.data.name,
+      version: module.data.version,
+      status: module.data.status,
+      description: module.data.description,
+      maturity: module.data.maturity,
+      schema_version: (module.data.data as JsonObject)?.schema_version ?? null,
+      engine_api_version: (module.data.engine as JsonObject)?.api_version ?? null,
+      health: report.overall,
+      validation_counts: report.counts,
+      beta_eligible: report.beta_eligible,
+      stable_eligible: report.stable_eligible,
+      prompt_versions: promptVersionSummary(path.dirname(module.path), module.data),
+      last_test_at: report.generated_at,
+      checksum: lockEntry?.checksum ?? null,
+      previous_version: lockEntry?.previous_version ?? null,
+      active_instance_count: discoveredInstances.filter((instance) => instance.data.module_id === module.data.id && instance.data.status === "active").length,
+      instance_form: module.data.instance_form ?? null,
+      available_actions: [module.data.status === "enabled" ? "disable" : "enable", "validate", "upgrade", ...(lockEntry?.previous_version ? ["rollback"] : []), ...(module.data.status === "enabled" && module.data.instance_form ? ["create-instance"] : [])],
+    };
+  })) as JsonValue;
+}
+
+function instanceViews(
+  instances: Awaited<ReturnType<typeof discoverInstances>>,
+  params: JsonObject,
+): JsonValue {
+  const moduleId = typeof params.module_id === "string" ? params.module_id : null;
+  return instances.filter((instance) => !moduleId || instance.data.module_id === moduleId).map((instance) => ({
+    ...instance.data,
+    available_actions: instance.data.status === "active" ? ["pause", "complete", "archive"]
+      : instance.data.status === "paused" ? ["resume", "complete", "archive"]
+        : instance.data.status === "planned" ? ["activate", "archive"]
+          : instance.data.status === "completed" || instance.data.status === "error" ? ["archive"] : [],
+  })) as JsonValue;
 }
 
 async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
@@ -173,6 +229,54 @@ async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Prom
 
 async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
+  if (method === "getSystemCenterSnapshot") {
+    const instances = await discoverInstances(vaultRoot);
+    const requests: Array<{ method: CommandApiMethod; params: JsonObject }> = [
+      { method: "listInboxItems", params: {} },
+      { method: "listReviewItems", params: { statuses: ["pending", "error"] } },
+      { method: "getRecentRuns", params: { limit: 20 } },
+    ];
+    const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const runtimeRepository = await RuntimeRepository.open(vaultRoot);
+    let runtimeData: JsonObject;
+    try { runtimeData = runtimeRepository.systemCenterData(sevenDays); }
+    finally { runtimeRepository.close(); }
+    const [modules, inbox, reviews, runs] = await Promise.all([
+      moduleViews(vaultRoot, instances),
+      ...requests.map((request) => execute({
+        vaultRoot,
+        requestId: `${requestId}:${request.method}`,
+        method: request.method,
+        params: request.params,
+      })),
+    ]);
+    const tasks = (runtimeData.tasks as JsonValue[] | undefined) ?? [];
+    const counts: JsonObject = {};
+    for (const task of tasks) {
+      if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
+      counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+    }
+    const runtime: JsonObject = {
+      integrity: runtimeData.integrity ?? "unknown",
+      schema_version: runtimeData.schema_version ?? null,
+      counts,
+      resources: runtimeData.resources ?? [],
+      jobs: runtimeData.jobs ?? [],
+      checkpoints: runtimeData.checkpoints ?? [],
+      observability: runtimeData.runtime_stats ?? {},
+    };
+    const quality = await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData);
+    return {
+      modules: modules ?? null,
+      instances: instanceViews(instances, {}),
+      inbox: inbox ?? null,
+      reviews: reviews ?? null,
+      runs: runs ?? null,
+      tasks: tasks.slice(0, 200),
+      runtime,
+      quality,
+    };
+  }
   if (method === "getTodayItems") {
     const snapshot = await getTodaySnapshot(vaultRoot);
     if (params.refresh_markdown !== false) await writeTodayMarkdown(vaultRoot, snapshot);
@@ -279,43 +383,10 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
   }
   if (method === "getModules") {
-    const instances = await discoverInstances(vaultRoot);
-    const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
-    const moduleLock = await readJson<{ modules?: Record<string, JsonObject> }>(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { modules: {} });
-    return await Promise.all(modules.map(async (module) => {
-      const report = await validateModule(ENGINE_ROOT, path.dirname(module.path));
-      return ({
-      id: module.data.id,
-      name: module.data.name,
-      version: module.data.version,
-      status: module.data.status,
-      description: module.data.description,
-      maturity: module.data.maturity,
-      schema_version: (module.data.data as JsonObject)?.schema_version ?? null,
-      engine_api_version: (module.data.engine as JsonObject)?.api_version ?? null,
-      health: report.overall,
-      validation_counts: report.counts,
-      beta_eligible: report.beta_eligible,
-      stable_eligible: report.stable_eligible,
-      prompt_versions: promptVersionSummary(path.dirname(module.path), module.data),
-      last_test_at: report.generated_at,
-      checksum: moduleLock.modules?.[String(module.data.id)]?.checksum ?? null,
-      previous_version: moduleLock.modules?.[String(module.data.id)]?.previous_version ?? null,
-      active_instance_count: instances.filter((instance) => instance.data.module_id === module.data.id && instance.data.status === "active").length,
-      instance_form: module.data.instance_form ?? null,
-      available_actions: [module.data.status === "enabled" ? "disable" : "enable", "validate", "upgrade", ...(moduleLock.modules?.[String(module.data.id)]?.previous_version ? ["rollback"] : []), ...(module.data.status === "enabled" && module.data.instance_form ? ["create-instance"] : [])],
-    }); })) as JsonValue;
+    return moduleViews(vaultRoot);
   }
   if (method === "getInstances") {
-    const moduleId = typeof params.module_id === "string" ? params.module_id : null;
-    const instances = await discoverInstances(vaultRoot);
-    return instances.filter((instance) => !moduleId || instance.data.module_id === moduleId).map((instance) => ({
-      ...instance.data,
-      available_actions: instance.data.status === "active" ? ["pause", "complete", "archive"]
-        : instance.data.status === "paused" ? ["resume", "complete", "archive"]
-          : instance.data.status === "planned" ? ["activate", "archive"]
-            : instance.data.status === "completed" || instance.data.status === "error" ? ["archive"] : [],
-    })) as JsonValue;
+    return instanceViews(await discoverInstances(vaultRoot), params);
   }
   if (method === "getRecentRuns") return listRunViews(vaultRoot, params);
   if (method === "getRunDetails") {

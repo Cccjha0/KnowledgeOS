@@ -15,6 +15,7 @@ export type UiOperationState =
 
 export type CommandApiMethod =
   | "getTodayItems"
+  | "getSystemCenterSnapshot"
   | "createCapture"
   | "listInboxItems"
   | "processInboxItem"

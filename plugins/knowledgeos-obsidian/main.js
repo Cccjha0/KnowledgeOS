@@ -1,5 +1,5 @@
 const { ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting } = require("obsidian");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 
 const VIEW_TYPE = "knowledgeos-today";
 const REVIEW_VIEW_TYPE = "knowledgeos-reviews";
@@ -54,6 +54,11 @@ function renderRecoverableError(root, title, error, retry) {
 class CoreCommandClient {
   constructor(settings) {
     this.settings = settings;
+    this.server = null;
+    this.serverKey = null;
+    this.stdoutBuffer = "";
+    this.stderrBuffer = "";
+    this.pending = new Map();
   }
 
   invoke(method, params = {}, requestId = null) {
@@ -69,6 +74,25 @@ class CoreCommandClient {
       });
     }
     requestId = requestId || `PLUGIN-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (this.ensureServer()) {
+      return new Promise((resolve) => {
+        this.pending.set(requestId, resolve);
+        try {
+          this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params })}\n`, (error) => {
+            if (!error) return;
+            this.pending.delete(requestId);
+            resolve(this.failure(error.message));
+          });
+        } catch (error) {
+          this.pending.delete(requestId);
+          resolve(this.failure(error instanceof Error ? error.message : String(error)));
+        }
+      });
+    }
+    return this.invokeOnce(method, params, requestId);
+  }
+
+  invokeOnce(method, params, requestId) {
     const args = [
       this.settings.coreCliPath,
       "api",
@@ -97,6 +121,79 @@ class CoreCommandClient {
         }
       });
     });
+  }
+
+  ensureServer() {
+    const key = JSON.stringify([this.settings.nodePath || "node", this.settings.coreCliPath, this.settings.vaultPath]);
+    if (this.server && this.serverKey === key && !this.server.killed) return true;
+    this.close();
+    try {
+      this.server = spawn(this.settings.nodePath || "node", [
+        this.settings.coreCliPath,
+        "api-server",
+        "--vault",
+        this.settings.vaultPath,
+      ], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      this.serverKey = key;
+      this.stdoutBuffer = "";
+      this.stderrBuffer = "";
+      const server = this.server;
+      server.stdout.on("data", (chunk) => this.handleServerOutput(String(chunk)));
+      server.stderr.on("data", (chunk) => { this.stderrBuffer = `${this.stderrBuffer}${String(chunk)}`.slice(-4096); });
+      server.on("error", (error) => this.handleServerExit(server, error));
+      server.on("exit", (code) => this.handleServerExit(server, new Error(this.stderrBuffer || `Core API server exited with status ${code}.`)));
+      return true;
+    } catch {
+      this.server = null;
+      this.serverKey = null;
+      return false;
+    }
+  }
+
+  handleServerOutput(chunk) {
+    this.stdoutBuffer += chunk;
+    while (this.stdoutBuffer.includes("\n")) {
+      const newline = this.stdoutBuffer.indexOf("\n");
+      const line = this.stdoutBuffer.slice(0, newline).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      if (!line) continue;
+      try {
+        const response = JSON.parse(line);
+        const resolve = this.pending.get(response.request_id);
+        if (!resolve) continue;
+        this.pending.delete(response.request_id);
+        resolve(response);
+      } catch { /* Wait for the next valid response; process exit reports malformed output. */ }
+    }
+  }
+
+  handleServerExit(server, error) {
+    if (this.server !== server) return;
+    this.server = null;
+    this.serverKey = null;
+    for (const resolve of this.pending.values()) resolve(this.failure(error.message));
+    this.pending.clear();
+  }
+
+  failure(message) {
+    return {
+      ok: false,
+      state: "failed",
+      error: {
+        message,
+        impact: "本次界面操作没有得到 Core 确认。",
+        recovery_actions: ["检查 Core CLI 路径", "在设置页测试连接"],
+      },
+    };
+  }
+
+  close() {
+    const server = this.server;
+    this.server = null;
+    this.serverKey = null;
+    for (const resolve of this.pending.values()) resolve(this.failure("Core API server is restarting."));
+    this.pending.clear();
+    if (server && !server.killed) server.stdin.end();
   }
 }
 
@@ -1135,23 +1232,13 @@ class SystemCenterView extends ItemView {
     if (!preserveContent) {
       markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" }));
     }
-    const [modules, instances, inbox, reviews, runs, tasks, runtime, quality] = await Promise.all([
-      this.plugin.client.invoke("getModules", {}),
-      this.plugin.client.invoke("getInstances", {}),
-      this.plugin.client.invoke("listInboxItems", {}),
-      this.plugin.client.invoke("listReviewItems", { statuses: ["pending", "error"] }),
-      this.plugin.client.invoke("getRecentRuns", { limit: 20 }),
-      this.plugin.client.invoke("listTasks", { limit: 200 }),
-      this.plugin.client.invoke("getTaskRuntimeStatus", {}),
-      this.plugin.client.invoke("getQualityDashboard", {}),
-    ]);
-    const failed = [modules, instances, inbox, reviews, runs, tasks, runtime, quality].find((response) => !response.ok);
-    if (failed) {
+    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", {});
+    if (!response.ok) {
       if (preserveContent) this.renderBackgroundStatus("System Center 后台更新失败，可手动重试。", true);
-      else this.renderFailure(failed.error);
+      else this.renderFailure(response.error);
       return;
     }
-    this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data, tasks: tasks.data, runtime: runtime.data, quality: quality.data };
+    this.data = response.data;
     this.render();
   }
 
@@ -1610,9 +1697,12 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
   }
 
   async saveSettings() {
+    this.client.close();
     await this.saveData(this.settings);
     this.client.settings = this.settings;
   }
+
+  onunload() { this.client?.close(); }
 
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);

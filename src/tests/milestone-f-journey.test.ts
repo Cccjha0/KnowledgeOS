@@ -88,6 +88,10 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /taskCycleChanged\(response\.data, startup\)/);
   assert.match(source, /shouldAutoRefreshPath/);
   assert.match(source, /System Center 正在后台更新/);
+  assert.match(source, /invoke\("getSystemCenterSnapshot", \{\}\)/);
+  assert.match(source, /"api-server"/);
+  assert.match(source, /this\.pending = new Map\(\)/);
+  assert.doesNotMatch(source, /const \[modules, instances, inbox, reviews, runs, tasks, runtime, quality\] = await Promise\.all/);
   assert.match(source, /getLeavesOfType\(SYSTEM_VIEW_TYPE\)\) leaf\.view\.refresh\(\{ background: true \}\)/);
   assert.match(source, /if \(this\.refreshPromise\) \{[\s\S]*this\.refreshQueued = true/);
   assert.match(source, /if \(leaf\.view\?\.openDetails\) leaf\.view\.openDetails\(runId, taskId\)/);

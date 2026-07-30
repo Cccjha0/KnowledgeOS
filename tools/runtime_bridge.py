@@ -379,6 +379,24 @@ def dispatch(command, connection, payload):
         retries = connection.execute("SELECT COALESCE(SUM(CASE WHEN attempt_count>1 THEN attempt_count-1 ELSE 0 END),0) FROM tasks").fetchone()[0]
         return {"counts": counts, "queue_length": counts.get("queued", 0), "recent_24h_runs": recent,
                 "oldest_waiting": dict(oldest) if oldest else None, "retry_count": retries, "metrics": metrics}
+    if command == "system-center-data":
+        return {
+            "tasks": dispatch("list-tasks", connection, {"statuses": []}),
+            "integrity": dispatch("integrity-check", connection, {}),
+            "schema_version": dispatch("schema-version", connection, {}),
+            "resources": dispatch("get-resource-statuses", connection, {}),
+            "jobs": dispatch("list-jobs", connection, {}),
+            "checkpoints": dispatch("get-checkpoints", connection, {}),
+            "runtime_stats": dispatch("runtime-stats", connection, {}),
+            "quality_active": dispatch("list-quality-issues", connection, {
+                "statuses": ["open", "acknowledged", "scheduled", "suppressed"], "limit": 500,
+            }),
+            "quality_resolved": dispatch("list-quality-issues", connection, {
+                "statuses": ["resolved"], "limit": 500,
+            }),
+            "metrics": dispatch("aggregate-metrics", connection, {"since": payload.get("since")}),
+            "audits": dispatch("list-audits", connection, {"limit": 50}),
+        }
     if command == "register-job":
         connection.execute("""INSERT INTO job_definitions(job_id,source,module,scope,enabled,definition_json,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(job_id) DO UPDATE SET source=excluded.source,module=excluded.module,scope=excluded.scope,enabled=excluded.enabled,
