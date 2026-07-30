@@ -24,6 +24,19 @@ function markLiveRegion(element, politeness = "polite") {
   return element;
 }
 
+function taskCycleChanged(data, startup = false) {
+  if (startup) return true;
+  const created = [data?.startup_task?.created, data?.field_due?.created, data?.startup?.scheduler?.created];
+  return created.some((items) => Array.isArray(items) && items.length > 0)
+    || Array.isArray(data?.dispatch?.tasks) && data.dispatch.tasks.length > 0;
+}
+
+function shouldAutoRefreshPath(filePath) {
+  const normalized = String(filePath || "").replaceAll("\\", "/");
+  if (!normalized || normalized === "Today.md" || normalized.startsWith(".obsidian/")) return false;
+  return !["90-System/Logs/", "90-System/Cache/", "90-System/Backups/"].some((prefix) => normalized.startsWith(prefix));
+}
+
 function renderRecoverableError(root, title, error, retry) {
   root.empty();
   root.createEl("h2", { text: title });
@@ -1326,6 +1339,10 @@ class TodayView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.state = "ready";
+    this.snapshot = null;
+    this.refreshPromise = null;
+    this.refreshQueued = false;
+    this.backgroundStatus = null;
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -1334,13 +1351,45 @@ class TodayView extends ItemView {
 
   async onOpen() { await this.refresh(); }
 
-  async refresh() {
+  async refresh(options = {}) {
+    const background = options.background === true;
+    if (this.refreshPromise) {
+      this.refreshQueued = true;
+      return this.refreshPromise;
+    }
+    this.refreshPromise = (async () => {
+      let nextIsBackground = background;
+      do {
+        this.refreshQueued = false;
+        await this.performRefresh(nextIsBackground);
+        nextIsBackground = true;
+      } while (this.refreshQueued);
+    })();
+    try { await this.refreshPromise; }
+    finally { this.refreshPromise = null; }
+  }
+
+  async performRefresh(background) {
+    const preserveContent = background && this.snapshot;
     this.state = "loading";
-    this.renderLoading();
-    const response = await this.plugin.client.invoke("getTodayItems", { refresh_markdown: true });
+    if (preserveContent) this.renderBackgroundStatus("Today 正在后台更新…");
+    else this.renderLoading();
+    const response = await this.plugin.client.invoke("getTodayItems", { refresh_markdown: false });
     this.state = response.state;
-    if (!response.ok) this.renderError(response.error);
-    else this.renderSnapshot(response.data);
+    if (!response.ok) {
+      if (preserveContent) this.renderBackgroundStatus("Today 后台更新失败，可手动重试。", true);
+      else this.renderError(response.error);
+      return;
+    }
+    this.snapshot = response.data;
+    this.renderSnapshot(response.data);
+  }
+
+  renderBackgroundStatus(text, failed = false) {
+    this.backgroundStatus?.remove();
+    const status = markLiveRegion(this.contentEl.createDiv({ cls: `knowledgeos-refresh-status${failed ? " is-error" : ""}`, text }));
+    this.contentEl.prepend(status);
+    this.backgroundStatus = status;
   }
 
   renderLoading() {
@@ -1359,6 +1408,7 @@ class TodayView extends ItemView {
   renderSnapshot(snapshot) {
     const root = this.contentEl;
     root.empty();
+    this.backgroundStatus = null;
     this.renderedItems = new Set();
     const header = root.createDiv({ cls: "knowledgeos-header" });
     header.createEl("h2", { text: "Today" });
@@ -1500,12 +1550,11 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.addSettingTab(new KnowledgeOSSettingTab(this.app, this));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (!this.settings.autoRefresh) return;
-      if (file.path === "Today.md") return;
+      if (!shouldAutoRefreshPath(file.path)) return;
       clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
-        for (const type of [VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE]) {
-          for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.view.refresh();
-        }
+        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
+        for (const type of [INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE]) for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.view.refresh();
       }, 1500);
     }));
     this.app.workspace.onLayoutReady(async () => {
@@ -1530,9 +1579,9 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     try {
       const response = await this.client.invoke("runTaskCycle", { startup, limit: 2 });
       if (!response.ok) return;
-      for (const type of [VIEW_TYPE, SYSTEM_VIEW_TYPE]) {
-        for (const leaf of this.app.workspace.getLeavesOfType(type)) await leaf.view.refresh();
-      }
+      if (!taskCycleChanged(response.data, startup)) return;
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) await leaf.view.refresh({ background: true });
+      for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) await leaf.view.refresh();
     } finally { this.taskCycleRunning = false; }
   }
 

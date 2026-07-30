@@ -82,6 +82,12 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /打开上次生成的 Today\.md/);
   assert.match(source, /notifyOnCompletion/);
   assert.match(source, /allowBatchOperations/);
+  assert.match(source, /refresh_markdown: false/);
+  assert.match(source, /refreshPromise/);
+  assert.match(source, /refresh\(\{ background: true \}\)/);
+  assert.match(source, /taskCycleChanged\(response\.data, startup\)/);
+  assert.match(source, /shouldAutoRefreshPath/);
+  assert.doesNotMatch(source, /invoke\("getTodayItems", \{ refresh_markdown: true \}\)/);
   assert.doesNotMatch(source, /renderReviewList\(\) \{\s*this\.listEl\.empty\(\);\s*this\.renderReviewList/);
   assert.match(styles, /:focus-visible/);
   assert.match(styles, /prefers-reduced-motion/);

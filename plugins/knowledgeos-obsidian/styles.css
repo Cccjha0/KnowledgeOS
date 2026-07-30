@@ -9,6 +9,8 @@
 .knowledgeos-module { color: var(--text-faint); display: inline-block; font-size: var(--font-ui-small); margin-top: .35rem; }
 .priority-critical, .priority-high { border-left: 3px solid var(--color-orange); }
 .knowledgeos-empty, .knowledgeos-state { color: var(--text-muted); padding: 1rem 0; }
+.knowledgeos-refresh-status { position: sticky; top: 0; z-index: 2; padding: .35rem .55rem; color: var(--text-muted); background: var(--background-primary-alt); border-bottom: 1px solid var(--background-modifier-border); font-size: var(--font-ui-smaller); }
+.knowledgeos-refresh-status.is-error { color: var(--text-error); }
 .knowledgeos-empty { border: 1px dashed var(--background-modifier-border); border-radius: 8px; padding: 1rem; }
 .knowledgeos-capture label { display: flex; flex-direction: column; gap: .3rem; margin: .75rem 0; }
 .knowledgeos-capture input, .knowledgeos-capture select, .knowledgeos-capture textarea { width: 100%; }
