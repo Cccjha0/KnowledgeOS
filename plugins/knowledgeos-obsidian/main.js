@@ -1096,16 +1096,45 @@ class TaskDetailsModal extends Modal {
 }
 
 class SystemCenterView extends ItemView {
-  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; }
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.data = null;
+    this.refreshPromise = null;
+    this.refreshQueued = false;
+    this.backgroundStatus = null;
+  }
   getViewType() { return SYSTEM_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS System"; }
   getIcon() { return "activity"; }
   async onOpen() { await this.refresh(); }
 
-  async refresh(openRunId = null, openTaskId = null) {
+  async refresh(options = {}) {
+    const background = options.background === true;
+    if (this.refreshPromise) {
+      this.refreshQueued = true;
+      return this.refreshPromise;
+    }
+    this.refreshPromise = (async () => {
+      let nextIsBackground = background;
+      do {
+        this.refreshQueued = false;
+        await this.performRefresh(nextIsBackground);
+        nextIsBackground = true;
+      } while (this.refreshQueued);
+    })();
+    try { await this.refreshPromise; }
+    finally { this.refreshPromise = null; }
+  }
+
+  async performRefresh(background) {
     const root = this.contentEl;
-    root.empty();
-    markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" }));
+    const preserveContent = background && this.data;
+    if (preserveContent) this.renderBackgroundStatus("System Center 正在后台更新…");
+    else root.empty();
+    if (!preserveContent) {
+      markLiveRegion(root.createDiv({ cls: "knowledgeos-state", text: "正在检查系统状态…" }));
+    }
     const [modules, instances, inbox, reviews, runs, tasks, runtime, quality] = await Promise.all([
       this.plugin.client.invoke("getModules", {}),
       this.plugin.client.invoke("getInstances", {}),
@@ -1117,9 +1146,23 @@ class SystemCenterView extends ItemView {
       this.plugin.client.invoke("getQualityDashboard", {}),
     ]);
     const failed = [modules, instances, inbox, reviews, runs, tasks, runtime, quality].find((response) => !response.ok);
-    if (failed) { this.renderFailure(failed.error); return; }
+    if (failed) {
+      if (preserveContent) this.renderBackgroundStatus("System Center 后台更新失败，可手动重试。", true);
+      else this.renderFailure(failed.error);
+      return;
+    }
     this.data = { modules: modules.data, instances: instances.data, inbox: inbox.data, reviews: reviews.data, runs: runs.data, tasks: tasks.data, runtime: runtime.data, quality: quality.data };
     this.render();
+  }
+
+  renderBackgroundStatus(text, failed = false) {
+    this.backgroundStatus?.remove();
+    const status = markLiveRegion(this.contentEl.createDiv({ cls: `knowledgeos-refresh-status${failed ? " is-error" : ""}`, text }));
+    this.contentEl.prepend(status);
+    this.backgroundStatus = status;
+  }
+
+  openDetails(openRunId = null, openTaskId = null) {
     if (openRunId) new RunDetailsModal(this.app, this.plugin, openRunId, () => this.refresh()).open();
     if (openTaskId) new TaskDetailsModal(this.app, this.plugin, openTaskId, () => this.refresh()).open();
   }
@@ -1147,6 +1190,7 @@ class SystemCenterView extends ItemView {
   render() {
     const root = this.contentEl;
     root.empty();
+    this.backgroundStatus = null;
     const header = root.createDiv({ cls: "knowledgeos-header" });
     header.createEl("h2", { text: "System Center" });
     const refresh = header.createEl("button", { text: "刷新" });
@@ -1554,7 +1598,8 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
         for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
-        for (const type of [INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE]) for (const leaf of this.app.workspace.getLeavesOfType(type)) leaf.view.refresh();
+        for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
+        for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
       }, 1500);
     }));
     this.app.workspace.onLayoutReady(async () => {
@@ -1581,7 +1626,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       if (!response.ok) return;
       if (!taskCycleChanged(response.data, startup)) return;
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) await leaf.view.refresh({ background: true });
-      for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) await leaf.view.refresh();
+      for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) await leaf.view.refresh({ background: true });
     } finally { this.taskCycleRunning = false; }
   }
 
@@ -1625,6 +1670,6 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       await leaf.setViewState({ type: SYSTEM_VIEW_TYPE, active: true });
     }
     this.app.workspace.revealLeaf(leaf);
-    if (leaf.view?.refresh) await leaf.view.refresh(runId, taskId);
+    if (leaf.view?.openDetails) leaf.view.openDetails(runId, taskId);
   }
 };

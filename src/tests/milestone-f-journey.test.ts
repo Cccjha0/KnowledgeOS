@@ -87,6 +87,11 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /refresh\(\{ background: true \}\)/);
   assert.match(source, /taskCycleChanged\(response\.data, startup\)/);
   assert.match(source, /shouldAutoRefreshPath/);
+  assert.match(source, /System Center 正在后台更新/);
+  assert.match(source, /getLeavesOfType\(SYSTEM_VIEW_TYPE\)\) leaf\.view\.refresh\(\{ background: true \}\)/);
+  assert.match(source, /if \(this\.refreshPromise\) \{[\s\S]*this\.refreshQueued = true/);
+  assert.match(source, /if \(leaf\.view\?\.openDetails\) leaf\.view\.openDetails\(runId, taskId\)/);
+  assert.doesNotMatch(source, /leaf\.view\.refresh\(runId, taskId\)/);
   assert.doesNotMatch(source, /invoke\("getTodayItems", \{ refresh_markdown: true \}\)/);
   assert.doesNotMatch(source, /renderReviewList\(\) \{\s*this\.listEl\.empty\(\);\s*this\.renderReviewList/);
   assert.match(styles, /:focus-visible/);
