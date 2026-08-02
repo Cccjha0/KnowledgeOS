@@ -58,6 +58,15 @@ export function parseYaml(vaultRoot: string, filePath: string): JsonObject {
   return JSON.parse(output) as JsonObject;
 }
 
+export function parseValidateYamlBatch(
+  _vaultRoot: string,
+  items: Array<{ path: string; schema_id: string }>,
+): JsonObject[] {
+  if (items.length === 0) return [];
+  const output = runBridge(ENGINE_ROOT, ["parse-validate-yaml-batch", ENGINE_ROOT], items);
+  return JSON.parse(output) as JsonObject[];
+}
+
 export function writeYaml(vaultRoot: string, filePath: string, data: JsonObject): void {
   runBridge(vaultRoot, ["write-yaml", filePath], data);
 }

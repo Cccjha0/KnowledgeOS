@@ -64,3 +64,30 @@ test("Worker records a separate failed Run for an unknown workflow", async () =>
     repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
+
+test("Today rebuild records an unchanged run without rewriting the file", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-today-unchanged-"));
+  try {
+    await initializeVault(vault, "disabled");
+    let repository = await RuntimeRepository.open(vault);
+    const first = repository.createTask({ job_id: "core.today", module: "core", task_type: "core-operation", workflow: "core:build-today", resources: resources(), trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: "today:first" }).task;
+    repository.close();
+    await dispatchOnce({ vaultRoot: vault, limit: 1 });
+    const today = path.join(vault, "Today.md");
+    const firstStat = await fs.stat(today);
+
+    repository = await RuntimeRepository.open(vault);
+    const second = repository.createTask({ job_id: "core.today", module: "core", task_type: "core-operation", workflow: "core:build-today", resources: resources(), trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: "today:second" }).task;
+    repository.close();
+    await dispatchOnce({ vaultRoot: vault, limit: 1 });
+
+    repository = await RuntimeRepository.open(vault);
+    assert.equal(repository.getTask(first.task_id)?.completion_reason, "today-rebuilt");
+    assert.equal(repository.getTask(second.task_id)?.completion_reason, "today-unchanged");
+    const secondRun = repository.getRuns(second.task_id)[0]!;
+    assert.equal(secondRun.metrics.files_written, 0);
+    assert.deepEqual(secondRun.output_files, []);
+    repository.close();
+    assert.equal((await fs.stat(today)).mtimeMs, firstStat.mtimeMs);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});

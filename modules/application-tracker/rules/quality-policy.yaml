@@ -24,4 +24,5 @@ ownership:
       系统信息: system-managed
       用户备注: user-owned
 audits: [stale-fields, missing-provenance, invalid-status, schema-version, ownership, instance-task]
+orphan_exempt_entity_types: [research-request, research-report]
 default_verification_interval_days: 30

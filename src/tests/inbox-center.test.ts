@@ -36,6 +36,13 @@ test("Inbox Center discovers only managed inboxes and explains routing without w
     const unknown = items.find((item) => item.title === "Unknown")!;
     assert.equal(unknown.state, "waiting-for-user");
 
+    const center = await invokeCommandApi({ vaultRoot: vault, requestId: "CENTER-1", method: "getInboxCenterSnapshot", params: {} });
+    assert.equal(center.ok, true);
+    const centerData = center.data as JsonObject;
+    assert.equal(((centerData.inbox as JsonObject).items as JsonObject[]).length, 2);
+    assert.equal((centerData.modules as JsonObject[]).every((module) => module.status === "enabled"), true);
+    assert.equal((centerData.modules as JsonObject[]).every((module) => !("health" in module)), true);
+
     const before = (await listFilesRecursive(path.join(vault, "90-System", "State", "Plans"))).length;
     const preview = await invokeCommandApi({ vaultRoot: vault, requestId: "PREVIEW-1", method: "processInboxItem", params: { item_id: String(routed.item_id), action: "preview" } });
     assert.equal(preview.ok, true);
@@ -109,4 +116,24 @@ test("Inbox defer, ignore and explicit high-confidence batch preserve low-confid
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("Inbox and Review refreshes preserve rendered content after their first load", async () => {
+  const source = await fs.readFile(path.resolve("plugins", "knowledgeos-obsidian", "main.js"), "utf8");
+  const reviewSource = source.slice(source.indexOf("class ReviewCenterView"), source.indexOf("class InboxCenterView"));
+  const inboxSource = source.slice(source.indexOf("class InboxCenterView"), source.indexOf("function rollbackLabel"));
+
+  assert.match(reviewSource, /this\.loadPromise = null/);
+  assert.match(reviewSource, /const preserveContent = Array\.isArray\(this\.reviews\)/);
+  assert.match(reviewSource, /if \(preserveContent\) this\.renderReviewBackgroundStatus\("更新中…"\)/);
+  assert.match(reviewSource, /else renderLoadingSkeleton\(this\.listEl, "正在加载审核事项…"\)/);
+
+  assert.match(inboxSource, /this\.refreshPromise = null/);
+  assert.match(inboxSource, /invoke\("getInboxCenterSnapshot"/);
+  assert.doesNotMatch(inboxSource, /invoke\("getModules"/);
+  assert.doesNotMatch(inboxSource, /invoke\("getInstances"/);
+  assert.doesNotMatch(inboxSource, /invoke\("listInboxItems"/);
+  assert.match(inboxSource, /const preserveContent = this\.listing !== null/);
+  assert.match(inboxSource, /if \(preserveContent\) this\.renderBackgroundStatus\("更新中…"\)/);
+  assert.match(inboxSource, /else renderLoadingSkeleton\(root, "正在加载 Inbox…"\)/);
 });

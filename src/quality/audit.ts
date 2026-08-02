@@ -57,6 +57,46 @@ function compactObservationSnapshots(snapshots: JsonObject[], timezone: string):
 }
 function priorityRank(value: QualitySeverity): number { return { critical: 0, high: 1, medium: 2, low: 3, info: 4 }[value]; }
 
+function documentEntityType(data: JsonObject): string {
+  return typeof data.type === "string" ? data.type : data.research_type === "application-update" ? "research-report" : "";
+}
+
+function moduleForDocument(data: JsonObject, type: string, modulePolicies: Map<string, ModuleQuality>): string {
+  if (typeof data.source_module === "string") return data.source_module;
+  if (typeof data.module_id === "string") return data.module_id;
+  const schemaOwners = [...modulePolicies.values()].filter((policy) => policy.schemaIds.has(type));
+  if (schemaOwners.length === 1) return schemaOwners[0]!.id;
+  if (data.research_type === "application-update") return "application-tracker";
+  return "unowned";
+}
+
+interface WikiLink { targetText: string; anchor: string | null }
+function collectWikiLinks(value: unknown, output = new Map<string, WikiLink>()): Map<string, WikiLink> {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|[^\]]+)?\]\]/g)) {
+      const targetText = match[1]!.trim(); const anchor = match[2]?.trim() ?? null;
+      output.set(`${targetText.toLowerCase()}#${anchor?.toLowerCase() ?? ""}`, { targetText, anchor });
+    }
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectWikiLinks(item, output);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectWikiLinks(item, output);
+  }
+  return output;
+}
+
+async function openResearchRequestTargets(vaultRoot: string): Promise<Set<string>> {
+  const targets = new Set<string>();
+  const root = path.join(vaultRoot, "20-Workspace", "Applications");
+  for (const file of await listFilesRecursive(root, ".md")) {
+    let data: JsonObject;
+    try { data = parseMarkdown(vaultRoot, file).data; } catch { continue; }
+    if (data.type !== "research-request" || !["pending", "in-progress", "needs-more-information"].includes(String(data.status))) continue;
+    if (typeof data.record_path === "string") targets.add(data.record_path.replaceAll("\\", "/").toLowerCase());
+  }
+  return targets;
+}
+
 async function policies(vaultRoot: string): Promise<Map<string, ModuleQuality>> {
   const output = new Map<string, ModuleQuality>();
   for (const module of await discoverModulesForVault(ENGINE_ROOT, vaultRoot)) {
@@ -102,16 +142,15 @@ async function auditDocuments(vaultRoot: string, frequency: AuditFrequency, modu
     try { document = parseMarkdown(vaultRoot, file); } catch (error) {
       candidates.push({ issue_type: "invalid-frontmatter", dimension: "validity", severity: "high", module: "core", instance_id: null, target: { path: relative }, evidence: { error: error instanceof Error ? error.message : String(error) }, recommended_action: { type: "repair-frontmatter" }, detector: "schema-version-auditor" }); continue;
     }
-    const inferredModule = document.data.research_type === "application-update" ? "application-tracker" : null;
-    const moduleId = typeof document.data.source_module === "string" ? document.data.source_module : typeof document.data.module_id === "string" ? document.data.module_id : inferredModule ?? "unowned";
-    const entityType = typeof document.data.type === "string" ? document.data.type : document.data.research_type === "application-update" ? "research-report" : "";
+    const entityType = documentEntityType(document.data);
+    const moduleId = moduleForDocument(document.data, entityType, modulePolicies);
     const instanceId = typeof document.data.instance_id === "string" ? document.data.instance_id : null; const policy = modulePolicies.get(moduleId);
     if (policy?.schemaIds.has(entityType) && (frequency !== "daily" || changedPaths.has(relative))) {
       try { validateSchema(vaultRoot, policy.schemaIds.get(entityType)!, document.data); }
       catch (error) { candidates.push({ issue_type: "invalid-entity-schema", dimension: "validity", severity: "high", module: moduleId, instance_id: instanceId, target: { path: relative, entity_type: entityType }, evidence: { schema_id: policy.schemaIds.get(entityType)!, error: error instanceof Error ? error.message : String(error) }, recommended_action: { type: "repair-schema-invalid-entity" }, detector: "entity-schema-auditor" }); }
     }
-    for (const match of document.content.matchAll(/\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|[^\]]+)?\]\]/g)) {
-      const targetText = match[1]!.trim(); const anchor = match[2]?.trim(); const exact = targetText.toLowerCase().endsWith(".md") ? targetText.toLowerCase() : `${targetText.toLowerCase()}.md`;
+    for (const { targetText, anchor } of collectWikiLinks([document.content, document.data]).values()) {
+      const exact = targetText.toLowerCase().endsWith(".md") ? targetText.toLowerCase() : `${targetText.toLowerCase()}.md`;
       const resolved = paths.has(exact) ? exact : basename.get(path.basename(targetText, ".md").toLowerCase())?.[0]?.toLowerCase();
       if (resolved) { incoming.set(resolved, (incoming.get(resolved) ?? 0) + 1); if (anchor && !anchors.get(resolved)?.has(anchor.toLowerCase())) candidates.push({ issue_type: "broken-internal-anchor", dimension: "connectivity", severity: "medium", module: moduleId, instance_id: instanceId, target: { path: relative, link: targetText, anchor }, evidence: { link: targetText, anchor }, recommended_action: { type: "repair-anchor" }, detector: "broken-link-auditor" }); }
       else candidates.push({ issue_type: "broken-internal-link", dimension: "connectivity", severity: "medium", module: moduleId, instance_id: instanceId, target: { path: relative, link: targetText }, evidence: { link: targetText }, recommended_action: { type: "repair-link" }, detector: "broken-link-auditor" });
@@ -144,7 +183,8 @@ async function auditDocuments(vaultRoot: string, frequency: AuditFrequency, modu
   if (frequency !== "daily") for (const file of files) {
     const relative = toVaultPath(vaultRoot, file); if ((incoming.get(relative.toLowerCase()) ?? 0) > 0 || /(?:^|\/)(Inbox|Archive|Attachments)(?:\/|$)/i.test(relative) || /(?:index|dashboard|today)\.md$/i.test(relative)) continue;
     let data: JsonObject = {}; try { data = parseMarkdown(vaultRoot, file).data; } catch { continue; }
-    const moduleId = typeof data.source_module === "string" ? data.source_module : typeof data.module_id === "string" ? data.module_id : "core";
+    const type = documentEntityType(data); const moduleId = moduleForDocument(data, type, modulePolicies); const policy = modulePolicies.get(moduleId);
+    if ((policy?.policy.orphan_exempt_entity_types ?? []).includes(type)) continue;
     candidates.push({ issue_type: "orphan-file", dimension: "connectivity", severity: "medium", module: moduleId, instance_id: typeof data.instance_id === "string" ? data.instance_id : null, target: { path: relative }, evidence: { incoming_links: 0 }, recommended_action: { type: "review-connectivity" }, detector: "orphan-file-auditor" });
   }
   if (frequency === "monthly") {
@@ -270,17 +310,32 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
     const files = await knowledgeFiles(vaultRoot); const currentHashes = Object.fromEntries(await Promise.all(files.map(async (file) => [toVaultPath(vaultRoot, file), await sha256File(file)])));
     const previous = await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-audit-checkpoint.json"), {}); const previousHashes = object(previous.file_hashes) ?? {};
     const fullSchemaScan = frequency !== "daily" || previous.schema_version !== 2; const changedPaths = new Set(Object.entries(currentHashes).filter(([relative, hash]) => fullSchemaScan || previousHashes[relative] !== hash).map(([relative]) => relative));
-    const modulePolicies = await policies(vaultRoot); const candidates = [...await auditDocuments(vaultRoot, frequency, modulePolicies, auditId, now, changedPaths), ...await auditReviewDebt(vaultRoot, now), ...await auditInstanceTasks(vaultRoot), ...evidenceQualityIssues(repository.listEvidence(5000))];
+    const modulePolicies = await policies(vaultRoot); const openRequestTargets = await openResearchRequestTargets(vaultRoot);
+    const candidates = [...await auditDocuments(vaultRoot, frequency, modulePolicies, auditId, now, changedPaths), ...await auditReviewDebt(vaultRoot, now), ...await auditInstanceTasks(vaultRoot), ...evidenceQualityIssues(repository.listEvidence(5000))];
     if (frequency !== "daily") candidates.push(...await promptQualityIssues(modulePolicies, repository.aggregateMetrics(new Date(Date.parse(now) - 7 * 86_400_000).toISOString())));
+    for (const candidate of candidates) {
+      const targetPath = typeof candidate.target.path === "string" ? candidate.target.path.replaceAll("\\", "/").toLowerCase() : "";
+      if (candidate.recommended_action.type === "create-research-request" && openRequestTargets.has(targetPath)) candidate.recommended_action = { type: "await-existing-research-request" };
+    }
     const seen = new Set<string>(); const issues: QualityIssue[] = [];
     for (const candidate of candidates) { const stored = repository.upsertIssue(issue(candidate, auditId, now)); seen.add(stored.fingerprint); issues.push(stored); repository.recordMetric({ idempotency_key: `quality:${auditId}:${stored.fingerprint}`, event_type: "quality.issue-detected", module: stored.module, instance_id: stored.instance_id, workflow_id: null, workflow_version: null, prompt_id: null, prompt_version: null, run_id: auditId, occurred_at: now, dimensions: { issue_type: stored.issue_type, severity: stored.severity, dimension: stored.dimension }, values: {} }); }
     const followups = await RuntimeRepository.open(vaultRoot);
     try {
-      for (const stored of issues.filter((item) => item.recommended_action.type === "create-research-request")) followups.createTask({
+      for (const task of followups.listTasks().filter((item) => item.job_id === "quality.stale-field-followup" && !TERMINAL_TASKS.has(item.status))) {
+        const target = object(task.payload.target); const targetPath = typeof target?.path === "string" ? target.path.replaceAll("\\", "/").toLowerCase() : "";
+        if (!openRequestTargets.has(targetPath)) continue;
+        if (task.status === "waiting-for-user") followups.transitionTask(task.task_id, "completed", { error: null, completionReason: "research-request-already-open" });
+        else followups.cancelTask(task.task_id);
+      }
+      for (const stored of issues.filter((item) => item.recommended_action.type === "create-research-request")) {
+        const targetPath = typeof stored.target.path === "string" ? stored.target.path.replaceAll("\\", "/").toLowerCase() : "";
+        if (openRequestTargets.has(targetPath)) continue;
+        followups.createTask({
         job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: "application:sync-due-research", priority: "high", scheduled_for: now, available_after: now,
         resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" }, trigger: { type: "quality-issue", issue_id: stored.issue_id }, catch_up_policy: "latest",
         idempotency_key: `quality:${stored.fingerprint}:research-request`, max_attempts: 1, payload: { quality_issue_id: stored.issue_id, target: stored.target }, concurrency_key: `quality:${stored.instance_id ?? "global"}:research`, concurrency_policy: "merge",
-      });
+        });
+      }
     } finally { followups.close(); }
     let resolved = 0;
     const executedDetectors = new Set(["broken-link-auditor", "schema-version-auditor", "missing-provenance-auditor", "stale-field-auditor", "ownership-auditor", "review-debt-auditor", "instance-task-auditor", "evidence-status-auditor"]);

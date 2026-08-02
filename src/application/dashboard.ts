@@ -59,25 +59,27 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
     );
     const due = record.monitoring.active && record.monitoring.next_check !== null && Date.parse(record.monitoring.next_check) <= Date.now();
     const rule = APPLICATION_STATE_MACHINE[record.application_status as ApplicationStatus];
-    const nextAction = rule?.today ?? "Review the application record";
+    const nextAction = openRequest ? "核验请求已创建，等待研究结果" : rule?.today ?? "Review the application record";
     const reviewCount = pendingReviewTargets.get(recordPath) ?? 0;
+    const verificationWaiting = due && Boolean(openRequest);
     items.push({
       item_id: nextId("PROJECT"),
       source_module: "application-tracker",
       instance_id: record.instance_id,
-      category: due ? "research" : "status",
-      priority: reviewCount > 0 || due ? "high" : "medium",
+      category: due && !openRequest ? "research" : "status",
+      priority: reviewCount > 0 || (due && !openRequest) ? "high" : "medium",
       title: `${record.institution} — ${record.program_name}`,
       description: [
         `Status: ${record.application_status}`,
         `Next check: ${record.monitoring.next_check ?? "stopped"}`,
+        `Research request: ${verificationWaiting ? openRequest!.data.status : "none"}`,
         `Pending reviews: ${reviewCount}`,
         `Materials: ${ready}/${applicable.length}`,
         `Last update: ${record.updated}`,
         `Next action: ${nextAction}`,
       ].join(" | "),
       target: recordPath,
-      due_at: record.monitoring.next_check,
+      due_at: due && !openRequest ? record.monitoring.next_check : null,
       created_at: record.created,
       blocks_count: reviewCount,
       active_context: true,
@@ -86,13 +88,14 @@ export async function collectApplicationDashboardItems(vaultRoot: string): Promi
   }
 
   for (const { file, data: request } of requests.filter((item) => OPEN_RESEARCH_REQUEST_STATUSES.has(item.data.status))) {
+    const record = records.find((item) => item.data.id === request.application_id)?.data;
     items.push({
       item_id: nextId("REQUEST"), source_module: "application-tracker", instance_id: request.instance_id,
       category: "research", priority: request.status === "needs-more-information" ? "high" : "medium",
-      title: `Research Request ${request.request_id}`,
+      title: record ? `${record.institution} — ${record.program_name} 核验` : `Research Request ${request.request_id}`,
       description: request.status === "needs-more-information"
         ? `More evidence is required. Reports received: ${request.report_ids.length}.`
-        : `Verify: ${request.requested_fields.join(", ")}`,
+        : `Research pending: ${request.requested_fields.join(", ")}`,
       target: toVaultPath(vaultRoot, file), due_at: request.next_action_at, actions: ["open", "run"],
       created_at: request.created_at,
       blocks_count: 0,

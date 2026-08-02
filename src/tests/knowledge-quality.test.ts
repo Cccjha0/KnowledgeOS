@@ -13,6 +13,7 @@ import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfil
 import { evaluateFreshness, resolveVerificationInterval } from "../quality/freshness.js";
 import { reviewFingerprint } from "../quality/fingerprint.js";
 import { QualityRepository } from "../quality/repository.js";
+import { RuntimeRepository } from "../runtime/repository.js";
 import type { JsonObject } from "../core/types.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -125,6 +126,39 @@ test("quality audit creates deduplicated actionable issues and Today only surfac
     assert.equal(today.ok, true, JSON.stringify(today.error)); const snapshot = today.data as JsonObject; const items = ["focus", "reviews", "due", "waiting_external", "failures", "module_summaries"].flatMap((key) => snapshot[key] as JsonObject[] ?? []);
     assert.equal(items.some((item) => item.quality_issue_id), true);
     assert.equal(items.some((item) => item.title === "broken-internal-link"), false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("quality audit infers module ownership, honors frontmatter links, and suppresses duplicate research followups", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-application-contract-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const recordPath = "20-Workspace/Applications/demo/Records/Application.md";
+    const requestPath = path.join(vault, "20-Workspace", "Applications", "demo", "Research Requests", "REQ-2026-000001.md");
+    writeMarkdown(vault, requestPath, { data: {
+      request_id: "REQ-2026-000001", type: "research-request", instance_id: "demo", application_id: "APP-2026-0001",
+      record_path: recordPath, status: "pending", reason: "Verification is due.", requested_fields: ["tuition"], report_ids: [],
+      idempotency_key: "application:demo:request", created_at: "2026-07-28T00:00:00Z", updated_at: "2026-07-28T00:00:00Z",
+      completed_at: null, next_action_at: "2026-07-28T00:00:00Z", schema_version: 1,
+    }, content: "# Research Request\n" });
+    writeMarkdown(vault, path.join(vault, "30-Knowledge", "Target.md"), { data: { title: "Target" }, content: "# Target\n" });
+    writeMarkdown(vault, path.join(vault, "30-Knowledge", "Source.md"), { data: { source_ref: "[[30-Knowledge/Target]]" }, content: "# Source\n" });
+    const runtime = await RuntimeRepository.open(vault);
+    const task = runtime.createTask({
+      job_id: "quality.stale-field-followup", module: "application-tracker", instance_id: "demo", task_type: "workflow",
+      workflow: "application:sync-due-research", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
+      trigger: { type: "quality-issue", issue_id: "QI-TEST" }, catch_up_policy: "latest", idempotency_key: "quality:demo:followup",
+      payload: { quality_issue_id: "QI-TEST", target: { path: recordPath } }, concurrency_key: "quality:demo:research", concurrency_policy: "merge",
+    }).task;
+    runtime.transitionTask(task.task_id, "waiting-for-user"); runtime.close();
+
+    await runQualityAudit(vault, "weekly", { now: "2026-07-28T01:00:00Z" });
+    const quality = await QualityRepository.open(vault); const issues = quality.listIssues(); quality.close();
+    assert.equal(issues.some((item) => item.target.path === "20-Workspace/Applications/demo/Research Requests/REQ-2026-000001.md" && item.issue_type === "unowned-file"), false);
+    assert.equal(issues.some((item) => item.target.path === "20-Workspace/Applications/demo/Research Requests/REQ-2026-000001.md" && item.issue_type === "orphan-file"), false);
+    assert.equal(issues.some((item) => item.target.path === "30-Knowledge/Target.md" && item.issue_type === "orphan-file"), false);
+    assert.equal(issues.some((item) => item.recommended_action.type === "create-research-request" && item.target.path === recordPath), false);
+    const checkedRuntime = await RuntimeRepository.open(vault); assert.equal(checkedRuntime.getTask(task.task_id)?.status, "completed"); checkedRuntime.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

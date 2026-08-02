@@ -149,10 +149,10 @@ function firstSummaryLine(content: string): string | null {
   return content.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith("#") && !line.startsWith("-")) ?? null;
 }
 
-async function runSummary(vaultRoot: string, located: LocatedRun): Promise<JsonObject> {
+async function runSummary(vaultRoot: string, located: LocatedRun, includeRollback = true): Promise<JsonObject> {
   const transaction = await loadTransaction(vaultRoot, located.log.plan_id);
   const plan = await loadPlan(vaultRoot, located.log.plan_id);
-  const rollback = await assessRunRollback(vaultRoot, located.log);
+  const rollback = includeRollback ? await assessRunRollback(vaultRoot, located.log) : null;
   return {
     run_id: located.log.run_id,
     completed_at: located.log.completed_at,
@@ -174,11 +174,12 @@ async function runSummary(vaultRoot: string, located: LocatedRun): Promise<JsonO
 export async function listRunViews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
   const limit = typeof params.limit === "number" ? Math.max(1, Math.min(100, Math.floor(params.limit))) : 20;
   const requestedStatus = typeof params.status === "string" ? params.status : null;
+  const includeRollback = params.include_rollback !== false;
   const runs = (await allRuns(vaultRoot))
     .filter((located) => !requestedStatus || located.log.status === requestedStatus)
     .sort((a, b) => Date.parse(b.log.completed_at) - Date.parse(a.log.completed_at))
     .slice(0, limit);
-  return await Promise.all(runs.map((run) => runSummary(vaultRoot, run))) as unknown as JsonValue;
+  return await Promise.all(runs.map((run) => runSummary(vaultRoot, run, includeRollback))) as unknown as JsonValue;
 }
 
 export async function getRunView(vaultRoot: string, runId: string, developerMode = false): Promise<JsonObject | null> {

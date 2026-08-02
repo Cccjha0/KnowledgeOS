@@ -239,7 +239,9 @@ def create_task(connection, payload):
             increment_metric(connection, "metric.tasks_merged")
             current_payload = decode_json(existing["payload_json"], {})
             requests = current_payload.get("merged_requests", [])
-            requests.append(payload.get("payload") or {})
+            incoming = payload.get("payload") or {}
+            if incoming not in requests and incoming != current_payload:
+                requests.append(incoming)
             current_payload["merged_requests"] = requests
             connection.execute("UPDATE tasks SET payload_json=?,updated_at=? WHERE task_id=?", (json.dumps(current_payload), now_iso(), existing["task_id"]))
             merged = connection.execute("SELECT * FROM tasks WHERE task_id=?", (existing["task_id"],)).fetchone()

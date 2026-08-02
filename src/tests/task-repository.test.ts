@@ -99,6 +99,8 @@ test("replace and merge concurrency policies have deterministic queue semantics"
     const same = repository.createTask({ ...input, concurrency_key: "merge", concurrency_policy: "merge", idempotency_key: "merge:2", payload: { source_file: "b.md" } });
     assert.equal(same.task.task_id, merged.task_id); assert.equal(same.deduplicated, true);
     assert.equal((same.task.payload.merged_requests as unknown[]).length, 1);
+    const repeated = repository.createTask({ ...input, concurrency_key: "merge", concurrency_policy: "merge", idempotency_key: "merge:3", payload: { source_file: "b.md" } });
+    assert.equal((repeated.task.payload.merged_requests as unknown[]).length, 1);
     repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

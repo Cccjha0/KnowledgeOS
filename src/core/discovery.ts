@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseYaml, validateSchema } from "./bridge.js";
+import { parseValidateYamlBatch, parseYaml, validateSchema } from "./bridge.js";
 import { exists, readJson } from "./files.js";
 import type { JsonObject } from "./types.js";
 
@@ -10,6 +10,11 @@ const INSTANCE_SCHEMA = "https://pkb.local/schemas/core/instance.schema.json";
 export interface DiscoveredDocument {
   path: string;
   data: JsonObject;
+}
+
+export interface RoutingDiscoveryContext {
+  modules: DiscoveredDocument[];
+  instances: DiscoveredDocument[];
 }
 
 async function childDirectories(root: string): Promise<string[]> {
@@ -59,4 +64,41 @@ export async function discoverInstances(vaultRoot: string): Promise<DiscoveredDo
     result.push({ path: instance, data });
   }
   return result;
+}
+
+export async function discoverRoutingContext(engineRoot: string, vaultRoot: string): Promise<RoutingDiscoveryContext> {
+  const modulePaths: string[] = [];
+  for (const directory of await childDirectories(path.join(engineRoot, "modules"))) {
+    const manifest = path.join(directory, "module.yaml");
+    if (await exists(manifest)) modulePaths.push(manifest);
+  }
+  const instancePaths: string[] = [];
+  for (const directory of await childDirectories(path.join(vaultRoot, "90-System", "Instances"))) {
+    const instance = path.join(directory, "instance.yaml");
+    if (await exists(instance)) instancePaths.push(instance);
+  }
+  const documents = parseValidateYamlBatch(vaultRoot, [
+    ...modulePaths.map((manifest) => ({ path: manifest, schema_id: MODULE_SCHEMA })),
+    ...instancePaths.map((instance) => ({ path: instance, schema_id: INSTANCE_SCHEMA })),
+  ]);
+  const installed = await readJson<{ modules?: Array<{ id?: string; status?: string }> }>(
+    path.join(vaultRoot, "90-System", "Modules", "installed.json"), { modules: [] },
+  );
+  const statuses = new Map(
+    (installed.modules ?? [])
+      .filter((entry) => typeof entry.id === "string" && ["enabled", "disabled"].includes(entry.status ?? ""))
+      .map((entry) => [entry.id!, entry.status!]),
+  );
+  const modules = modulePaths.map((manifest, index) => ({
+    path: manifest,
+    data: {
+      ...documents[index]!,
+      status: statuses.get(String(documents[index]!.id)) ?? (documents[index]!.status === "disabled" ? "disabled" : "enabled"),
+    },
+  }));
+  const instances = instancePaths.map((instance, index) => ({
+    path: instance,
+    data: documents[modulePaths.length + index]!,
+  }));
+  return { modules, instances };
 }

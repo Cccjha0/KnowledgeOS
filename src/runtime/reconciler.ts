@@ -1,5 +1,4 @@
 import { recoverInterruptedTransactions } from "../core/operationExecutor.js";
-import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { evaluateScheduler } from "./scheduler.js";
 import { RuntimeRepository } from "./repository.js";
 
@@ -18,6 +17,5 @@ export async function reconcileStartup(vaultRoot: string, now = new Date()): Pro
   } finally { repository.close(); }
   const transactions = await recoverInterruptedTransactions(vaultRoot);
   const scheduler = await evaluateScheduler(vaultRoot, now);
-  await rebuildTodayDashboard(vaultRoot);
   return { database: databaseRecovery, transactions, scheduler };
 }

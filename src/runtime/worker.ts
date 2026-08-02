@@ -1,9 +1,9 @@
 import { performance } from "node:perf_hooks";
 import { PkbError } from "../core/errors.js";
 import type { JsonObject } from "../core/types.js";
-import { rebuildTodayDashboard } from "../platform/dashboard.js";
+import { rebuildTodayDashboardWithResult } from "../platform/dashboard.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
-import { doctorVault } from "../core/vault.js";
+import { doctorVault, initializeVault } from "../core/vault.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
 import { runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
@@ -21,18 +21,27 @@ export type RuntimeHandler = (context: { vaultRoot: string; task: RuntimeTask; c
 
 const coreHandlers: Record<string, RuntimeHandler> = {
   "core:build-today": async ({ vaultRoot }) => {
-    const target = await rebuildTodayDashboard(vaultRoot);
-    return { completion_reason: "today-rebuilt", output_files: [target], metrics: { files_written: 1 } };
+    const result = await rebuildTodayDashboardWithResult(vaultRoot);
+    return {
+      completion_reason: result.written ? "today-rebuilt" : "today-unchanged",
+      output_files: result.written ? [result.path] : [],
+      metrics: { files_written: result.written ? 1 : 0, unchanged: result.written ? 0 : 1 },
+    };
   },
   "core:scan-inbox": async ({ vaultRoot }) => {
     const items = await discoverInboxItems(vaultRoot);
     return { completion_reason: "inbox-scanned", input_files: items.map((item) => item.path), metrics: { files_read: items.length, inbox_items: items.length } };
   },
   "core:vault-audit": async ({ vaultRoot }) => {
+    const repaired = await initializeVault(vaultRoot, "disabled");
     const report = await doctorVault(vaultRoot);
     const failed = report.checks.filter((check) => !check.ok);
-    if (failed.length) throw new PkbError("VAULT_AUDIT_FAILED", failed.map((check) => check.message).join("; "));
-    return { completion_reason: "vault-audit-clean", metrics: { checks: report.checks.length } };
+    if (failed.length) throw new PkbError("VAULT_AUDIT_FAILED", failed.map((check) => `${check.name}: ${check.message}`).join("; "));
+    return {
+      completion_reason: repaired.createdDirectories.length || repaired.createdFiles.length ? "vault-audit-repaired" : "vault-audit-clean",
+      output_files: repaired.createdFiles,
+      metrics: { checks: report.checks.length, directories_repaired: repaired.createdDirectories.length, files_created: repaired.createdFiles.length },
+    };
   },
   "core:cleanup-runtime": async ({ vaultRoot }) => {
     const repository = await RuntimeRepository.open(vaultRoot);

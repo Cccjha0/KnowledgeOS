@@ -57,6 +57,10 @@ test("System Center run models are user-readable and expose safe rollback", asyn
     const legacy = summaries.find((candidate) => candidate.run_id === "RUN-2026-999999")!;
     assert.equal(legacy.source_module, "application-tracker");
     assert.equal(legacy.instance_id, "legacy-instance");
+    const history = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-HISTORY", method: "getSystemCenterSnapshot", params: { section: "history" } });
+    assert.equal(history.ok, true);
+    const historyRun = ((history.data as JsonObject).runs as JsonObject[]).find((candidate) => candidate.run_id === runId)!;
+    assert.equal(historyRun.rollback, null);
 
     const details = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-DETAIL", method: "getRunDetails", params: { run_id: runId } });
     assert.equal(details.ok, true);
@@ -91,6 +95,14 @@ test("System Center snapshot consolidates all read models into one API response"
     assert.equal((snapshot.runtime as JsonObject).integrity, "ok");
     assert.equal(Array.isArray(snapshot.tasks), true);
     assert.equal(typeof ((snapshot.quality as JsonObject).overview as JsonObject).active_issues, "number");
+
+    const overview = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-OVERVIEW", method: "getSystemCenterSnapshot", params: { section: "overview" } });
+    assert.equal(overview.ok, true);
+    assert.equal((overview.data as JsonObject).section, "overview");
+    assert.equal("freshness" in ((overview.data as JsonObject).quality as JsonObject), false);
+    const tasks = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-TASKS", method: "getSystemCenterSnapshot", params: { section: "tasks" } });
+    assert.equal(tasks.ok, true);
+    assert.equal("modules" in (tasks.data as JsonObject), false);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

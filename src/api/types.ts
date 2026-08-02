@@ -18,6 +18,7 @@ export type CommandApiMethod =
   | "getSystemCenterSnapshot"
   | "createCapture"
   | "listInboxItems"
+  | "getInboxCenterSnapshot"
   | "processInboxItem"
   | "processInboxBatch"
   | "listReviewItems"

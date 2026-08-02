@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { buildTodaySnapshot, writeTodayMarkdown } from "../core/dashboard.js";
+import { buildTodaySnapshot, writeTodayMarkdown, writeTodayMarkdownWithResult } from "../core/dashboard.js";
 import { initializeVault } from "../core/vault.js";
 import type { DashboardItem } from "../core/types.js";
 
@@ -43,6 +43,12 @@ test("Today uses one ranked, deduplicated snapshot and preserves the user area",
     await fs.writeFile(today, first.replace("<!-- knowledgeos:user:end -->", "保留这句话\n<!-- knowledgeos:user:end -->"), "utf8");
     await writeTodayMarkdown(vault, snapshot);
     const second = await fs.readFile(today, "utf8");
+    const unchanged = await writeTodayMarkdownWithResult(vault, {
+      ...snapshot,
+      generated_at: new Date(Date.parse(snapshot.generated_at) + 60_000).toISOString(),
+    });
+    assert.equal(unchanged.written, false);
+    assert.equal(await fs.readFile(today, "utf8"), second);
     assert.match(second, /保留这句话/);
     assert.equal((second.match(/## 今日重点/g) ?? []).length, 1);
     assert.equal((second.match(/\[\[00-Inbox\/item-1\]\]/g) ?? []).length, 1);
@@ -75,14 +81,39 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /class ReviewCenterView/);
   assert.match(plugin, /invoke\("resolveReview"/);
   assert.match(plugin, /class InboxCenterView/);
-  assert.match(plugin, /invoke\("listInboxItems"/);
+  assert.match(plugin, /invoke\("getInboxCenterSnapshot"/);
+  assert.match(plugin, /this\.taskClient = new CoreCommandClient\(this\.settings\)/);
+  assert.match(plugin, /this\.taskClient\.invoke\("runTaskCycle"/);
+  assert.doesNotMatch(plugin, /this\.client\.invoke\("runTaskCycle"/);
+  assert.match(plugin, /if \(this\.settings\.openTodayOnStartup\) await this\.activateToday\(\);\s+void this\.runTaskCycle\(true\)/);
   assert.match(plugin, /invoke\("processInboxItem"/);
   assert.match(plugin, /invoke\("processInboxBatch"/);
   assert.match(plugin, /class SystemCenterView/);
-  assert.match(plugin, /invoke\("getRecentRuns"/);
+  assert.match(plugin, /invoke\("getSystemCenterSnapshot"/);
+  assert.match(plugin, /getSystemCenterSnapshot", \{ section \}/);
+  assert.match(plugin, /this\.sectionData = new Map\(\)/);
+  assert.match(plugin, /async openSection\(section\)/);
+  assert.doesNotMatch(plugin, /if \(startup\) return true/);
   assert.match(plugin, /invoke\("getRunDetails"/);
   assert.match(plugin, /invoke\("rollbackRun"/);
   assert.match(plugin, /invoke\("manageModule"/);
   assert.match(plugin, /invoke\("createInstance"/);
   assert.match(plugin, /invoke\("manageInstance"/);
+  assert.match(plugin, /function formatTime/);
+  assert.match(plugin, /function formatVerificationSchedule/);
+  assert.match(plugin, /核验已逾期/);
+  assert.match(plugin, /Research pending/);
+  assert.match(plugin, /delete values\["Next check"\]/);
+  assert.match(plugin, /function renderDeveloperDetails/);
+  assert.match(plugin, /function friendlyAction/);
+  assert.match(plugin, /function friendlyDashboardTitle/);
+  assert.match(plugin, /function createToolbarButton/);
+  assert.match(plugin, /function renderLoadingSkeleton/);
+  assert.match(plugin, /setIcon/);
+  assert.match(plugin, /\["overview", "概览", "layout-dashboard"\]/);
+  assert.match(plugin, /\["quality", "知识质量", "shield-check"\]/);
+  assert.match(plugin, /getLeaf\("tab"\)/);
+  assert.match(plugin, /closest\?\.\("\.mod-sidedock"\)/);
+  assert.match(plugin, /"application-tracker": "申请跟踪"/);
+  assert.match(plugin, /"waiting-for-ai": "等待 AI 可用"/);
 });

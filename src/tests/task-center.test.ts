@@ -47,14 +47,17 @@ test("Today surfaces only actionable runtime Tasks and plugin exposes Task Cente
     const repository = await RuntimeRepository.open(vault);
     const waiting = repository.createTask({ job_id: "ai.summary", module: "experience-log", task_type: "workflow", workflow: "experience-log:weekly", resources: { ...local, codex: "required" }, trigger: { type: "schedule" }, catch_up_policy: "latest", idempotency_key: "today:ai" }).task;
     repository.transitionTask(waiting.task_id, "waiting-for-ai", { error: { code: "CODEX_UNAVAILABLE", message: "Codex unavailable", retryable: true, occurred_at: new Date().toISOString(), details: {} } });
+    const lowNetwork = repository.createTask({ job_id: "core.links", module: "core", task_type: "core-operation", workflow: "core:external-link-audit", priority: "low", resources: { ...local, network: "required" }, trigger: { type: "schedule" }, catch_up_policy: "latest", idempotency_key: "today:network" }).task;
+    repository.transitionTask(lowNetwork.task_id, "waiting-for-network", { error: { code: "RESOURCE_UNAVAILABLE", message: "Network unknown", retryable: true, occurred_at: new Date().toISOString(), details: {} } });
     repository.close();
     const today = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-TODAY", method: "getTodayItems", params: { refresh_markdown: false } });
     assert.equal(today.ok, true, JSON.stringify(today.error));
     const snapshot = today.data as JsonObject;
     assert.equal((snapshot.waiting_external as JsonObject[]).some((item) => item.item_id === `DSH-TASK-${waiting.task_id}`), true);
+    assert.equal((snapshot.waiting_external as JsonObject[]).some((item) => item.item_id === `DSH-TASK-${lowNetwork.task_id}`), false);
     const plugin = await fs.readFile(path.resolve("plugins/knowledgeos-obsidian/main.js"), "utf8");
     assert.match(plugin, /class TaskDetailsModal/);
-    assert.match(plugin, /"Task Center"/);
+    assert.match(plugin, /renderTasks\(root\)/);
     assert.match(plugin, /runTaskCycle/);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

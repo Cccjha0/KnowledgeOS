@@ -34,6 +34,31 @@ test("startup and event triggers persist tasks and deduplicate the same source",
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("daily startup jobs deduplicate restarts within the configured business day", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-daily-startup-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.registerJob(base("core.daily-start", { type: "startup", dedupe: "daily", timezone: "Asia/Shanghai" }));
+    repository.close();
+
+    const first = await materializeStartupJobs(vault, "boot-1", new Date("2026-08-01T00:30:00Z"));
+    const sameBusinessDay = await materializeStartupJobs(vault, "boot-2", new Date("2026-08-01T12:30:00Z"));
+    const nextBusinessDay = await materializeStartupJobs(vault, "boot-3", new Date("2026-08-01T16:30:00Z"));
+
+    assert.equal(first.created.length, 1);
+    assert.equal(sameBusinessDay.deduplicated, 1);
+    assert.equal(nextBusinessDay.created.length, 1);
+    const repo2 = await RuntimeRepository.open(vault);
+    const tasks = repo2.listTasks();
+    assert.equal(tasks.length, 2);
+    assert.deepEqual(new Set(tasks.map((task) => task.trigger.window)), new Set([
+      "2026-08-01@Asia/Shanghai",
+      "2026-08-02@Asia/Shanghai",
+    ]));
+    repo2.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("field-due trigger references the source file without copying its body", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-field-due-"));
   try {

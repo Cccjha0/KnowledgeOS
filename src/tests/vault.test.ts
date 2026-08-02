@@ -26,6 +26,10 @@ test("vault init is additive and idempotent", async () => {
     assert.match(ignore, /^private\/$/m);
     assert.match(ignore, /^90-System\/Cache\/$/m);
     assert.match(ignore, /^90-System\/State\/Locks\/$/m);
+    await fs.rm(path.join(vault, "90-System", "State", "Inbox"), { recursive: true, force: true });
+    const repaired = await initializeVault(vault, "disabled");
+    assert.equal(repaired.createdDirectories.includes("90-System/State/Inbox"), true);
+    assert.equal((await doctorVault(vault)).status, "ok");
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

@@ -20,6 +20,9 @@ test("Core and modules register standard Jobs without direct scheduler access", 
     assert.equal(created.ok, true);
     const jobs = await registerDeclaredJobs(vault);
     assert.equal(jobs.some((job) => job.job_id === "core.daily-today"), true);
+    const startupToday = jobs.find((job) => job.job_id === "core.startup-today")!;
+    assert.equal(startupToday.trigger.dedupe, "daily");
+    assert.equal(startupToday.trigger.timezone, "Asia/Shanghai");
     assert.equal(jobs.some((job) => job.job_id === "application-tracker.due-research-check"), true);
     const weekly = jobs.find((job) => job.job_id === "experience-log.weekly-summary.job-intern")!;
     assert.equal(weekly.resources.codex, "required");

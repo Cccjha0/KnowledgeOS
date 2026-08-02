@@ -1,9 +1,9 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown, parseYaml } from "../core/bridge.js";
+import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
-import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { rollbackTransaction } from "../core/operationExecutor.js";
@@ -15,7 +15,7 @@ import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
 import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
-import { listInbox } from "./inboxDiscovery.js";
+import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
 import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
@@ -51,21 +51,13 @@ function stringParam(params: JsonObject, key: string): string {
   return value;
 }
 
-function promptVersionSummary(moduleRoot: string, manifest: JsonObject): JsonObject {
-  try {
-    const prompts = manifest.prompts as JsonObject;
-    const registry = parseYaml(moduleRoot, path.join(moduleRoot, ...String(prompts.registry).split("/")));
-    const entries = registry.prompts as JsonObject;
-    return Object.fromEntries(Object.entries(entries).map(([id, value]) => [id, String((value as JsonObject).active_version)])) as JsonObject;
-  } catch { return {}; }
-}
-
 async function moduleViews(
   vaultRoot: string,
   instances?: Awaited<ReturnType<typeof discoverInstances>>,
+  discoveredModules?: DiscoveredDocument[],
 ): Promise<JsonValue> {
   const discoveredInstances = instances ?? await discoverInstances(vaultRoot);
-  const modules = await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
+  const modules = discoveredModules ?? await discoverModulesForVault(ENGINE_ROOT, vaultRoot);
   const moduleLock = await readJson<{ modules?: Record<string, JsonObject> }>(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { modules: {} });
   return await Promise.all(modules.map(async (module) => {
     const moduleId = String(module.data.id);
@@ -76,7 +68,7 @@ async function moduleViews(
     const cachedReport = await readJson<ModuleValidationReport | null>(configuredReport, null);
     const report = cachedReport?.module_id === moduleId && cachedReport.module_version === String(module.data.version)
       ? cachedReport
-      : await validateModule(ENGINE_ROOT, path.dirname(module.path));
+      : null;
     return {
       id: module.data.id,
       name: module.data.name,
@@ -86,12 +78,12 @@ async function moduleViews(
       maturity: module.data.maturity,
       schema_version: (module.data.data as JsonObject)?.schema_version ?? null,
       engine_api_version: (module.data.engine as JsonObject)?.api_version ?? null,
-      health: report.overall,
-      validation_counts: report.counts,
-      beta_eligible: report.beta_eligible,
-      stable_eligible: report.stable_eligible,
-      prompt_versions: promptVersionSummary(path.dirname(module.path), module.data),
-      last_test_at: report.generated_at,
+      health: report?.overall ?? "NOT_VALIDATED",
+      validation_counts: report?.counts ?? { pass: 0, warning: 0, fail: 0 },
+      beta_eligible: report?.beta_eligible ?? false,
+      stable_eligible: report?.stable_eligible ?? false,
+      prompt_versions: {},
+      last_test_at: report?.generated_at ?? null,
       checksum: lockEntry?.checksum ?? null,
       previous_version: lockEntry?.previous_version ?? null,
       active_instance_count: discoveredInstances.filter((instance) => instance.data.module_id === module.data.id && instance.data.status === "active").length,
@@ -227,55 +219,103 @@ async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Prom
   }) as unknown as JsonValue;
 }
 
+function runtimeView(runtimeData: JsonObject): JsonObject {
+  const tasks = (runtimeData.tasks as JsonValue[] | undefined) ?? [];
+  const counts: JsonObject = {};
+  for (const task of tasks) {
+    if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
+    counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+  }
+  return {
+    integrity: runtimeData.integrity ?? "unknown",
+    schema_version: runtimeData.schema_version ?? null,
+    counts,
+    resources: runtimeData.resources ?? [],
+    jobs: runtimeData.jobs ?? [],
+    checkpoints: runtimeData.checkpoints ?? [],
+    observability: runtimeData.runtime_stats ?? {},
+  };
+}
+
+function qualityOverview(runtimeData: JsonObject): JsonObject {
+  const active = (runtimeData.quality_active as JsonObject[] | undefined) ?? [];
+  const resolved = (runtimeData.quality_resolved as JsonObject[] | undefined) ?? [];
+  const tasks = (runtimeData.tasks as JsonObject[] | undefined) ?? [];
+  const sevenDays = Date.now() - 7 * 86_400_000;
+  return {
+    active_issues: active.length,
+    critical: active.filter((issue) => issue.severity === "critical").length,
+    high: active.filter((issue) => issue.severity === "high").length,
+    new_this_week: active.filter((issue) => Date.parse(String(issue.first_seen ?? 0)) >= sevenDays).length,
+    resolved_this_week: resolved.filter((issue) => Date.parse(String((issue.resolution as JsonObject | undefined)?.resolved_at ?? 0)) >= sevenDays).length,
+    failed_tasks: tasks.filter((task) => task.status === "failed").length,
+  };
+}
+
+async function systemRuntimeData(vaultRoot: string): Promise<JsonObject> {
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try { return repository.systemCenterData(new Date(Date.now() - 7 * 86_400_000).toISOString()); }
+  finally { repository.close(); }
+}
+
 async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
   if (method === "getSystemCenterSnapshot") {
-    const instances = await discoverInstances(vaultRoot);
-    const requests: Array<{ method: CommandApiMethod; params: JsonObject }> = [
-      { method: "listInboxItems", params: {} },
-      { method: "listReviewItems", params: { statuses: ["pending", "error"] } },
-      { method: "getRecentRuns", params: { limit: 20 } },
-    ];
-    const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString();
-    const runtimeRepository = await RuntimeRepository.open(vaultRoot);
-    let runtimeData: JsonObject;
-    try { runtimeData = runtimeRepository.systemCenterData(sevenDays); }
-    finally { runtimeRepository.close(); }
-    const [modules, inbox, reviews, runs] = await Promise.all([
-      moduleViews(vaultRoot, instances),
-      ...requests.map((request) => execute({
-        vaultRoot,
-        requestId: `${requestId}:${request.method}`,
-        method: request.method,
-        params: request.params,
-      })),
-    ]);
-    const tasks = (runtimeData.tasks as JsonValue[] | undefined) ?? [];
-    const counts: JsonObject = {};
-    for (const task of tasks) {
-      if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
-      counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+    const section = typeof params.section === "string" ? params.section : "full";
+    if (!["full", "overview", "tasks", "quality", "modules", "history"].includes(section)) {
+      throw new PkbError("INVALID_REQUEST", `Unknown System Center section: ${section}`);
     }
-    const runtime: JsonObject = {
-      integrity: runtimeData.integrity ?? "unknown",
-      schema_version: runtimeData.schema_version ?? null,
-      counts,
-      resources: runtimeData.resources ?? [],
-      jobs: runtimeData.jobs ?? [],
-      checkpoints: runtimeData.checkpoints ?? [],
-      observability: runtimeData.runtime_stats ?? {},
-    };
-    const quality = await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData);
+    if (section === "history") {
+      return { section, runs: await listRunViews(vaultRoot, { limit: 20, include_rollback: false }) } as unknown as JsonValue;
+    }
+    const runtimeData = ["full", "overview", "tasks", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
+    const runtime = runtimeView(runtimeData);
+    const tasks = ((runtimeData.tasks as JsonValue[] | undefined) ?? []).slice(0, 200);
+    if (section === "tasks") return { section, tasks, runtime } as unknown as JsonValue;
+    if (section === "quality") {
+      return { section, quality: await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData) } as unknown as JsonValue;
+    }
+
+    const routing = await discoverRoutingContext(ENGINE_ROOT, vaultRoot);
+    const inboxContext = await discoverInboxContext(vaultRoot, routing);
+    const instances = instanceViews(routing.instances, {});
+    if (section === "overview") {
+      const [inbox, reviews, runs] = await Promise.all([
+        listInbox(vaultRoot, {}, inboxContext),
+        listReviews(vaultRoot, { statuses: ["pending", "error"] }),
+        listRunViews(vaultRoot, { limit: 1, include_rollback: false }),
+      ]);
+      return {
+        section,
+        modules: routing.modules.map((module) => ({ id: module.data.id, status: module.data.status })),
+        instances,
+        inbox,
+        reviews,
+        runs,
+        tasks,
+        runtime,
+        quality: { overview: qualityOverview(runtimeData) },
+      } as unknown as JsonValue;
+    }
+
+    const [modules, inbox, reviews, runs] = await Promise.all([
+      moduleViews(vaultRoot, routing.instances, routing.modules),
+      listInbox(vaultRoot, {}, inboxContext),
+      listReviews(vaultRoot, { statuses: ["pending", "error"] }),
+      listRunViews(vaultRoot, { limit: 20, include_rollback: false }),
+    ]);
+    if (section === "modules") return { section, modules, instances, inbox, reviews, runs } as unknown as JsonValue;
     return {
-      modules: modules ?? null,
-      instances: instanceViews(instances, {}),
-      inbox: inbox ?? null,
-      reviews: reviews ?? null,
-      runs: runs ?? null,
-      tasks: tasks.slice(0, 200),
+      section: "full",
+      modules,
+      instances,
+      inbox,
+      reviews,
+      runs,
+      tasks,
       runtime,
-      quality,
-    };
+      quality: await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData),
+    } as unknown as JsonValue;
   }
   if (method === "getTodayItems") {
     const snapshot = await getTodaySnapshot(vaultRoot);
@@ -308,6 +348,24 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "listInboxItems") {
     return listInbox(vaultRoot, params);
+  }
+  if (method === "getInboxCenterSnapshot") {
+    const context = await discoverInboxContext(vaultRoot);
+    const inbox = await listInbox(vaultRoot, params, context);
+    return {
+      inbox,
+      modules: context.modules.map((module) => ({
+        id: module.data.id,
+        name: module.data.name,
+        status: module.data.status,
+      })),
+      instances: context.instances.map((instance) => ({
+        instance_id: instance.data.instance_id,
+        module_id: instance.data.module_id,
+        display_name: instance.data.display_name,
+        status: instance.data.status,
+      })),
+    } as unknown as JsonValue;
   }
   if (method === "listReviewItems") return listReviews(vaultRoot, params);
   if (method === "resolveReview") {
@@ -383,7 +441,8 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
   }
   if (method === "getModules") {
-    return moduleViews(vaultRoot);
+    const routing = await discoverRoutingContext(ENGINE_ROOT, vaultRoot);
+    return moduleViews(vaultRoot, routing.instances, routing.modules);
   }
   if (method === "getInstances") {
     return instanceViews(await discoverInstances(vaultRoot), params);

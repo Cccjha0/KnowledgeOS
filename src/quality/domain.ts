@@ -95,4 +95,5 @@ export interface QualityPolicy extends JsonObject {
   freshness: JsonObject;
   ownership: JsonObject;
   audits: string[];
+  orphan_exempt_entity_types: string[];
 }

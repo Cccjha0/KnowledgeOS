@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown } from "../core/bridge.js";
-import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
+import { discoverRoutingContext, type DiscoveredDocument, type RoutingDiscoveryContext } from "../core/discovery.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
 
@@ -67,6 +67,12 @@ interface InboxRoot {
   instanceId: string | null;
 }
 
+export interface InboxDiscoveryContext {
+  roots: InboxRoot[];
+  modules: DiscoveredDocument[];
+  instances: DiscoveredDocument[];
+}
+
 function object(value: unknown): JsonObject | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
 }
@@ -89,9 +95,10 @@ function moduleThreshold(module: DiscoveredDocument | undefined): number {
   return typeof routing?.auto_route_threshold === "number" ? routing.auto_route_threshold : 1;
 }
 
-async function roots(vaultRoot: string): Promise<{ roots: InboxRoot[]; modules: DiscoveredDocument[]; instances: DiscoveredDocument[] }> {
-  const modules = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).filter((entry) => entry.data.status === "enabled");
-  const instances = (await discoverInstances(vaultRoot)).filter((entry) => entry.data.status === "active");
+export async function discoverInboxContext(vaultRoot: string, existing?: RoutingDiscoveryContext): Promise<InboxDiscoveryContext> {
+  const routing = existing ?? await discoverRoutingContext(ENGINE_ROOT, vaultRoot);
+  const modules = routing.modules.filter((entry) => entry.data.status === "enabled");
+  const instances = routing.instances.filter((entry) => entry.data.status === "active");
   const enabled = new Set(modules.map((entry) => String(entry.data.id)));
   const result: InboxRoot[] = [{ path: "00-Inbox", scope: "global", moduleId: null, instanceId: null }];
   for (const module of modules) {
@@ -170,8 +177,8 @@ async function inspectItem(
   };
 }
 
-export async function discoverInboxItems(vaultRoot: string): Promise<InboxItemView[]> {
-  const discovered = await roots(vaultRoot);
+export async function discoverInboxItems(vaultRoot: string, context?: InboxDiscoveryContext): Promise<InboxItemView[]> {
+  const discovered = context ?? await discoverInboxContext(vaultRoot);
   const seen = new Set<string>();
   const output: InboxItemView[] = [];
   for (const root of discovered.roots) {
@@ -185,12 +192,12 @@ export async function discoverInboxItems(vaultRoot: string): Promise<InboxItemVi
   return output.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.path.localeCompare(b.path));
 }
 
-export async function listInbox(vaultRoot: string, params: JsonObject = {}): Promise<InboxListing> {
+export async function listInbox(vaultRoot: string, params: JsonObject = {}, context?: InboxDiscoveryContext): Promise<InboxListing> {
   const includeClosed = params.include_closed === true;
   const moduleId = typeof params.module_id === "string" ? params.module_id : null;
   const instanceId = typeof params.instance_id === "string" ? params.instance_id : null;
   const state = typeof params.state === "string" ? params.state : null;
-  const all = await discoverInboxItems(vaultRoot);
+  const all = await discoverInboxItems(vaultRoot, context);
   const items = all.filter((item) => (includeClosed || !["ignored", "unmanaged", "processed"].includes(item.state)) &&
     (!moduleId || item.suggested_module_id === moduleId) && (!instanceId || item.suggested_instance_id === instanceId) && (!state || item.state === state));
   const groups = new Map<string, JsonObject>();

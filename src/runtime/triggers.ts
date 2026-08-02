@@ -28,14 +28,31 @@ function taskFor(job: JobDefinition, options: { idempotency: string; trigger: Js
   };
 }
 
+function localDateWindow(date: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}@${timezone}`;
+}
+
+function startupWindow(job: JobDefinition, startupId: string, now: Date): string {
+  if (job.trigger.dedupe !== "daily") return startupId;
+  return localDateWindow(now, String(job.trigger.timezone ?? "UTC"));
+}
+
 export async function materializeStartupJobs(vaultRoot: string, startupId: string = randomUUID(), now = new Date()): Promise<{ created: string[]; deduplicated: number }> {
   const repository = await RuntimeRepository.open(vaultRoot);
   const output = { created: [] as string[], deduplicated: 0 };
   try {
     for (const job of repository.listJobs().filter((item) => item.enabled && item.trigger.type === "startup")) {
+      const window = startupWindow(job, startupId, now);
       const result = repository.createTask(taskFor(job, {
-        idempotency: `${job.job_id}:startup:${startupId}`, trigger: { ...job.trigger, startup_id: startupId },
-        payload: { startup_id: startupId }, scheduledFor: now.toISOString(),
+        idempotency: `${job.job_id}:startup:${window}`, trigger: { ...job.trigger, startup_id: startupId, window },
+        payload: { startup_id: startupId, window }, scheduledFor: now.toISOString(),
       }));
       if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
     }

@@ -230,6 +230,19 @@ async function preservedUserArea(todayPath: string): Promise<string[]> {
 }
 
 export async function writeTodayMarkdown(vaultRoot: string, snapshot: TodaySnapshot): Promise<string> {
+  return (await writeTodayMarkdownWithResult(vaultRoot, snapshot)).path;
+}
+
+export interface TodayWriteResult {
+  path: string;
+  written: boolean;
+}
+
+function comparableTodayMarkdown(content: string): string {
+  return content.replace(/^(> [^\r\n]*?)(\d{4}-\d{2}-\d{2}T[^\r\n]+)$/m, "$1<generated-at>");
+}
+
+export async function writeTodayMarkdownWithResult(vaultRoot: string, snapshot: TodaySnapshot): Promise<TodayWriteResult> {
   const todayPath = path.join(vaultRoot, "Today.md");
   const userArea = await preservedUserArea(todayPath);
   const lines = ["# Today", "", `> 最后更新：${snapshot.generated_at}`];
@@ -250,8 +263,15 @@ export async function writeTodayMarkdown(vaultRoot: string, snapshot: TodaySnaps
   addSection(lines, "模块状态摘要", renderOnce(snapshot.module_summaries));
   if (snapshot.focus.length === 0 && snapshot.recent_completed.length === 0) lines.push("", "当前没有需要处理的事项。");
   lines.push("", "## 我的笔记", "", ...userArea, "");
-  await fs.writeFile(todayPath, lines.join("\n"), "utf8");
-  return todayPath;
+  const content = lines.join("\n");
+  if (await exists(todayPath)) {
+    const current = await fs.readFile(todayPath, "utf8");
+    if (comparableTodayMarkdown(current) === comparableTodayMarkdown(content)) {
+      return { path: todayPath, written: false };
+    }
+  }
+  await fs.writeFile(todayPath, content, "utf8");
+  return { path: todayPath, written: true };
 }
 
 export async function buildTodayDashboard(vaultRoot: string, moduleItems: DashboardItem[] = []): Promise<string> {

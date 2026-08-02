@@ -103,6 +103,37 @@ def main():
         print(json.dumps(data, ensure_ascii=False))
         return
 
+    if command == "parse-validate-yaml-batch":
+        engine_root = Path(sys.argv[2]).resolve()
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, list):
+            fail("Batch payload must be a list")
+        schemas, registry = load_schemas(engine_root)
+        output = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not isinstance(item.get("schema_id"), str):
+                fail("Batch item must contain path and schema_id", {"index": index})
+            path = Path(item["path"])
+            schema_id = item["schema_id"]
+            if schema_id not in schemas:
+                fail(f"Unknown schema: {schema_id}", {"index": index, "path": str(path)})
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            validator = Draft202012Validator(
+                schemas[schema_id],
+                registry=registry,
+                format_checker=FormatChecker(),
+            )
+            errors = sorted(validator.iter_errors(data), key=lambda error: list(error.path))
+            if errors:
+                details = []
+                for error in errors:
+                    location = ".".join(str(part) for part in error.path) or "<root>"
+                    details.append({"path": location, "message": error.message})
+                fail("Schema validation failed", {"index": index, "file": str(path), "errors": details})
+            output.append(data)
+        print(json.dumps(output, ensure_ascii=False))
+        return
+
     if command == "write-yaml":
         path = Path(sys.argv[2])
         payload = json.load(sys.stdin)

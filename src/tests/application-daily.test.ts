@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { compareApplicationUpdate } from "../application/compare.js";
+import { collectApplicationDashboardItems } from "../application/dashboard.js";
 import { applyReportToResearchRequest, createResearchRequest, researchRequestKey } from "../application/researchRequest.js";
 import { assertApplicationTransition } from "../application/stateMachine.js";
 import { writeMarkdown } from "../core/bridge.js";
@@ -78,6 +79,50 @@ test("due-request sync handles multiple projects and is idempotent", async () =>
     assert.equal(second.created.length, 0);
     assert.equal(second.existing.length, 2);
     assert.notEqual(researchRequestKey(record("APP-2026-0101", "instance-a")), researchRequestKey(record("APP-2026-0102", "instance-b")));
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("an open Research Request replaces the overdue application action in Today", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-application-dashboard-"));
+  try {
+    await initializeVault(vault, "disabled", ["20-Workspace/Applications/instance-a/Inbox"]);
+    const instanceDirectory = path.join(vault, "90-System", "Instances", "instance-a");
+    await fs.mkdir(instanceDirectory, { recursive: true });
+    await fs.writeFile(path.join(instanceDirectory, "instance.yaml"), [
+      "instance_id: instance-a",
+      "module_id: application-tracker",
+      "status: active",
+      "display_name: Applications",
+      "content_root: 20-Workspace/Applications/instance-a",
+      "inbox_path: 20-Workspace/Applications/instance-a/Inbox",
+      "created: \"2026-07-01T00:00:00Z\"",
+      "updated: \"2026-07-01T00:00:00Z\"",
+      "",
+    ].join("\n"), "utf8");
+
+    const application = record("APP-2026-0101", "instance-a");
+    application.institution = "Monash University";
+    application.program_name = "Master of Information Technology";
+    application.monitoring.next_check = "2000-01-01T00:00:00Z";
+    const recordPath = path.join(vault, "20-Workspace", "Applications", "instance-a", "Records", "Monash.md");
+    await fs.mkdir(path.dirname(recordPath), { recursive: true });
+    writeMarkdown(vault, recordPath, { data: application, content: "# Monash\n" });
+
+    const request = createResearchRequest(application, "20-Workspace/Applications/instance-a/Records/Monash.md", "REQ-2026-000001", "2026-07-30T00:00:00Z");
+    const requestPath = path.join(vault, "20-Workspace", "Applications", "instance-a", "Research Requests", "REQ-2026-000001.md");
+    await fs.mkdir(path.dirname(requestPath), { recursive: true });
+    writeMarkdown(vault, requestPath, { data: request, content: "# Research Request\n" });
+
+    const items = await collectApplicationDashboardItems(vault);
+    const project = items.find((item) => item.item_id.includes("PROJECT"));
+    const requestItem = items.find((item) => item.item_id.includes("REQUEST"));
+    assert.equal(project?.category, "status");
+    assert.equal(project?.due_at, null);
+    assert.match(project?.description ?? "", /Research request: pending/);
+    assert.equal(requestItem?.title, "Monash University — Master of Information Technology 核验");
+    assert.match(requestItem?.description ?? "", /^Research pending:/);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
