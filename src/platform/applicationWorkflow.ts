@@ -89,6 +89,7 @@ async function locateRecord(
     document: MarkdownDocument;
     record: ApplicationRecord;
   }> = [];
+  const identityMatches: typeof matches = [];
 
   for (const candidate of candidates) {
     const document = parseMarkdown(vaultRoot, candidate);
@@ -102,6 +103,14 @@ async function locateRecord(
     const sameProgram = report.program_code
       ? record.program_code === report.program_code
       : record.program_name.trim().toLowerCase() === report.program_name.trim().toLowerCase();
+    if (sameInstitution && sameProgram) {
+      identityMatches.push({
+        absolute: candidate,
+        relative: toVaultPath(vaultRoot, candidate),
+        document,
+        record,
+      });
+    }
     if (sameInstitution && sameIntake && sameProgram) {
       matches.push({
         absolute: candidate,
@@ -111,6 +120,8 @@ async function locateRecord(
       });
     }
   }
+
+  if (matches.length === 0 && identityMatches.length === 1) return identityMatches[0]!;
 
   if (matches.length === 0) {
     throw new PkbError(

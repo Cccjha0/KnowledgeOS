@@ -37,6 +37,7 @@ export type CommandApiMethod =
   | "getTaskRuntimeStatus"
   | "enqueueTask"
   | "runTaskCycle"
+  | "listCodexModels"
   | "getQualityDashboard"
   | "listQualityIssues"
   | "manageQualityIssue"
@@ -102,6 +103,8 @@ export type InboxAction = "preview" | "process" | "route" | "retry" | "defer" | 
 export interface ProcessInboxItemParams {
   item_id: string;
   action?: InboxAction;
+  codex_model?: string;
+  codex_reasoning_effort?: string;
   module_id?: string | null;
   instance_id?: string | null;
   review_after?: string | null;

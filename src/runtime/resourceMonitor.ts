@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ResourceAvailability, ResourceStatus } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
+import { probeCodexCli, resolveCodexLaunch } from "./codexCli.js";
 
 async function filesystemStatus(vaultRoot: string, now: string): Promise<ResourceStatus> {
   const probe = path.join(vaultRoot, "90-System", "State", `.resource-probe-${process.pid}`);
@@ -27,10 +27,10 @@ async function networkStatus(now: string, probeUrl?: string): Promise<ResourceSt
 }
 
 function codexStatus(now: string, executable: string): ResourceStatus {
-  const result = spawnSync(executable, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 5_000 });
+  const result = probeCodexCli(executable);
   if (result.error) return { resource: "codex", status: "unavailable", reason: (result.error as NodeJS.ErrnoException).code === "ENOENT" ? "cli-not-installed" : "cli-launch-failed", checked_at: now, details: { message: result.error.message } };
   if (result.status !== 0) return { resource: "codex", status: "unavailable", reason: "cli-unhealthy", checked_at: now, details: { exit_code: result.status, stderr: result.stderr.trim().slice(0, 500) } };
-  return { resource: "codex", status: "available", reason: null, checked_at: now, details: { executable, version: result.stdout.trim().slice(0, 200), authentication: "not-probed" } };
+  return { resource: "codex", status: "available", reason: null, checked_at: now, details: { executable: resolveCodexLaunch(executable).display, version: result.stdout.trim().slice(0, 200), authentication: "not-probed" } };
 }
 
 export async function probeRuntimeResources(vaultRoot: string, options: { networkProbeUrl?: string; codexExecutable?: string } = {}): Promise<ResourceStatus[]> {

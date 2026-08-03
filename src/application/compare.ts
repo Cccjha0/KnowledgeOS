@@ -67,6 +67,37 @@ function proposedStatus(field: string, newValue: JsonValue): string | null {
   return null;
 }
 
+function normalizedText(value: JsonValue): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function recordAliasValue(record: ApplicationRecord, report: ResearchReport, field: string, value: JsonValue): JsonValue | undefined {
+  if (field === "course_code") {
+    const canonical = record.program_code ?? report.program_code;
+    return canonical !== null && normalizedText(canonical) === normalizedText(value) ? canonical : undefined;
+  }
+  if (field === "verified_date") {
+    const observedDay = normalizedText(value).slice(0, 10);
+    return observedDay && observedDay === report.checked_at.slice(0, 10) ? report.checked_at : undefined;
+  }
+  if (field === "intake_month") {
+    const monthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+    const match = report.intake.match(/-(\d{2})(?:$|\D)/);
+    const expected = match ? monthNames[Number(match[1]) - 1] : null;
+    return expected && normalizedText(value) === expected ? report.intake : undefined;
+  }
+  if (field === "intake_term") {
+    const term = normalizedText(value);
+    const year = report.intake.match(/\b(20\d{2})\b/)?.[1];
+    const firstSemester = /(?:-0?[1-6]\b|-s1\b)/i.test(report.intake);
+    const secondSemester = /(?:-(?:0?[7-9]|1[0-2])\b|-s2\b)/i.test(report.intake);
+    if (year && term.includes(year) && ((firstSemester && /(?:semester\s*1|s1)/.test(term)) || (secondSemester && /(?:semester\s*2|s2)/.test(term)))) {
+      return report.intake;
+    }
+  }
+  return undefined;
+}
+
 export async function compareApplicationUpdate(
   record: ApplicationRecord,
   report: ResearchReport,
@@ -84,8 +115,23 @@ export async function compareApplicationUpdate(
     const risk = fieldRisk(field);
     const current = facts[field];
     const oldValue = current?.value ?? null;
-    const sameValue = deepEqual(oldValue, finding.value);
     const sourceIds = toStringArray(finding.source_ids);
+    const aliasValue = recordAliasValue(record, report, field, finding.value);
+
+    if (aliasValue !== undefined) {
+      fieldChanges.push({
+        field,
+        old_value: structuredClone(aliasValue),
+        new_value: structuredClone(finding.value),
+        confidence: finding.confidence,
+        action: "no-change",
+        reason: "该信息已由档案中的规范字段表达，不创建重复字段或审核。",
+        source_ids: sourceIds,
+      });
+      continue;
+    }
+
+    const sameValue = deepEqual(oldValue, finding.value);
 
     if (finding.status === "unknown") {
       fieldChanges.push({
@@ -141,6 +187,19 @@ export async function compareApplicationUpdate(
       continue;
     }
 
+    if (risk === "unsupported") {
+      fieldChanges.push({
+        field,
+        old_value: structuredClone(oldValue),
+        new_value: structuredClone(finding.value),
+        confidence: finding.confidence,
+        action: "ignore",
+        reason: "字段尚未在申请模块的数据契约中声明；信息保留在研究报告中，不写入正式档案。",
+        source_ids: sourceIds,
+      });
+      continue;
+    }
+
     if (sameValue) {
       facts[field] = updatedFact(current, finding, report, options.reportReference);
       fieldChanges.push({
@@ -155,11 +214,22 @@ export async function compareApplicationUpdate(
       continue;
     }
 
+    const sufficientlySupported = finding.status === "confirmed" && finding.confidence >= 0.95;
+    if ((risk === "automatic" || risk === "informational") && !sufficientlySupported) {
+      fieldChanges.push({
+        field,
+        old_value: structuredClone(oldValue),
+        new_value: structuredClone(finding.value),
+        confidence: finding.confidence,
+        action: "ignore",
+        reason: "来源状态或置信度不足；信息保留在研究报告中，待后续核验，不创建低价值审核。",
+        source_ids: sourceIds,
+      });
+      continue;
+    }
+
     materialChange = true;
-    const requiresReview =
-      risk !== "automatic" ||
-      finding.status !== "confirmed" ||
-      finding.confidence < 0.95;
+    const requiresReview = risk === "review-required";
 
     if (requiresReview) {
       const reviewId = await options.allocateReviewId();
@@ -185,11 +255,9 @@ export async function compareApplicationUpdate(
         action: "change-critical-field",
         proposed_value: proposedValue,
         confidence: finding.confidence,
-        priority: risk === "review-required" ? "high" : "medium",
+        priority: "high",
         status: "pending",
-        reason: risk === "review-required"
-          ? `关键字段 ${field} 发生变化，必须由用户确认。`
-          : `字段 ${field} 的来源状态或置信度不足以自动覆盖。`,
+        reason: `关键字段 ${field} 发生变化，必须由用户确认。`,
         evidence: [options.reportReference, ...sourceIds],
         created: options.now,
         review_after: null,

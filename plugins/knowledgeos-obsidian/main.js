@@ -11,11 +11,32 @@ const DEFAULT_SETTINGS = {
   nodePath: "node",
   vaultPath: "",
   networkProbeUrl: "",
+  codexModel: "gpt-5.6-terra",
+  codexReasoningEffort: "medium",
+  codexModelCatalog: [],
+  codexModelsFetchedAt: null,
   openTodayOnStartup: true,
   autoRefresh: true,
   developerMode: false,
   notifyOnCompletion: true,
   allowBatchOperations: true,
+};
+
+const FALLBACK_CODEX_MODELS = [
+  { id: "gpt-5.6-terra", model: "gpt-5.6-terra", display_name: "GPT-5.6 Terra", description: "KnowledgeOS 默认模型", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: true },
+  { id: "gpt-5.4-mini", model: "gpt-5.4-mini", display_name: "GPT-5.4 Mini", description: "较低延迟的兼容选项", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: false },
+  { id: "gpt-5.4", model: "gpt-5.4", display_name: "GPT-5.4", description: "兼容选项", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: false },
+];
+
+const REASONING_LABELS = {
+  none: "无",
+  minimal: "最少",
+  low: "低",
+  medium: "中（推荐）",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+  ultra: "极致",
 };
 
 function markLiveRegion(element, politeness = "polite") {
@@ -26,7 +47,7 @@ function markLiveRegion(element, politeness = "polite") {
 }
 
 function taskCycleChanged(data) {
-  const created = [data?.startup_task?.created, data?.field_due?.created, data?.startup?.scheduler?.created];
+  const created = [data?.startup_task?.created, data?.field_due?.created, data?.inbox?.created, data?.startup?.scheduler?.created];
   return created.some((items) => Array.isArray(items) && items.length > 0)
     || Array.isArray(data?.dispatch?.tasks) && data.dispatch.tasks.length > 0;
 }
@@ -738,16 +759,9 @@ class ReviewActionModal extends Modal {
       params.review_after = new Date(this.dateInput.value).toISOString();
     }
     this.submitButton.disabled = true;
-    this.statusEl.setText("Core 正在执行审核决定…");
-    const response = await this.plugin.client.invoke("resolveReview", params);
-    this.submitButton.disabled = false;
-    if (!response.ok) {
-      this.statusEl.setText(response.error?.message || "审核处理失败。");
-      return;
-    }
-    this.plugin.notify(`审核已更新为 ${response.data.status}`);
+    this.statusEl.setText("审核决定已提交，将在列表中继续处理…");
     this.close();
-    await this.onComplete();
+    await this.onComplete(params);
   }
 }
 
@@ -855,6 +869,8 @@ class ReviewCenterView extends ItemView {
     this.instances = [];
     this.filterWarnings = [];
     this.actionPendingReviewId = null;
+    this.pendingReviewActions = new Map();
+    this.reviewActionErrors = new Map();
   }
   getViewType() { return REVIEW_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS Reviews"; }
@@ -1071,6 +1087,7 @@ class ReviewCenterView extends ItemView {
   }
 
   renderReviewEmpty() {
+    this.contentEl.removeClass("is-review-detail");
     const empty = this.listEl.createDiv({ cls: "knowledgeos-review-empty" });
     const icon = empty.createSpan({ cls: "knowledgeos-review-empty-icon", attr: { "aria-hidden": "true" } });
     setIcon(icon, this.hasActiveFilters() ? "search-x" : "circle-check");
@@ -1083,23 +1100,30 @@ class ReviewCenterView extends ItemView {
   }
 
   renderReviewList() {
+    this.contentEl.removeClass("is-review-detail");
     this.listEl.empty();
     const section = this.listEl.createEl("section", { cls: "knowledgeos-review-results", attr: { "aria-label": "审核事项" } });
     for (const review of this.reviews.slice(0, this.visibleLimit)) {
       const card = section.createEl("article", { cls: `knowledgeos-review-item priority-${review.priority} status-${review.status}` });
+      const pendingDecision = this.pendingReviewActions.get(review.review_id);
+      const actionError = this.reviewActionErrors.get(review.review_id);
+      if (pendingDecision) card.addClass("is-applying");
       const heading = card.createDiv({ cls: "knowledgeos-review-item-heading" });
       const title = heading.createEl("button", { cls: "knowledgeos-link knowledgeos-review-item-title", text: review.title });
+      title.disabled = Boolean(pendingDecision);
       title.onclick = () => this.renderDetail(review);
       const state = heading.createDiv({ cls: "knowledgeos-review-item-state" });
       state.createSpan({ cls: `knowledgeos-review-priority is-${review.priority}`, text: this.priorityLabel(review.priority) });
-      state.createSpan({ text: this.reviewStatusLabel(review.status) });
+      state.createSpan({ text: pendingDecision ? "正在应用" : this.reviewStatusLabel(review.status) });
       const subject = review.field ? `${labelField(review.field)} · ${this.actionLabel(review.action)}` : this.actionLabel(review.action);
       card.createDiv({ cls: "knowledgeos-review-subject", text: subject });
       const context = card.createDiv({ cls: "knowledgeos-review-item-context" });
       context.createSpan({ text: this.moduleName(review.source_module) });
       if (review.instance_id) context.createSpan({ text: this.instanceName(review.instance_id) });
       createTime(context, review.created_at, "创建于 ");
-      if (review.target_state === "changed") card.createDiv({ cls: "knowledgeos-review-row-warning", text: "目标文件已修改，需要重新确认。" });
+      if (pendingDecision) card.createDiv({ cls: "knowledgeos-review-row-progress", text: "Core 正在创建快照并应用决定；你可以继续查看其他审核。" });
+      else if (actionError) card.createDiv({ cls: "knowledgeos-review-row-warning is-error", text: actionError });
+      else if (review.target_state === "changed") card.createDiv({ cls: "knowledgeos-review-row-warning", text: "目标文件已修改，需要重新确认。" });
       else if (review.target_state === "unavailable") card.createDiv({ cls: "knowledgeos-review-row-warning is-error", text: "当前无法读取目标字段。" });
       addCardArrow(heading);
     }
@@ -1107,6 +1131,19 @@ class ReviewCenterView extends ItemView {
       const more = this.listEl.createEl("button", { cls: "knowledgeos-review-load-more", text: `加载更多（剩余 ${this.reviews.length - this.visibleLimit}）` });
       more.onclick = () => { this.visibleLimit += LIST_PAGE_SIZE; this.renderReviewList(); };
     }
+  }
+
+  showCachedReviewList() {
+    this.contentEl.removeClass("is-review-detail");
+    this.listEl.removeAttribute("aria-busy");
+    this.backgroundStatus = null;
+    this.updateReviewSummary();
+    if (!this.reviews?.length) {
+      this.listEl.empty();
+      this.renderReviewEmpty();
+      return;
+    }
+    this.renderReviewList();
   }
 
   priorityLabel(priority) {
@@ -1173,12 +1210,13 @@ class ReviewCenterView extends ItemView {
   }
 
   renderDetail(review) {
+    this.contentEl.addClass("is-review-detail");
     const root = this.listEl;
     root.empty();
     const detail = root.createEl("article", { cls: `knowledgeos-review-detail priority-${review.priority} status-${review.status}` });
     const navigation = detail.createDiv({ cls: "knowledgeos-review-detail-navigation" });
     const back = navigation.createEl("button", { text: "← 返回审核列表" });
-    back.onclick = () => this.loadReviews();
+    back.onclick = () => this.showCachedReviewList();
     const open = navigation.createEl("button", { text: "打开目标文件" });
     open.onclick = () => this.app.workspace.openLinkText(review.target, "", false);
     detail.createEl("h2", { text: review.title });
@@ -1246,7 +1284,29 @@ class ReviewCenterView extends ItemView {
 
   actionButton(root, label, review, decision, primary = false) {
     const button = root.createEl("button", { text: label, cls: primary ? "mod-cta" : "" });
-    button.onclick = () => new ReviewActionModal(this.app, this.plugin, review, decision, () => this.loadReviews()).open();
+    button.onclick = () => new ReviewActionModal(this.app, this.plugin, review, decision, (params) => this.resolveDecision(review, params)).open();
+  }
+
+  async resolveDecision(review, params) {
+    if (this.pendingReviewActions.has(review.review_id)) return;
+    this.pendingReviewActions.set(review.review_id, params.decision);
+    this.reviewActionErrors.delete(review.review_id);
+    this.showCachedReviewList();
+    this.plugin.notify("审核决定已提交，正在后台应用");
+    const response = await this.plugin.client.invoke("resolveReview", params);
+    this.pendingReviewActions.delete(review.review_id);
+    if (!response.ok) {
+      const message = response.error?.message || "审核处理失败";
+      this.reviewActionErrors.set(review.review_id, message);
+      this.showCachedReviewList();
+      this.plugin.notify(message, { error: true });
+      return;
+    }
+    this.reviewActionErrors.delete(review.review_id);
+    this.reviews = this.reviews.filter((item) => item.review_id !== review.review_id);
+    this.showCachedReviewList();
+    this.plugin.notify(`审核已更新为 ${response.data.status}`);
+    void this.loadReviews();
   }
 
   async simpleAction(review, mode) {
@@ -1614,7 +1674,7 @@ class InboxCenterView extends ItemView {
         row.createDiv({ text: String(value) });
       }
     }
-    renderDeveloperDetails(detailBody, this.plugin, [["Item ID", item.item_id], ["原始状态", item.state], ["置信度", `${Math.round(item.confidence * 100)}%`], ["读取级别", item.required_read_level], ["Processor", item.processor], ["原始判断依据", item.reasons.join("；")]]);
+    renderDeveloperDetails(detailBody, this.plugin, [["Item ID", item.item_id], ["Task ID", item.task_id], ["原始状态", item.state], ["置信度", `${Math.round(item.confidence * 100)}%`], ["读取级别", item.required_read_level], ["Processor", item.processor], ["原始判断依据", item.reasons.join("；")]]);
   }
 
   setItemBusy(card, message) {
@@ -1651,7 +1711,12 @@ class InboxCenterView extends ItemView {
     this.itemActionErrors.delete(item.item_id);
     if (card) this.setItemBusy(card, action === "retry" ? "正在重试处理…" : "正在处理条目…");
     const route = this.selectedRoute(item);
-    const response = await this.plugin.client.invoke("processInboxItem", { item_id: item.item_id, action, ...route, ...extra });
+    const response = await this.plugin.client.invoke("processInboxItem", {
+      item_id: item.item_id, action,
+      codex_model: this.plugin.settings.codexModel,
+      codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      ...route, ...extra,
+    });
     this.pendingItemIds.delete(item.item_id);
     if (!response.ok) {
       const message = response.error?.message || "Inbox 处理失败";
@@ -1662,7 +1727,9 @@ class InboxCenterView extends ItemView {
       return;
     }
     this.itemActionErrors.delete(item.item_id);
-    this.resultMessage = response.data.status === "waiting-for-ai" ? "条目已安全保留，等待 Codex / 模块工作流。" : `Inbox 状态已更新：${response.data.status}`;
+    this.resultMessage = response.data.task_id
+      ? `AI 任务 ${response.data.task_id} 已${response.data.status === "queued" ? "进入队列" : "更新"}；Codex 可用时将自动继续。`
+      : response.data.status === "waiting-for-ai" ? "条目已安全保留，等待 Codex / 模块工作流。" : `Inbox 状态已更新：${response.data.status}`;
     await this.refresh();
   }
 
@@ -2547,7 +2614,17 @@ class SystemCenterView extends ItemView {
     const actions = root.createDiv({ cls: "knowledgeos-section-heading" });
     actions.createEl("h3", { text: "任务" });
     const runTasks = createToolbarButton(actions, "play", "运行队列");
-    runTasks.onclick = async () => { runTasks.disabled = true; const response = await this.plugin.client.invoke("runTaskCycle", { limit: 2 }); runTasks.disabled = false; if (!response.ok) this.plugin.notify(response.error?.message || "任务运行失败", { error: true }); await this.refresh(); };
+    runTasks.onclick = async () => {
+      runTasks.disabled = true;
+      const response = await this.plugin.client.invoke("runTaskCycle", {
+        limit: 2,
+        codex_model: this.plugin.settings.codexModel,
+        codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      });
+      runTasks.disabled = false;
+      if (!response.ok) this.plugin.notify(response.error?.message || "任务运行失败", { error: true });
+      await this.refresh();
+    };
     const groups = [
       ["正在进行", ["queued", "running"]],
       ["等待条件", ["waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"]],
@@ -3028,6 +3105,8 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin); this.plugin = plugin;
     this.connectionState = { tone: "idle", message: "尚未测试 Core 连接。" };
+    this.modelDiscoveryState = null;
+    this.modelDiscoveryRunning = false;
   }
   display() {
     const { containerEl } = this;
@@ -3076,6 +3155,43 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
       }));
 
     const automation = this.createSection(containerEl, "自动化资源", "为需要外部资源的后台任务提供可用性配置。");
+    const modelCatalog = this.codexModelCatalog();
+    const selectedModel = this.selectedCodexModel(modelCatalog);
+    new Setting(automation).setName("Codex 模型").setDesc("用于新建后台 AI 任务；已创建的任务继续使用其创建时记录的模型与推理强度")
+      .addDropdown((dropdown) => {
+        for (const model of modelCatalog) dropdown.addOption(model.id, `${model.display_name}${model.id === "gpt-5.6-terra" ? "（默认）" : ""}`);
+        dropdown.setValue(this.plugin.settings.codexModel).onChange(async (value) => {
+          const next = this.selectedCodexModel(modelCatalog, value);
+          const efforts = this.reasoningEfforts(next);
+          this.plugin.settings.codexModel = value;
+          if (!efforts.includes(this.plugin.settings.codexReasoningEffort)) this.plugin.settings.codexReasoningEffort = next.default_reasoning_effort || efforts[0] || "medium";
+          await this.plugin.saveSettings();
+          this.display();
+        });
+      });
+    const reasoningEfforts = this.reasoningEfforts(selectedModel);
+    new Setting(automation).setName("推理强度").setDesc("更高强度通常更慢；可选值由当前模型的 Codex 目录决定")
+      .addDropdown((dropdown) => {
+        for (const effort of reasoningEfforts) dropdown.addOption(effort, REASONING_LABELS[effort] || effort);
+        if (!reasoningEfforts.includes(this.plugin.settings.codexReasoningEffort)) dropdown.addOption(this.plugin.settings.codexReasoningEffort, this.plugin.settings.codexReasoningEffort);
+        dropdown.setValue(this.plugin.settings.codexReasoningEffort).onChange(async (value) => {
+          await this.persistSetting("codexReasoningEffort", value);
+        });
+      });
+    let customModel = "";
+    new Setting(automation).setName("自定义模型 ID").setDesc("当自动目录尚未列出已获权限的模型时，可以手动指定模型 ID")
+      .addText((text) => text.setPlaceholder("例如 gpt-5.6-terra").onChange((value) => { customModel = value.trim(); }))
+      .addButton((button) => button.setButtonText("使用").onClick(async () => {
+        if (!customModel) { this.plugin.notify("请输入模型 ID", { error: true, force: true }); return; }
+        this.plugin.settings.codexModel = customModel;
+        await this.plugin.saveSettings();
+        this.display();
+      }));
+    new Setting(automation).setName("可用模型检测").setDesc("通过本机 Codex App Server 获取当前模型目录；离线时继续使用缓存和自定义值")
+      .addButton((button) => button.setButtonText("重新检测").onClick(async () => this.refreshCodexModels(button, true)));
+    this.modelDiscoveryStatusEl = markLiveRegion(automation.createDiv({ cls: "knowledgeos-settings-connection-state" }));
+    this.renderModelDiscoveryState();
+    if (this.codexModelCatalogIsStale()) void this.refreshCodexModels(null, false);
     new Setting(automation).setName("网络探测地址").setDesc("联网任务执行前检查的地址；留空时网络状态保持 unknown，联网任务继续等待")
       .addText((text) => text.setPlaceholder("https://example.com/").setValue(this.plugin.settings.networkProbeUrl).onChange(async (value) => {
         await this.persistSetting("networkProbeUrl", value.trim());
@@ -3086,6 +3202,82 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
       .addToggle((toggle) => toggle.setValue(this.plugin.settings.developerMode).onChange(async (value) => {
         await this.persistSetting("developerMode", value);
       }));
+  }
+
+  codexModelCatalog() {
+    const catalog = new Map();
+    for (const model of Array.isArray(this.plugin.settings.codexModelCatalog) ? this.plugin.settings.codexModelCatalog : []) {
+      if (model && typeof model.id === "string" && model.id) catalog.set(model.id, model);
+    }
+    for (const model of FALLBACK_CODEX_MODELS) if (!catalog.has(model.id)) catalog.set(model.id, model);
+    const current = String(this.plugin.settings.codexModel || "").trim();
+    if (current && !catalog.has(current)) catalog.set(current, {
+      id: current, model: current, display_name: current, description: "手动配置的模型",
+      supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: false,
+    });
+    return [...catalog.values()];
+  }
+
+  selectedCodexModel(catalog, id = this.plugin.settings.codexModel) {
+    return catalog.find((model) => model.id === id) || FALLBACK_CODEX_MODELS[0];
+  }
+
+  reasoningEfforts(model) {
+    const efforts = Array.isArray(model?.supported_reasoning_efforts) ? model.supported_reasoning_efforts.filter(Boolean) : [];
+    return efforts.length ? efforts : ["low", "medium", "high", "xhigh"];
+  }
+
+  codexModelCatalogIsStale() {
+    const detected = Array.isArray(this.plugin.settings.codexModelCatalog) && this.plugin.settings.codexModelCatalog.length > 0;
+    const fetchedAt = Date.parse(this.plugin.settings.codexModelsFetchedAt || "");
+    return !detected || !Number.isFinite(fetchedAt) || Date.now() - fetchedAt > 6 * 60 * 60 * 1000;
+  }
+
+  renderModelDiscoveryState() {
+    if (!this.modelDiscoveryStatusEl) return;
+    const detectedModels = Array.isArray(this.plugin.settings.codexModelCatalog) ? this.plugin.settings.codexModelCatalog : [];
+    const cached = detectedModels.length;
+    const currentDetected = detectedModels.some((model) => model?.id === this.plugin.settings.codexModel);
+    const stale = this.codexModelCatalogIsStale();
+    const state = this.modelDiscoveryState || (cached
+      ? {
+        tone: stale || !currentDetected ? "stale" : "success",
+        message: `${stale ? "正在使用缓存" : "已检测"} ${cached} 个 Codex 模型。`,
+        detail: !currentDetected ? `当前模型 ${this.plugin.settings.codexModel} 未出现在本次目录中；执行时仍会交由 Codex 验证。` : null,
+      }
+      : { tone: "idle", message: "尚未完成自动检测；当前使用内置兼容列表。" });
+    this.modelDiscoveryStatusEl.empty();
+    for (const tone of ["idle", "loading", "success", "error", "stale"]) this.modelDiscoveryStatusEl.removeClass(`is-${tone}`);
+    this.modelDiscoveryStatusEl.addClass(`is-${state.tone}`);
+    this.modelDiscoveryStatusEl.createDiv({ text: state.message });
+    if (state.detail) this.modelDiscoveryStatusEl.createDiv({ cls: "knowledgeos-settings-state-detail", text: state.detail });
+  }
+
+  async refreshCodexModels(button, force) {
+    if (this.modelDiscoveryRunning) return;
+    if (!force && !this.codexModelCatalogIsStale()) return;
+    this.modelDiscoveryRunning = true;
+    button?.setDisabled(true);
+    this.modelDiscoveryState = { tone: "loading", message: "正在从本机 Codex 检测可用模型…" };
+    this.renderModelDiscoveryState();
+    const result = await this.plugin.client.invoke("listCodexModels", {});
+    this.modelDiscoveryRunning = false;
+    button?.setDisabled(false);
+    if (!result.ok || !Array.isArray(result.data?.models)) {
+      const hasCache = Array.isArray(this.plugin.settings.codexModelCatalog) && this.plugin.settings.codexModelCatalog.length > 0;
+      this.modelDiscoveryState = {
+        tone: hasCache ? "stale" : "error",
+        message: hasCache ? "模型检测失败，继续使用上次缓存。" : "模型检测失败，继续使用内置兼容列表。",
+        detail: result.error?.message || "请确认 Codex CLI 已登录且支持 App Server。",
+      };
+      this.renderModelDiscoveryState();
+      return;
+    }
+    this.plugin.settings.codexModelCatalog = result.data.models;
+    this.plugin.settings.codexModelsFetchedAt = result.data.detected_at || new Date().toISOString();
+    await this.plugin.saveSettings();
+    this.modelDiscoveryState = null;
+    this.display();
   }
 
   createSection(root, title, description) {
@@ -3141,7 +3333,13 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
 
 module.exports = class KnowledgeOSPlugin extends Plugin {
   async onload() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const savedSettings = await this.loadData() || {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    if (!savedSettings.codexReasoningEffort && (!savedSettings.codexModel || savedSettings.codexModel === "gpt-5.4-mini")) {
+      this.settings.codexModel = "gpt-5.6-terra";
+      this.settings.codexReasoningEffort = "medium";
+      await this.saveData(this.settings);
+    }
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
     this.client = new CoreCommandClient(this.settings);
     this.taskClient = new CoreCommandClient(this.settings);
@@ -3199,7 +3397,12 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     if (this.taskCycleRunning) return;
     this.taskCycleRunning = true;
     try {
-      const response = await this.taskClient.invoke("runTaskCycle", { startup, limit: 2, network_probe_url: this.settings.networkProbeUrl || undefined });
+      const response = await this.taskClient.invoke("runTaskCycle", {
+        startup, limit: 2,
+        network_probe_url: this.settings.networkProbeUrl || undefined,
+        codex_model: this.settings.codexModel,
+        codex_reasoning_effort: this.settings.codexReasoningEffort,
+      });
       if (!response.ok) return;
       if (!taskCycleChanged(response.data)) return;
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) await leaf.view.refresh({ background: true });

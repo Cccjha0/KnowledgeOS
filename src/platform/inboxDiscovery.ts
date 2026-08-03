@@ -21,6 +21,7 @@ export interface InboxStateRecord extends JsonObject {
   error: string | null;
   run_id: string | null;
   plan_id: string | null;
+  task_id: string | null;
   result: JsonValue;
   updated_at: string;
 }
@@ -50,6 +51,7 @@ export interface InboxItemView extends JsonObject {
   retryable: boolean;
   error: string | null;
   review_after: string | null;
+  task_id: string | null;
   available_actions: string[];
 }
 
@@ -173,6 +175,7 @@ async function inspectItem(
     processor, suggested_module_id: suggestedModule, suggested_instance_id: suggestedInstance,
     auto_route_threshold: moduleThreshold(modules.find((entry) => entry.data.id === suggestedModule)),
     retryable: state === "failed", error: interrupted ? "Previous processing was interrupted; explicit retry is required." : stored?.error ?? null, review_after: stored?.review_after ?? null,
+    task_id: stored?.task_id ?? null,
     available_actions: availableActions(state),
   };
 }

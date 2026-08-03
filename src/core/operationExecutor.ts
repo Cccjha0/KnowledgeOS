@@ -260,8 +260,10 @@ async function executeOperation(vaultRoot: string, operation: Operation): Promis
   if (operation.type === "update-frontmatter") {
     const document = parseMarkdown(vaultRoot, target);
     const patch = requireObject(operation.payload.patch, operation, "patch");
-    assertOwnedMutation(document.data, { actor: operation.payload.actor === "ai" ? "ai" : operation.payload.actor === "user" ? "user" : "system", fields: Object.keys(patch), reviewId: operation.requires_review_id });
-    const data = deepMerge(document.data, patch); const replaceTopLevel = Array.isArray(operation.payload.replace_top_level) ? operation.payload.replace_top_level.filter((value): value is string => typeof value === "string") : [];
+    const base = structuredClone(document.data); const removeTopLevel = Array.isArray(operation.payload.remove_top_level) ? operation.payload.remove_top_level.filter((value): value is string => typeof value === "string") : [];
+    assertOwnedMutation(document.data, { actor: operation.payload.actor === "ai" ? "ai" : operation.payload.actor === "user" ? "user" : "system", fields: [...new Set([...Object.keys(patch), ...removeTopLevel])], reviewId: operation.requires_review_id });
+    for (const key of removeTopLevel) delete base[key];
+    const data = deepMerge(base, patch); const replaceTopLevel = Array.isArray(operation.payload.replace_top_level) ? operation.payload.replace_top_level.filter((value): value is string => typeof value === "string") : [];
     for (const key of replaceTopLevel) if (key in patch) data[key] = structuredClone(patch[key]!);
     const updated: MarkdownDocument = { data, content: document.content };
     if (typeof operation.payload.schema_id === "string") validateSchema(vaultRoot, operation.payload.schema_id, updated.data);

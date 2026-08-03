@@ -137,8 +137,13 @@
 .knowledgeos-review-center .knowledgeos-review-filters input { width: 100%; }
 .knowledgeos-review-center .knowledgeos-review-more-filters { margin-top: var(--size-4-2); }
 .knowledgeos-review-center .knowledgeos-review-more-filters > summary { color: var(--text-muted); cursor: pointer; font-size: var(--font-ui-small); font-weight: 600; padding: var(--size-4-1) 0; width: fit-content; }
-.knowledgeos-review-center .knowledgeos-review-advanced-filters { background: var(--background-secondary); border-radius: var(--radius-s); display: grid; gap: var(--size-4-3); grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); margin-top: var(--size-4-2); padding: var(--size-4-3); }
+.knowledgeos-review-center .knowledgeos-review-advanced-filters { background: var(--background-secondary); border-radius: var(--radius-s); display: grid; gap: var(--size-4-3); grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: var(--size-4-2); padding: var(--size-4-3); }
 .knowledgeos-review-center .knowledgeos-review-filter-actions { align-items: end; display: flex; }
+.knowledgeos-review-center .knowledgeos-review-filter-actions button { width: 100%; }
+.knowledgeos-review-center.is-review-detail .knowledgeos-review-header,
+.knowledgeos-review-center.is-review-detail .knowledgeos-review-summary,
+.knowledgeos-review-center.is-review-detail .knowledgeos-review-filters,
+.knowledgeos-review-center.is-review-detail .knowledgeos-review-partial { display: none; }
 .knowledgeos-review-center .knowledgeos-review-partial { align-items: center; background: var(--background-secondary); border-left: 3px solid var(--text-warning); color: var(--text-normal); display: flex; font-size: var(--font-ui-small); justify-content: space-between; line-height: 1.5; margin-bottom: var(--size-4-3); padding: var(--size-4-2) var(--size-4-3); }
 .knowledgeos-review-center .knowledgeos-review-partial:empty { display: none; }
 .knowledgeos-review-center .knowledgeos-review-partial button { flex: 0 0 auto; margin-left: var(--size-4-3); }
@@ -162,6 +167,9 @@
 .knowledgeos-review-center .knowledgeos-review-item-context { align-items: center; color: var(--text-faint); display: flex; flex-wrap: wrap; font-size: var(--font-ui-smaller); gap: var(--size-4-2); margin-top: var(--size-4-2); }
 .knowledgeos-review-center .knowledgeos-review-row-warning { border-left: 3px solid var(--text-warning); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; margin-top: var(--size-4-2); padding-left: var(--size-4-2); }
 .knowledgeos-review-center .knowledgeos-review-row-warning.is-error { border-left-color: var(--text-error); color: var(--text-error); }
+.knowledgeos-review-center .knowledgeos-review-row-progress { border-left: 3px solid var(--interactive-accent); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; margin-top: var(--size-4-2); padding-left: var(--size-4-2); }
+.knowledgeos-review-center .knowledgeos-review-item.is-applying { opacity: .72; }
+.knowledgeos-review-center .knowledgeos-review-item.is-applying .knowledgeos-review-item-title { color: var(--text-muted); cursor: progress; }
 .knowledgeos-review-center .knowledgeos-review-load-more { margin-top: var(--size-4-4); }
 .knowledgeos-review-center .knowledgeos-review-empty { align-items: flex-start; color: var(--text-muted); display: flex; flex-direction: column; padding: var(--size-4-6) 0; }
 .knowledgeos-review-center .knowledgeos-review-empty-icon { color: var(--text-accent); display: inline-flex; margin-bottom: var(--size-4-2); }
@@ -218,7 +226,6 @@
   .knowledgeos-review-center .knowledgeos-page-header { align-items: stretch; flex-direction: column; gap: var(--size-4-2); }
   .knowledgeos-review-center .knowledgeos-header-actions { justify-content: flex-start; }
   .knowledgeos-review-center .knowledgeos-review-primary-filters,
-  .knowledgeos-review-center .knowledgeos-review-advanced-filters,
   .knowledgeos-review-center .knowledgeos-review-comparison { grid-template-columns: 1fr; }
   .knowledgeos-review-center .knowledgeos-review-item-heading { grid-template-columns: 1fr; }
   .knowledgeos-review-center .knowledgeos-review-item-state { margin-top: var(--size-4-1); }
@@ -233,6 +240,7 @@
   .knowledgeos-review-center .knowledgeos-review-actions button:last-child:not(.mod-cta) { margin-left: 0; }
 }
 @container knowledgeos-review (max-width: 20rem) {
+  .knowledgeos-review-center .knowledgeos-review-advanced-filters { grid-template-columns: 1fr; }
   .knowledgeos-review-center .knowledgeos-review-item-context .knowledgeos-time { display: none; }
   .knowledgeos-review-center .knowledgeos-review-impact-facts { flex-direction: column; gap: var(--size-4-1); }
 }

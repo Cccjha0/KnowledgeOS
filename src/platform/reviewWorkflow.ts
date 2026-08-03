@@ -429,7 +429,6 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
   const runId = await allocateId(vaultRoot, "RUN");
   const tracedItem: ReviewItem = { ...located.item, evidence: await materializeReviewEvidence(vaultRoot, located.item, fieldFromReview(located.item), decidedAt) };
   const plan = buildReviewPlan(tracedItem, decision, record, { taskId, planId, runId, sourceEvidence: located.item.evidence });
-  validateSchema(vaultRoot, SCHEMAS.plan, plan);
   const planAbsolute = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
   await writeJsonAtomic(planAbsolute, plan);
   const snapshot = await createGitSnapshot(vaultRoot, runId);

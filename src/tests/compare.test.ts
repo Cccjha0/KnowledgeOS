@@ -90,3 +90,43 @@ test("critical change creates review and does not overwrite fact", async () => {
   const facts = result.frontmatter_patch.facts as Record<string, { value: boolean }>;
   assert.equal(facts.application_open?.value, false);
 });
+
+test("record-level aliases do not create duplicate facts or reviews", async () => {
+  const incoming = report(false);
+  incoming.findings = {
+    course_code: { value: "C6007", status: "confirmed", confidence: 0.99, source_ids: ["SRC-001"], notes: "official code" },
+    verified_date: { value: "2026-07-27", status: "confirmed", confidence: 0.99, source_ids: ["SRC-001"], notes: "checked today" },
+    intake_month: { value: "February", status: "confirmed", confidence: 0.98, source_ids: ["SRC-001"], notes: "February intake" },
+    intake_term: { value: "2027 Semester 1", status: "confirmed", confidence: 0.98, source_ids: ["SRC-001"], notes: "semester one" },
+  };
+  const result = await compareApplicationUpdate(baseRecord, incoming, {
+    targetRecordPath: "Records/Monash-C6007.md", reportReference: "[[Research/report]]",
+    now: "2026-07-27T06:00:00.000Z", allocateReviewId: async () => "REV-2026-000099",
+  });
+  assert.equal(result.review_items.length, 0);
+  assert.equal(result.field_changes.every((change) => change.action === "no-change"), true);
+  const facts = result.frontmatter_patch.facts as Record<string, unknown>;
+  assert.equal("course_code" in facts, false);
+  assert.equal("verified_date" in facts, false);
+  assert.equal("intake_month" in facts, false);
+  assert.equal("intake_term" in facts, false);
+});
+
+test("declared informational facts auto-update only with strong confirmed evidence", async () => {
+  const incoming = report(false);
+  incoming.findings = {
+    campus: { value: "Clayton", status: "confirmed", confidence: 0.97, source_ids: ["SRC-001"], notes: "official campus" },
+    accreditation: { value: "ACS", status: "confirmed", confidence: 0.9, source_ids: ["SRC-001"], notes: "low confidence extraction" },
+    unexpected_field: { value: "keep in report", status: "confirmed", confidence: 1, source_ids: ["SRC-001"], notes: "not in contract" },
+  };
+  const result = await compareApplicationUpdate(baseRecord, incoming, {
+    targetRecordPath: "Records/Monash-C6007.md", reportReference: "[[Research/report]]",
+    now: "2026-07-27T06:00:00.000Z", allocateReviewId: async () => "REV-2026-000099",
+  });
+  assert.equal(result.review_items.length, 0);
+  assert.deepEqual(result.field_changes.map((change) => change.action), ["auto-update", "ignore", "ignore"]);
+  const facts = result.frontmatter_patch.facts as Record<string, { value: unknown }>;
+  assert.equal(facts.campus?.value, "Clayton");
+  assert.equal("accreditation" in facts, false);
+  assert.equal("unexpected_field" in facts, false);
+});

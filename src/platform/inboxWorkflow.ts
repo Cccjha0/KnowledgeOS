@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { ProcessInboxBatchParams, ProcessInboxItemParams } from "../api/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
-import { ensureDir, exists, fromVaultPath, writeJsonAtomic } from "../core/files.js";
+import { ensureDir, exists, fromVaultPath, sha256File, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { writeRunLog } from "../core/logs.js";
@@ -15,6 +15,8 @@ import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types
 import { processApplicationReport } from "./applicationWorkflow.js";
 import { rebuildTodayDashboard } from "./dashboard.js";
 import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
+import { RuntimeRepository } from "../runtime/repository.js";
+import type { RuntimeTask } from "../runtime/domain.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -52,9 +54,58 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   return {
     schema_version: 1, item_id: item.item_id, path: item.path, state,
     attempts: Number(overrides.attempts ?? 0), review_after: overrides.review_after ?? null,
-    error: overrides.error ?? null, run_id: overrides.run_id ?? null, plan_id: overrides.plan_id ?? null,
+    error: overrides.error ?? null, run_id: overrides.run_id ?? null, plan_id: overrides.plan_id ?? null, task_id: overrides.task_id ?? null,
     result: overrides.result ?? null, updated_at: new Date().toISOString(),
   };
+}
+
+function inboxAiWorkflow(moduleId: string): string | null {
+  return moduleId === "application-tracker" ? "application:process-inbox-ai" : null;
+}
+
+async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
+  const workflow = inboxAiWorkflow(moduleId);
+  if (!workflow || !instanceId || item.extension !== ".md") return null;
+  const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const result = repository.createTask({
+      job_id: `${moduleId}.inbox-processing`, module: moduleId, instance_id: instanceId,
+      task_type: "workflow", workflow, priority: "normal", scheduled_for: new Date().toISOString(),
+      resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
+      trigger: { type: "inbox", item_id: item.item_id, source_file: item.path, workflow_id: "process-research-report", workflow_version: "1.0.0" },
+      catch_up_policy: "latest", idempotency_key: `inbox:${item.item_id}:${sourceHash}`,
+      max_attempts: 3, payload: {
+        item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
+        ...(codexModel?.trim() ? { codex_model: codexModel.trim() } : {}),
+        ...(codexReasoningEffort?.trim() ? { codex_reasoning_effort: codexReasoningEffort.trim() } : {}),
+      },
+      concurrency_key: `inbox:${item.item_id}`, concurrency_policy: "forbid",
+    });
+    let task = result.task;
+    if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
+    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : "waiting-for-ai";
+    await writeInboxState(vaultRoot, stateFor(item, itemState, {
+      attempts: task.attempt_count, task_id: task.task_id, error: task.last_error?.message ?? null,
+      result: { status: task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated },
+    }));
+    return task;
+  } finally { repository.close(); }
+}
+
+export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: string, codexReasoningEffort?: string): Promise<{ created: string[]; deduplicated: number; checked: number }> {
+  const output = { created: [] as string[], deduplicated: 0, checked: 0 };
+  for (const item of await discoverInboxItems(vaultRoot)) {
+    if (!item.requires_ai || item.scope !== "instance" || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
+    const moduleId = item.suggested_module_id; const instanceId = item.suggested_instance_id;
+    if (!moduleId || !instanceId || !inboxAiWorkflow(moduleId)) continue;
+    output.checked += 1;
+    const previousTaskId = item.task_id;
+    const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, false, codexModel, codexReasoningEffort);
+    if (!task) continue;
+    if (previousTaskId === task.task_id) output.deduplicated += 1; else output.created.push(task.task_id);
+  }
+  return output;
 }
 
 async function acquireItemLock(vaultRoot: string, itemId: string): Promise<FileHandle> {
@@ -157,15 +208,21 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
   const lock = await acquireItemLock(vaultRoot, item.item_id);
   try {
     await writeInboxState(vaultRoot, stateFor(item, "processing", { attempts: action === "retry" ? 2 : 1 }));
+    if (item.processor === "application-research-report" && moduleId === "application-tracker" && item.task_id) {
+      const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, true, params.codex_model, params.codex_reasoning_effort);
+      if (task) return { status: task.status, ui_state: task.status === "queued" ? "waiting-for-ai" : task.status, item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id, reason: "The normalized report will resume through its existing Task." };
+    }
     if (item.processor === "application-research-report" && moduleId === "application-tracker") {
       const result = await processApplicationReport({ vaultRoot, reportPath: item.path });
-      await writeInboxState(vaultRoot, stateFor(item, "processed", { attempts: 1, run_id: result.runId, result: result as unknown as JsonValue }));
+      await writeInboxState(vaultRoot, stateFor(item, "processed", { attempts: 1, run_id: result.runId, task_id: item.task_id, result: result as unknown as JsonValue }));
       return { status: result.status, item_id: item.item_id, processor: item.processor, result: result as unknown as JsonValue };
     }
     if (item.scope === "global" || action === "route" || moduleId !== item.source_module || instanceId !== item.instance_id) {
       return await executeRoute(vaultRoot, item, moduleId, instanceId);
     }
-    const waiting = { status: "waiting-for-ai", ui_state: "waiting-for-ai", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, reason: "This module workflow requires a Codex handoff; no file change was executed." };
+    const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, action === "retry" || item.state === "waiting-for-ai", params.codex_model, params.codex_reasoning_effort);
+    if (task) return { status: task.status, ui_state: task.status === "queued" ? "waiting-for-ai" : task.status, item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id, reason: task.status === "queued" ? "AI Task is queued and will run when Codex is available." : "AI Task is waiting for Codex." };
+    const waiting = { status: "waiting-for-ai", ui_state: "waiting-for-ai", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, reason: "This module workflow requires a Codex handoff, but no managed AI handler is available for this module." };
     await writeInboxState(vaultRoot, stateFor(item, "waiting-for-ai", { attempts: 1, result: waiting }));
     return waiting;
   } catch (error) {

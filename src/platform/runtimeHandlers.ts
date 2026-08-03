@@ -1,7 +1,9 @@
 import type { RuntimeHandler } from "../runtime/worker.js";
 import { syncDueResearchRequests } from "./researchRequestWorkflow.js";
+import { processApplicationInboxAi } from "./inboxAiWorkflow.js";
 
 export const platformRuntimeHandlers: Record<string, RuntimeHandler> = {
+  "application:process-inbox-ai": processApplicationInboxAi,
   "application:sync-due-research": async ({ vaultRoot }) => {
     const result = await syncDueResearchRequests(vaultRoot);
     return {

@@ -17,7 +17,7 @@ export interface WorkerResult {
   metrics?: JsonObject;
 }
 
-export type RuntimeHandler = (context: { vaultRoot: string; task: RuntimeTask; checkpoint: () => void }) => Promise<WorkerResult>;
+export type RuntimeHandler = (context: { vaultRoot: string; task: RuntimeTask; runId: string; checkpoint: () => void }) => Promise<WorkerResult>;
 
 const coreHandlers: Record<string, RuntimeHandler> = {
   "core:build-today": async ({ vaultRoot }) => {
@@ -82,7 +82,7 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
   }
   try {
     checkpoint();
-    const result = await handler({ vaultRoot, task, checkpoint });
+    const result = await handler({ vaultRoot, task, runId: run.run_id, checkpoint });
     checkpoint();
     clearInterval(heartbeat);
     const finished = repository.finishRun(run.run_id, {

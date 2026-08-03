@@ -3,8 +3,6 @@ from pathlib import Path
 import json
 import sys
 import yaml
-from jsonschema import Draft202012Validator, FormatChecker
-from referencing import Registry, Resource
 
 
 def fail(message: str, details=None, code: int = 2):
@@ -49,6 +47,11 @@ def dump_markdown(data, content: str):
 
 
 def load_schemas(engine_root: Path):
+    # Markdown and YAML parsing are the hot path for every view and review.
+    # Import the considerably heavier schema stack only for validation commands.
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+
     schemas = {}
     for schema_root in (engine_root / "core/schemas", engine_root / "modules"):
         for path in schema_root.rglob("*.schema.json"):
@@ -104,6 +107,8 @@ def main():
         return
 
     if command == "parse-validate-yaml-batch":
+        from jsonschema import Draft202012Validator, FormatChecker
+
         engine_root = Path(sys.argv[2]).resolve()
         payload = json.load(sys.stdin)
         if not isinstance(payload, list):
@@ -152,6 +157,8 @@ def main():
         return
 
     if command == "validate":
+        from jsonschema import Draft202012Validator, FormatChecker
+
         engine_root = Path(sys.argv[2]).resolve()
         schema_id = sys.argv[3]
         data = json.load(sys.stdin)

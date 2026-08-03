@@ -16,7 +16,7 @@ import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
-import { processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
+import { materializeInboxAiTasks, processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -27,6 +27,7 @@ import { evaluateScheduler } from "../runtime/scheduler.js";
 import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
 import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
+import { listCodexModels } from "../runtime/codexCli.js";
 import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
 import { validateModule } from "../modules/validator.js";
 import type { ModuleValidationReport } from "../modules/types.js";
@@ -430,6 +431,11 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "runTaskCycle") {
     const jobs = await registerDeclaredJobs(vaultRoot);
+    const inbox = await materializeInboxAiTasks(
+      vaultRoot,
+      typeof params.codex_model === "string" ? params.codex_model : undefined,
+      typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
+    );
     const resources = await probeRuntimeResources(vaultRoot, {
       networkProbeUrl: typeof params.network_probe_url === "string" ? params.network_probe_url : undefined,
       codexExecutable: typeof params.codex_executable === "string" ? params.codex_executable : undefined,
@@ -438,7 +444,11 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
     const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2, handlers: platformRuntimeHandlers });
-    return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
+    return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
+  }
+  if (method === "listCodexModels") {
+    const models = await listCodexModels(typeof params.codex_executable === "string" ? params.codex_executable : undefined);
+    return { models, detected_at: new Date().toISOString(), source: "codex-app-server" } as unknown as JsonValue;
   }
   if (method === "getModules") {
     const routing = await discoverRoutingContext(ENGINE_ROOT, vaultRoot);

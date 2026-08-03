@@ -1,4 +1,10 @@
 prompts:
+  normalize-application-report:
+    active_version: 1.0.0
+    path: normalize-report/v1.0.0.md
+    versions: { 1.0.0: normalize-report/v1.0.0.md }
+    status: active
+    quality: { max_schema_failure_rate: 0.02, max_review_rate: 0.60, max_rejection_rate: 0.20, minimum_fixture_pass_rate: 1.0, protected_invariants: [no-fabricated-numbers, preserve-user-facts] }
   match-capture:
     active_version: 1.0.0
     path: classify/v1.0.0.md

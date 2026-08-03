@@ -8,6 +8,8 @@ import { exists, listFilesRecursive, readJson } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
+import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
+import { RuntimeRepository } from "../runtime/repository.js";
 
 async function writeCapture(vault: string, filename: string, frontmatter: string[], body = "Inbox test"): Promise<string> {
   const target = path.join(vault, "00-Inbox", filename);
@@ -82,6 +84,45 @@ test("Inbox routing uses an Operation Plan and module items wait for Codex inste
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("application Inbox AI work creates one durable Task and repeated Continue reuses it", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-ai-task-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceDirectory = path.join(vault, "90-System", "Instances", "applications-2027");
+    await fs.mkdir(instanceDirectory, { recursive: true });
+    await fs.writeFile(path.join(instanceDirectory, "instance.yaml"), [
+      "instance_id: applications-2027", "module_id: application-tracker", "status: active", "display_name: Applications 2027",
+      "content_root: 20-Workspace/Applications/applications-2027", "inbox_path: 20-Workspace/Applications/applications-2027/Inbox",
+      'created: "2026-08-03T00:00:00Z"', 'updated: "2026-08-03T00:00:00Z"', "",
+    ].join("\n"), "utf8");
+    const inbox = path.join(vault, "20-Workspace", "Applications", "applications-2027", "Inbox");
+    await fs.mkdir(inbox, { recursive: true });
+    await fs.writeFile(path.join(inbox, "unstructured-report.md"), "---\ntitle: Application research\n---\n\nOfficial facts to normalize.\n", "utf8");
+
+    const materialized = await materializeInboxAiTasks(vault, "gpt-5.6-terra", "high");
+    assert.equal(materialized.created.length, 1);
+    const listed = await invokeCommandApi({ vaultRoot: vault, requestId: "AI-LIST", method: "listInboxItems", params: {} });
+    const item = ((listed.data as JsonObject).items as JsonObject[])[0]!;
+    assert.equal(item.state, "waiting-for-ai");
+    assert.equal(typeof item.task_id, "string");
+    let repository = await RuntimeRepository.open(vault);
+    assert.equal(repository.getTask(String(item.task_id))?.payload.codex_model, "gpt-5.6-terra");
+    assert.equal(repository.getTask(String(item.task_id))?.payload.codex_reasoning_effort, "high");
+    repository.close();
+
+    const first = await invokeCommandApi({ vaultRoot: vault, requestId: "AI-CONTINUE-1", method: "processInboxItem", params: { item_id: String(item.item_id), action: "process" } });
+    const second = await invokeCommandApi({ vaultRoot: vault, requestId: "AI-CONTINUE-2", method: "processInboxItem", params: { item_id: String(item.item_id), action: "process" } });
+    assert.equal((first.data as JsonObject).task_id, item.task_id);
+    assert.equal((second.data as JsonObject).task_id, item.task_id);
+    repository = await RuntimeRepository.open(vault);
+    assert.equal(repository.listTasks().filter((task) => task.payload.item_id === item.item_id).length, 1);
+    repository.close();
+    const again = await materializeInboxAiTasks(vault);
+    assert.equal(again.created.length, 0);
+    assert.equal(again.deduplicated, 1);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("Inbox defer, ignore and explicit high-confidence batch preserve low-confidence work", async () => {

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { classifyCodexFailure, runManagedCodexStep } from "../runtime/codexAdapter.js";
+import { resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 
 test("managed Codex step repairs invalid structured output and audits each attempt", async () => {
@@ -27,4 +28,10 @@ test("Codex failures distinguish authentication, model, limits, connectivity, an
   assert.equal(classifyCodexFailure("model unavailable").code, "CODEX_MODEL_UNAVAILABLE");
   assert.equal(classifyCodexFailure("connection timeout").code, "CODEX_CONNECTION_FAILED");
   assert.equal(classifyCodexFailure("schema invalid output").code, "CODEX_OUTPUT_INVALID");
+});
+
+test("Codex reasoning effort accepts catalog values and rejects unsafe custom values", () => {
+  assert.equal(resolveCodexReasoningEffort("high"), "high");
+  assert.equal(resolveCodexReasoningEffort(" ultra "), "ultra");
+  assert.throws(() => resolveCodexReasoningEffort("high; delete-all"), /Unsupported Codex reasoning effort/);
 });

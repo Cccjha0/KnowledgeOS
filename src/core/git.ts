@@ -56,18 +56,18 @@ export async function createGitSnapshot(vaultRoot: string, runId: string): Promi
     return head;
   }
 
-  git(vaultRoot, ["config", "--local", "user.name", "PKB Local Agent"]);
-  git(vaultRoot, ["config", "--local", "user.email", "pkb-local@example.invalid"]);
   git(vaultRoot, ["add", "-A"]);
-  const staged = git(vaultRoot, ["diff", "--cached", "--quiet"], true);
-  void staged;
   const status = spawnSync(
     "git",
     ["-c", `safe.directory=${vaultRoot}`, "diff", "--cached", "--quiet"],
     { cwd: vaultRoot },
   );
   if (status.status === 1) {
-    git(vaultRoot, ["commit", "-m", `PKB snapshot before ${runId}`]);
+    git(vaultRoot, [
+      "-c", "user.name=PKB Local Agent",
+      "-c", "user.email=pkb-local@example.invalid",
+      "commit", "-m", `PKB snapshot before ${runId}`,
+    ]);
   }
 
   const head = git(vaultRoot, ["rev-parse", "HEAD"], true);
