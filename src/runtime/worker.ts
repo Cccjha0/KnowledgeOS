@@ -7,6 +7,7 @@ import { doctorVault, initializeVault } from "../core/vault.js";
 import type { RuntimeError, RuntimeTask } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
 import { runExternalLinkAudit, runQualityAudit } from "../quality/audit.js";
+import { runModuleWorkflow } from "../modules/workflowRunner.js";
 
 export interface WorkerResult {
   completion_reason: string;
@@ -62,8 +63,8 @@ function runtimeError(error: unknown): RuntimeError {
   };
 }
 
-export async function executeTask(vaultRoot: string, repository: RuntimeRepository, task: RuntimeTask, workerId: string, resourcesChecked: JsonObject, handlers: Record<string, RuntimeHandler> = {}): Promise<RuntimeTask> {
-  const handler = handlers[task.workflow] ?? coreHandlers[task.workflow];
+export async function executeTask(vaultRoot: string, repository: RuntimeRepository, task: RuntimeTask, workerId: string, resourcesChecked: JsonObject, handlers: Record<string, RuntimeHandler> = {}, moduleWorkflowHandler: RuntimeHandler = runModuleWorkflow): Promise<RuntimeTask> {
+  const handler = handlers[task.workflow] ?? coreHandlers[task.workflow] ?? (task.task_type === "workflow" && task.module !== "core" ? moduleWorkflowHandler : undefined);
   const run = repository.startRun(task.task_id, workerId, resourcesChecked);
   repository.recordMetricEvent({ idempotency_key: `${run.run_id}:started`, event_type: "task.started", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: run.started_at, dimensions: { priority: task.priority, trigger_type: task.trigger.type ?? "unknown" }, values: {} });
   const started = performance.now();

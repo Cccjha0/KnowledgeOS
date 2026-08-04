@@ -21,6 +21,7 @@
     "source_refs": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" } },
     "created_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
     "schema_version": { "const": 1 },
-    "_ownership": { "type": "object" }
+    "_ownership": { "type": "object" },
+    "generation": { "type": "object" }
   }
 }

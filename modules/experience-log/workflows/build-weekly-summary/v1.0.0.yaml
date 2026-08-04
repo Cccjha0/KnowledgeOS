@@ -12,8 +12,15 @@ steps:
   - id: summarize
     uses: codex.prompt
     with:
-      prompt: prompts/weekly-summary.md
-      output_schema: schemas/weekly-summary.schema.json
+      prompt_id: weekly-summary
+      output_schema: weekly-summary
   - id: build-plan
     uses: core.build-operation-plan
+    with:
+      output: summarize
+      output_schema: weekly-summary
+      target: "{instance.content_root}/Weekly/{schedule.iso_week}.md"
+      template: templates/weekly-summary.md
+      idempotency_key: "experience-log:{instance.instance_id}:weekly:{schedule.iso_week}"
+      summary: "Create {schedule.iso_week} experience weekly summary"
 outputs: [operation_plan, dashboard_items, events]

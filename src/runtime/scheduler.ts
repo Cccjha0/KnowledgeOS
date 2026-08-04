@@ -73,7 +73,7 @@ export async function evaluateScheduler(vaultRoot: string, now = new Date()): Pr
       for (const entry of groups) {
         const idempotency = `${job.job_id}:${entry.window}`;
         const result = repository.createTask({
-          job_id: job.job_id, module: job.module, task_type: job.task_type, workflow: job.workflow, priority: job.priority,
+          job_id: job.job_id, module: job.module, instance_id: typeof job.trigger.instance_id === "string" ? job.trigger.instance_id : null, task_type: job.task_type, workflow: job.workflow, priority: job.priority,
           scheduled_for: entry.at.toISOString(), resources: job.resources, trigger: { ...job.trigger, window: entry.window },
           catch_up_policy: policy as "none" | "latest" | "all" | "aggregate" | "skip-if-stale", idempotency_key: idempotency,
           max_attempts: Number(job.retry.max_attempts ?? 3), payload: policy === "aggregate" ? { windows: due.map((item) => item.window) } : { window: entry.window },

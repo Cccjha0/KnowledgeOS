@@ -8,8 +8,6 @@ steps:
     uses: core.validate-capture
   - id: parse-entry
     uses: core.parse-structured-document
-    with:
-      output_schema: schemas/experience-entry.schema.json
   - id: collect-same-day
     uses: core.find-by-fields
     with:
@@ -18,8 +16,15 @@ steps:
   - id: structure-daily-log
     uses: codex.prompt
     with:
-      prompt: prompts/structure-daily-log.md
-      output_schema: schemas/daily-log.schema.json
+      prompt_id: normalize-daily-log
+      output_schema: daily-log
   - id: build-plan
     uses: core.build-operation-plan
+    with:
+      output: structure-daily-log
+      output_schema: daily-log
+      target: "{instance.content_root}/Daily/{schedule.date}.md"
+      template: templates/daily-log.md
+      idempotency_key: "experience-log:{instance.instance_id}:daily:{schedule.date}"
+      summary: "Create {schedule.date} experience daily log"
 outputs: [operation_plan, dashboard_items, events]

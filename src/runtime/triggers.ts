@@ -17,7 +17,7 @@ function valueAt(root: JsonObject, dottedPath: string): JsonValue | undefined {
 
 function taskFor(job: JobDefinition, options: { idempotency: string; trigger: JsonObject; payload?: JsonObject; instanceId?: string | null; scheduledFor?: string }): CreateTaskInput {
   return {
-    job_id: job.job_id, module: job.module, instance_id: options.instanceId ?? null,
+    job_id: job.job_id, module: job.module, instance_id: options.instanceId ?? (typeof job.trigger.instance_id === "string" ? job.trigger.instance_id : null),
     task_type: job.task_type, workflow: job.workflow, priority: job.priority,
     scheduled_for: options.scheduledFor, available_after: options.scheduledFor,
     resources: job.resources, trigger: options.trigger,

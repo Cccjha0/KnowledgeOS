@@ -70,12 +70,21 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   };
 }
 
-function inboxAiWorkflow(moduleId: string): string | null {
-  return moduleId === "application-tracker" ? "application:process-inbox-ai" : null;
+async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string } | null> {
+  // application-tracker predates the generic runner and retains its specialized
+  // handler. Every workflow module with a capture entrypoint uses the Core runner.
+  if (moduleId === "application-tracker") {
+    return { workflow: "application:process-inbox-ai", workflowId: "process-research-report", workflowVersion: "1.0.0" };
+  }
+  const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
+  if (!module) return null;
+  const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
+  if (typeof entryWorkflows?.capture !== "string") return null;
+  return { workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture" };
 }
 
 async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
-  const workflow = inboxAiWorkflow(moduleId);
+  const workflow = await inboxAiWorkflow(vaultRoot, moduleId);
   if (!workflow || !instanceId || item.extension !== ".md") return null;
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
   const repository = await RuntimeRepository.open(vaultRoot);
@@ -88,9 +97,13 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
       : ":deterministic";
     const result = repository.createTask({
       job_id: `${moduleId}.inbox-processing`, module: moduleId, instance_id: instanceId,
-      task_type: "workflow", workflow, priority: "normal", scheduled_for: new Date().toISOString(),
+      task_type: "workflow", workflow: workflow.workflow, priority: "normal", scheduled_for: new Date().toISOString(),
       resources: { filesystem: "required", network: "not-required", codex: item.requires_ai ? "required" : "not-required", user: "not-required" },
-      trigger: { type: "inbox", item_id: item.item_id, source_file: item.path, workflow_id: "process-research-report", workflow_version: "1.0.0" },
+      trigger: {
+        type: "inbox", item_id: item.item_id, source_file: item.path,
+        workflow_id: workflow.workflowId, workflow_version: workflow.workflowVersion,
+        ...(workflow.entrypoint ? { entrypoint: workflow.entrypoint } : {}),
+      },
       catch_up_policy: "latest", idempotency_key: `inbox:${item.item_id}:${sourceHash}:${item.lifecycle_revision}${executionProfile}`,
       max_attempts: 3, payload: {
         item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
@@ -115,7 +128,7 @@ export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: st
   for (const item of await discoverInboxItems(vaultRoot)) {
     if (item.scope !== "instance" || item.state === "empty" || item.blocked_by_open_editor || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
     const moduleId = item.suggested_module_id; const instanceId = item.suggested_instance_id;
-    if (!moduleId || !instanceId || !inboxAiWorkflow(moduleId)) continue;
+    if (!moduleId || !instanceId || !(await inboxAiWorkflow(vaultRoot, moduleId))) continue;
     output.checked += 1;
     const previousTaskId = item.task_id;
     const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, false, codexModel, codexReasoningEffort);

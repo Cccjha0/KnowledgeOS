@@ -18,6 +18,8 @@ export async function dispatchOnce(options: {
   limit?: number;
   workerId?: string;
   handlers?: Record<string, RuntimeHandler>;
+  /** Test seam; production uses the Core Module Workflow Runner. */
+  moduleWorkflowHandler?: RuntimeHandler;
 }): Promise<DispatchSummary> {
   const repository = await RuntimeRepository.open(options.vaultRoot);
   const summary: DispatchSummary = { considered: 0, completed: 0, failed: 0, waiting: 0, tasks: [] };
@@ -50,7 +52,7 @@ export async function dispatchOnce(options: {
         summary.tasks.push(waiting);
         continue;
       }
-      const result = await executeTask(options.vaultRoot, repository, task, options.workerId ?? `local-worker-${process.pid}`, gate.checked, options.handlers);
+      const result = await executeTask(options.vaultRoot, repository, task, options.workerId ?? `local-worker-${process.pid}`, gate.checked, options.handlers, options.moduleWorkflowHandler);
       if (result.status === "completed") summary.completed += 1;
       else if (result.status === "failed") summary.failed += 1;
       summary.tasks.push(result);

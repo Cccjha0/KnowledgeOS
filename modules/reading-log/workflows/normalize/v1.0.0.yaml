@@ -9,6 +9,10 @@ resources:
   codex: required
   user: not-required
 steps:
+- id: validate-capture
+  uses: core.validate-capture
+- id: parse-capture
+  uses: core.parse-structured-document
 - id: normalize
   uses: codex.prompt
   with:
@@ -16,6 +20,13 @@ steps:
     output_schema: https://pkb.local/schemas/reading-log/record.schema.json
 - id: plan
   uses: core.build-operation-plan
+  with:
+    output: normalize
+    output_schema: record
+    target: "{instance.content_root}/Notes/{task.payload.item_id}.md"
+    template: templates/record.md
+    idempotency_key: "reading-log:{instance.instance_id}:note:{task.payload.item_id}"
+    summary: "Create a reading note from Inbox capture"
 outputs:
 - operation_plan
 - dashboard_items

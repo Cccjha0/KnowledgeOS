@@ -29,6 +29,7 @@ function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | nul
   const id = String(raw.id);
   const instanceId = instance ? String(instance.instance_id) : null;
   const trigger = structuredClone(raw.trigger as JsonObject);
+  if (instanceId) trigger.instance_id = instanceId;
   if (typeof raw.workflow_id === "string") trigger.workflow_id = raw.workflow_id;
   if (typeof raw.workflow_version === "string") trigger.workflow_version = raw.workflow_version;
   if (trigger.timezone === "instance") trigger.timezone = String(instance?.timezone ?? "Asia/Shanghai");
@@ -84,7 +85,7 @@ export async function reconcileLifecycleTasks(vaultRoot: string, filter: { modul
       const result = repository.createTask({
         job_id: `experience-log.final-summary.${filter.instanceId}`, module: "experience-log", instance_id: filter.instanceId,
         task_type: "workflow", workflow: "experience-log:weekly-summary", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
-        trigger: { type: "event", source: "instance.completed" }, catch_up_policy: "none",
+        trigger: { type: "event", source: "instance.completed", workflow_id: "build-weekly-summary", workflow_version: "1.0.0" }, catch_up_policy: "none",
         idempotency_key: `experience-log:${filter.instanceId}:final-summary`, concurrency_key: `experience-log:${filter.instanceId}:summary`,
       });
       finalTaskId = result.task.task_id;
