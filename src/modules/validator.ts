@@ -12,6 +12,8 @@ const SUPPORTED_WORKFLOW_USES = new Set([
   "core.parse-structured-document",
   "core.find-by-fields",
   "codex.prompt",
+  "component.research-reconciliation",
+  "component.research-request-scheduler",
   "core.build-operation-plan",
 ]);
 
@@ -73,7 +75,17 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
       const workflowId = workflow.workflow_id ?? workflow.id;
       const workflowVersion = workflow.workflow_version ?? workflow.version;
       if (workflowId !== id || String(workflowVersion) !== version) checks.push(check("contracts", "WORKFLOW_METADATA_LEGACY", "warning", `${id} registry and file metadata should use workflow_id/workflow_version ${version}.`, relative));
-      for (const step of (workflow.steps as JsonObject[] | undefined) ?? []) if (typeof step.uses !== "string" || !SUPPORTED_WORKFLOW_USES.has(step.uses)) checks.push(check("permissions", "WORKFLOW_STEP_UNSUPPORTED", "fail", `${id} uses unsupported Core step ${String(step.uses)}.`, relative, true));
+      for (const step of (workflow.steps as JsonObject[] | undefined) ?? []) {
+        if (typeof step.uses !== "string" || !SUPPORTED_WORKFLOW_USES.has(step.uses)) {
+          checks.push(check("permissions", "WORKFLOW_STEP_UNSUPPORTED", "fail", `${id} uses unsupported Core step ${String(step.uses)}.`, relative, true));
+          continue;
+        }
+        if (step.uses.startsWith("component.")) {
+          const componentId = step.uses.slice("component.".length);
+          const dependencies = object(object(manifest.dependencies)?.components);
+          if (!dependencies || typeof dependencies[componentId] !== "string") checks.push(check("contracts", "WORKFLOW_COMPONENT_UNDECLARED", "fail", `${id} uses component ${componentId} without declaring it in dependencies.components.`, relative, true));
+        }
+      }
     }
   }
   checks.push(check("references", `MODULE_${section.toUpperCase()}_REGISTRY_VALID`, "pass", `${section} registry references resolve.`, registryRelative));

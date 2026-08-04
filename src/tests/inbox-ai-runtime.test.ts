@@ -8,7 +8,7 @@ import { exists, readJson, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { createProcessApplicationInboxAi } from "../platform/inboxAiWorkflow.js";
+import { createModuleWorkflowRunner } from "../modules/workflowRunner.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import { RuntimeRepository } from "../runtime/repository.js";
@@ -72,12 +72,13 @@ test("application Inbox AI Task completes through the managed Run and archives t
     const taskId = materialized.created[0]!;
     let repository = await RuntimeRepository.open(vault);
     const itemId = String(repository.getTask(taskId)?.payload.item_id);
+    assert.equal(repository.getTask(taskId)?.workflow, "module:application-tracker:capture");
     repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
     repository.close();
 
     let receivedModel: string | undefined;
     let receivedReasoningEffort: string | undefined;
-    const handler = createProcessApplicationInboxAi(async (options) => {
+    const runner = createModuleWorkflowRunner(async (options) => {
       receivedModel = options.model;
       receivedReasoningEffort = options.reasoningEffort;
       return ({
@@ -107,9 +108,9 @@ test("application Inbox AI Task completes through the managed Run and archives t
     const dispatched = await dispatchOnce({
       vaultRoot: vault,
       limit: 1,
-      handlers: { "application:process-inbox-ai": handler },
+      moduleWorkflowHandler: runner,
     });
-    assert.equal(dispatched.completed, 1);
+    assert.equal(dispatched.completed, 1, JSON.stringify(dispatched.tasks));
     assert.equal(dispatched.failed, 0);
     assert.equal(receivedModel, "gpt-5.6-terra");
     assert.equal(receivedReasoningEffort, "high");
@@ -147,7 +148,7 @@ test("application Inbox AI Task completes through the managed Run and archives t
     const restored = await dispatchOnce({
       vaultRoot: vault,
       limit: 1,
-      handlers: { "application:process-inbox-ai": handler },
+      moduleWorkflowHandler: runner,
     });
     assert.equal(restored.completed, 1);
     assert.equal(await exists(sourcePath), false);

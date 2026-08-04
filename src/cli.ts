@@ -6,7 +6,9 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
-import { processApplicationReport } from "./platform/applicationWorkflow.js";
+import { parseMarkdown } from "./core/bridge.js";
+import { toVaultPath } from "./core/files.js";
+import { executeModuleWorkflowNow } from "./modules/directInvocation.js";
 import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
 import { rebuildTodayDashboard } from "./platform/dashboard.js";
 import { startResearchRequest, syncDueResearchRequests } from "./platform/researchRequestWorkflow.js";
@@ -23,7 +25,6 @@ import { registerDeclaredJobs } from "./runtime/jobRegistry.js";
 import { reconcileStartup } from "./runtime/reconciler.js";
 import { evaluateScheduler } from "./runtime/scheduler.js";
 import { dispatchOnce } from "./runtime/dispatcher.js";
-import { platformRuntimeHandlers } from "./platform/runtimeHandlers.js";
 import { probeRuntimeResources } from "./runtime/resourceMonitor.js";
 import { materializeFieldDueJobs, materializeStartupJobs } from "./runtime/triggers.js";
 import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
@@ -355,11 +356,11 @@ async function main(): Promise<void> {
     if (!value) {
       throw new Error("缺少研究报告路径");
     }
-    const result = await processApplicationReport({
-      vaultRoot: parsed.vault,
-      reportPath: value,
-      dryRun: parsed.dryRun,
-    });
+    if (parsed.dryRun) throw new PkbError("DIRECT_WORKFLOW_DRY_RUN_UNSUPPORTED", "Use Inbox preview for a non-mutating application workflow preview.");
+    const reportPath = path.resolve(parsed.vault, value);
+    const document = parseMarkdown(parsed.vault, reportPath);
+    if (typeof document.data.instance_id !== "string") throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "A direct report invocation needs instance_id in frontmatter.");
+    const result = await executeModuleWorkflowNow({ vaultRoot: parsed.vault, moduleId: "application-tracker", instanceId: document.data.instance_id, entrypoint: "capture", sourceFile: toVaultPath(parsed.vault, reportPath) });
     console.log(JSON.stringify(result, null, 2));
     return;
   }
@@ -408,7 +409,7 @@ async function main(): Promise<void> {
       const startupTask = startup ? await materializeStartupJobs(parsed.vault) : null;
       const fieldDue = await materializeFieldDueJobs(parsed.vault);
       const preparation = startup ? await reconcileStartup(parsed.vault) : { scheduler: await evaluateScheduler(parsed.vault) };
-      const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2, handlers: platformRuntimeHandlers });
+      const dispatch = await dispatchOnce({ vaultRoot: parsed.vault, limit: 2 });
       return { jobs_registered: jobs.length, resources, startup_task: startupTask, field_due: fieldDue, preparation, dispatch };
     };
     if (subcommand === "startup") { console.log(JSON.stringify(await cycle(true), null, 2)); return; }

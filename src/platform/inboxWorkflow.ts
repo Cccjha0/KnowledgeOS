@@ -12,7 +12,6 @@ import { allocateId } from "../core/ids.js";
 import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
-import { processApplicationReport } from "./applicationWorkflow.js";
 import { assertMoveSourceNotOpen } from "./obsidianCoordination.js";
 import { rebuildTodayDashboard } from "./dashboard.js";
 import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
@@ -71,11 +70,6 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
 }
 
 async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string } | null> {
-  // application-tracker predates the generic runner and retains its specialized
-  // handler. Every workflow module with a capture entrypoint uses the Core runner.
-  if (moduleId === "application-tracker") {
-    return { workflow: "application:process-inbox-ai", workflowId: "process-research-report", workflowVersion: "1.0.0" };
-  }
   const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
   if (!module) return null;
   const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
@@ -278,15 +272,6 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
   const lock = await acquireItemLock(vaultRoot, item.item_id);
   try {
     await writeInboxState(vaultRoot, stateFor(item, "processing", { attempts: action === "retry" ? 2 : 1 }));
-    if (item.processor === "application-research-report" && moduleId === "application-tracker" && item.task_id) {
-      const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, true, params.codex_model, params.codex_reasoning_effort);
-      if (task) return { status: task.status, ui_state: task.status === "queued" ? "waiting-for-ai" : task.status, item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id, reason: "The normalized report will resume through its existing Task." };
-    }
-    if (item.processor === "application-research-report" && moduleId === "application-tracker") {
-      const result = await processApplicationReport({ vaultRoot, reportPath: item.path });
-      await writeInboxState(vaultRoot, stateFor(item, "processed", { attempts: 1, run_id: result.runId, task_id: item.task_id, result: result as unknown as JsonValue }));
-      return { status: result.status, item_id: item.item_id, processor: item.processor, result: result as unknown as JsonValue };
-    }
     if (item.scope === "global" || action === "route" || moduleId !== item.source_module || instanceId !== item.instance_id) {
       return await executeRoute(vaultRoot, item, moduleId, instanceId);
     }

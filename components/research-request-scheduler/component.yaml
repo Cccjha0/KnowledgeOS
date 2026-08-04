@@ -1,0 +1,5 @@
+id: research-request-scheduler
+version: 1.0.0
+maturity: beta
+owns_business_data: false
+capabilities: [field-due-request-planning]

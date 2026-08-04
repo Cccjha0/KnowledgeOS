@@ -3,12 +3,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
 import { PkbError } from "../core/errors.js";
-import { exists, fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
+import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
+import { writeReviewItems } from "../core/reviews.js";
 import type { JsonObject, JsonValue, OperationPlan } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
+import { prepareResearchReconciliation } from "../components/researchReconciliation.js";
+import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
+import { rebuildTodayDashboard } from "../platform/dashboard.js";
+import { writeInboxState } from "../platform/inboxDiscovery.js";
 import { runManagedCodexStep } from "../runtime/codexAdapter.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
@@ -19,6 +24,8 @@ const SUPPORTED_STEP_USES = new Set([
   "core.parse-structured-document",
   "core.find-by-fields",
   "codex.prompt",
+  "component.research-reconciliation",
+  "component.research-request-scheduler",
   "core.build-operation-plan",
 ]);
 
@@ -33,7 +40,7 @@ interface WorkflowStep extends JsonObject {
 interface ResolvedWorkflow {
   moduleRoot: string;
   manifest: JsonObject;
-  instance: JsonObject;
+  instance: JsonObject | null;
   workflow: JsonObject;
   workflowId: string;
   workflowVersion: string;
@@ -94,11 +101,10 @@ function findWorkflowEntry(task: Parameters<RuntimeHandler>[0]["task"], manifest
 }
 
 async function resolveWorkflow(task: Parameters<RuntimeHandler>[0]["task"], vaultRoot: string): Promise<ResolvedWorkflow> {
-  if (!task.instance_id) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", `Module workflow ${task.workflow} requires an instance.`);
   const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((candidate) => candidate.data.id === task.module && candidate.data.status === "enabled");
   if (!module) throw new PkbError("MODULE_WORKFLOW_MODULE_UNAVAILABLE", `Enabled module ${task.module} was not found.`);
-  const instance = (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === task.instance_id && candidate.data.module_id === task.module);
-  if (!instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_UNAVAILABLE", `Active ${task.module} instance ${task.instance_id} was not found.`);
+  const instance = task.instance_id ? (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === task.instance_id && candidate.data.module_id === task.module) : null;
+  if (task.instance_id && !instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_UNAVAILABLE", `Active ${task.module} instance ${task.instance_id} was not found.`);
   const moduleRoot = path.dirname(module.path);
   const workflows = registry(moduleRoot, module.data, "workflows");
   const entry = findWorkflowEntry(task, module.data, workflows);
@@ -115,7 +121,7 @@ async function resolveWorkflow(task: Parameters<RuntimeHandler>[0]["task"], vaul
   const expectedId = !entrypointAlias && typeof task.trigger.workflow_id === "string" ? task.trigger.workflow_id : workflowId;
   const expectedVersion = !entrypointAlias && typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : workflowVersion;
   if (workflowId !== expectedId || workflowVersion !== expectedVersion) throw new PkbError("MODULE_WORKFLOW_VERSION_MISMATCH", `Workflow ${workflowId}@${workflowVersion} does not match Task contract ${expectedId}@${expectedVersion}.`);
-  return { moduleRoot, manifest: module.data, instance: instance.data, workflow, workflowId, workflowVersion };
+  return { moduleRoot, manifest: module.data, instance: instance?.data ?? null, workflow, workflowId, workflowVersion };
 }
 
 function dateParts(instant: string, timezone: string): { year: number; month: number; day: number } {
@@ -136,8 +142,8 @@ function isoWeek(parts: { year: number; month: number; day: number }): { iso_wee
   return { iso_week: `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}`, period_start: format(monday), period_end: format(sunday), date: format(utc) };
 }
 
-function scheduleFor(task: Parameters<RuntimeHandler>[0]["task"], instance: JsonObject): JsonObject {
-  const timezone = typeof instance.timezone === "string" ? instance.timezone : "Asia/Shanghai";
+function scheduleFor(task: Parameters<RuntimeHandler>[0]["task"], instance: JsonObject | null): JsonObject {
+  const timezone = typeof instance?.timezone === "string" ? instance.timezone : "Asia/Shanghai";
   return { timezone, ...isoWeek(dateParts(task.scheduled_for, timezone)), window: task.payload.window ?? task.trigger.window ?? null };
 }
 
@@ -155,10 +161,25 @@ function interpolate(template: string, state: WorkflowState, task: Parameters<Ru
     const value = key.startsWith("instance.") ? lookup(state.resolved.instance, key.slice("instance.".length))
       : key.startsWith("schedule.") ? lookup(state.schedule, key.slice("schedule.".length))
         : key.startsWith("task.payload.") ? lookup(task.payload, key.slice("task.payload.".length))
+          : key === "task.task_id" ? task.task_id
+            : key === "module.id" ? task.module
           : key === "instance_id" ? task.instance_id : undefined;
     if (typeof value !== "string" && typeof value !== "number") throw new PkbError("MODULE_WORKFLOW_TEMPLATE_VALUE_MISSING", `No template value is available for {${key}}.`);
     return String(value);
   });
+}
+
+function fixedValue(value: JsonValue, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): JsonValue {
+  if (typeof value === "string") return interpolate(value, state, task);
+  if (Array.isArray(value)) return value.map((item) => fixedValue(item, state, task));
+  if (!value || typeof value !== "object") return value;
+  const objectValue = value as JsonObject;
+  if (typeof objectValue.task_id_prefix === "string") {
+    const match = /^TASK-(\d{4})-(\d{6,})$/.exec(task.task_id);
+    if (!match) throw new PkbError("MODULE_WORKFLOW_TASK_ID_INVALID", `Cannot derive a fixed ID from ${task.task_id}.`);
+    return `${objectValue.task_id_prefix}-${match[1]}-${match[2]}`;
+  }
+  return Object.fromEntries(Object.entries(objectValue).map(([key, item]) => [key, fixedValue(item, state, task)]));
 }
 
 function schemaId(moduleRoot: string, manifest: JsonObject, value: string): string {
@@ -181,6 +202,7 @@ function requireText(file: string): string {
 async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): Promise<DocumentInput> {
   const source = typeof task.payload.source_file === "string" ? task.payload.source_file : typeof task.payload.capture_path === "string" ? task.payload.capture_path : null;
   if (!source) throw new PkbError("MODULE_WORKFLOW_SOURCE_REQUIRED", "The workflow needs payload.source_file or payload.capture_path.");
+  if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const normalized = relative(source, "source_file");
   const contentRoot = String(state.resolved.instance.content_root ?? "");
   if (!normalized.startsWith(`${contentRoot}/`)) throw new PkbError("MODULE_READ_DENIED", `Workflow cannot read ${normalized}.`);
@@ -190,6 +212,7 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
 }
 
 async function collectDocuments(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject): Promise<DocumentInput[]> {
+  if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const root = relative(interpolate(string(settings.root, "find-by-fields.root"), state, task), "find-by-fields.root");
   const contentRoot = String(state.resolved.instance.content_root ?? "");
   if (!root.startsWith(contentRoot)) throw new PkbError("MODULE_READ_DENIED", `Workflow cannot scan ${root}.`);
@@ -236,7 +259,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
   return async ({ vaultRoot, task, runId, checkpoint }): Promise<WorkerResult> => {
     const resolved = await resolveWorkflow(task, vaultRoot);
     const state: WorkflowState = {
-      resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance], ["schedule", {}]]),
+      resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance ?? {}], ["schedule", {}]]),
       sourceFiles: new Set(), outputFiles: new Set(), planId: null, snapshot: null, codexCalls: 0,
     };
     state.values.set("schedule", state.schedule);
@@ -263,6 +286,14 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       } else if (step.uses === "codex.prompt") {
         const prompt = promptEntry(resolved.moduleRoot, resolved.manifest, string(step.with.prompt_id, "codex.prompt.prompt_id"));
         const outputSchema = typeof step.with.output_schema === "string" ? schemaId(resolved.moduleRoot, resolved.manifest, step.with.output_schema) : prompt.schema;
+        if (typeof step.with.skip_if_valid_schema === "string") {
+          const existing = await sourceDocument(vaultRoot, state, task);
+          try {
+            validateSchema(vaultRoot, schemaId(resolved.moduleRoot, resolved.manifest, step.with.skip_if_valid_schema), existing.data);
+            state.values.set(step.id, existing.data);
+            continue;
+          } catch { /* the prompt will normalize a non-conforming source */ }
+        }
         const model = resolveCodexModel(typeof task.payload.codex_model === "string" ? task.payload.codex_model : undefined);
         const reasoningEffort = resolveCodexReasoningEffort(typeof task.payload.codex_reasoning_effort === "string" ? task.payload.codex_reasoning_effort : undefined);
         const inputs = Object.fromEntries([...state.values.entries()].filter(([key]) => key !== "schedule"));
@@ -273,19 +304,94 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           const promptText = await fs.readFile(prompt.file, "utf8");
           const request = `${promptText}\n\n# Runtime context\n\n${JSON.stringify({ instance: resolved.instance, schedule: state.schedule, inputs, source_files: [...state.sourceFiles] }, null, 2)}\n${repair_format ? "\nReturn only repaired JSON that conforms to the declared schema." : ""}`;
           const result = await executeJson({ vaultRoot, prompt: request, model, reasoningEffort });
-          return { output: { ...object(result.output, "CODEX_OUTPUT_INVALID"), generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
+          const raw = object(result.output, "CODEX_OUTPUT_INVALID");
+          const fixed = step.with.fixed_fields && typeof step.with.fixed_fields === "object" && !Array.isArray(step.with.fixed_fields)
+            ? fixedValue(step.with.fixed_fields as JsonObject, state, task) as JsonObject : {};
+          const nullDefaults = Array.isArray(step.with.default_null_fields)
+            ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
+          return { output: { ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
         }, (output) => {
           try { validateSchema(vaultRoot, outputSchema, output); return true; } catch { return false; }
         });
         state.values.set(step.id, managed.output);
         state.codexCalls += 1;
+      } else if (step.uses === "component.research-reconciliation") {
+        const report = object(state.values.get(string(step.with.report, "research-reconciliation.report")), "MODULE_WORKFLOW_REPORT_MISSING");
+        const candidateKey = string(step.with.record_candidates, "research-reconciliation.record_candidates");
+        const candidates = state.values.get(candidateKey);
+        if (!Array.isArray(candidates)) throw new PkbError("MODULE_WORKFLOW_RECORD_CANDIDATES_MISSING", `${candidateKey} did not produce record candidates.`);
+        const sourceFile = typeof task.payload.source_file === "string" ? task.payload.source_file : typeof task.payload.capture_path === "string" ? task.payload.capture_path : null;
+        if (!sourceFile) throw new PkbError("MODULE_WORKFLOW_SOURCE_REQUIRED", "Research reconciliation requires source_file.");
+        const result = await prepareResearchReconciliation({
+          vaultRoot, taskId: task.task_id, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
+          instance: resolved.instance ?? (() => { throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Research reconciliation requires an instance."); })(), report, sourceFile: relative(sourceFile, "source_file"),
+          candidates: candidates.map((candidate) => {
+            const document = object(candidate, "MODULE_WORKFLOW_RECORD_CANDIDATE_INVALID");
+            return { path: string(document.path, "record-candidate.path"), data: object(document.data, "record-candidate.data") };
+          }),
+          allocateId: (prefix) => allocateId(vaultRoot, prefix),
+        });
+        state.values.set(step.id, result as unknown as JsonObject);
+      } else if (step.uses === "component.research-request-scheduler") {
+        const planId = await allocateId(vaultRoot, "PLAN");
+        const result = await prepareDueResearchRequests({ vaultRoot, taskId: task.task_id, planId, now: new Date().toISOString(), allocateId: (prefix) => allocateId(vaultRoot, prefix) });
+        state.values.set(step.id, result as unknown as JsonObject);
       } else if (step.uses === "core.build-operation-plan") {
+        if (typeof step.with.plan_from === "string") {
+          const prepared = object(state.values.get(step.with.plan_from), "MODULE_WORKFLOW_PLAN_MISSING");
+          const plan = prepared.plan === null ? null : object(prepared.plan, "MODULE_WORKFLOW_PLAN_INVALID") as unknown as OperationPlan;
+          if (!plan) {
+            state.values.set(step.id, { skipped: true });
+            continue;
+          }
+          if (typeof step.with.normalize_source_from === "string") {
+            const normalized = object(state.values.get(step.with.normalize_source_from), "MODULE_WORKFLOW_NORMALIZED_OUTPUT_MISSING");
+            const source = await sourceDocument(vaultRoot, state, task);
+            const removeTopLevel = Object.keys(source.data).filter((key) => !(key in normalized));
+            plan.operations.unshift({
+              operation_id: "OP-000", type: "update-frontmatter", target: source.path, risk: "green", confidence: Number(normalized.confidence ?? 1),
+              idempotency_key: `normalize:${task.idempotency_key}:${String(normalized.report_id ?? step.with.normalize_source_from)}`,
+              payload: {
+                patch: normalized, replace_top_level: Object.keys(normalized), remove_top_level: removeTopLevel, actor: "ai",
+                ...(typeof step.with.source_schema === "string" ? { schema_id: schemaId(resolved.moduleRoot, resolved.manifest, step.with.source_schema) } : {}),
+              },
+              requires_review_id: null,
+            });
+            plan.operations.forEach((operation, index) => { operation.operation_id = `OP-${String(index + 1).padStart(3, "0")}`; });
+          }
+          await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${plan.plan_id}.json`), plan);
+          const snapshot = await createGitSnapshot(vaultRoot, runId);
+          await executeOperationPlan(vaultRoot, plan, {
+            allowedTypes: ["create-file", "update-frontmatter", "append-section", "move-file"],
+            allowedTargets: plan.operations.map((operation) => operation.target!).filter(Boolean), requiredReviewId: null, gitSnapshot: snapshot,
+          });
+          await writeReviewItems(vaultRoot, plan.review_items);
+          if (step.with.record_processed_report === true && typeof prepared.report === "object" && typeof prepared.destination === "string" && typeof prepared.reportHash === "string") {
+            const report = object(prepared.report, "MODULE_WORKFLOW_REPORT_MISSING");
+            const reportId = string(report.report_id, "report_id");
+            const processedPath = path.join(vaultRoot, "90-System", "State", "processed-reports.json");
+            const processed = await readJson<{ reports: Record<string, JsonObject> }>(processedPath, { reports: {} });
+            const destination = fromVaultPath(vaultRoot, prepared.destination);
+            processed.reports[reportId] = {
+              // The normalizing operation may have changed frontmatter before
+              // the report was archived. Persist the archive hash so a later
+              // user move back to Inbox is recognized as the same document.
+              hash: await sha256File(destination), processed_at: new Date().toISOString(), run_id: runId, destination: prepared.destination,
+            };
+            await writeJsonAtomic(processedPath, processed);
+          }
+          state.planId = plan.plan_id; state.snapshot = snapshot;
+          for (const operation of plan.operations) if (operation.target) state.outputFiles.add(operation.type === "move-file" && typeof operation.payload.destination === "string" ? operation.payload.destination : operation.target);
+          state.values.set(step.id, plan);
+          continue;
+        }
         const outputKey = typeof step.with.output === "string" ? step.with.output : steps.slice(0, steps.indexOf(step)).reverse().find((candidate) => candidate.uses === "codex.prompt")?.id;
         const output = outputKey ? object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING") : null;
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
         validateSchema(vaultRoot, outputSchema, output);
         const target = relative(interpolate(string(step.with.target, "build-operation-plan.target"), state, task), "build-operation-plan.target");
+        if (!resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Creating a module document requires an instance.");
         const contentRoot = String(resolved.instance.content_root ?? "");
         if (!target.startsWith(`${contentRoot}/`)) throw new PkbError("MODULE_WRITE_DENIED", `Workflow cannot write ${target}.`);
         const idempotencyKey = interpolate(string(step.with.idempotency_key, "build-operation-plan.idempotency_key"), state, task);
@@ -317,6 +423,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["create-file"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
         state.planId = planId; state.snapshot = snapshot; state.outputFiles.add(target); state.values.set(step.id, plan);
       }
+    }
+    if (task.trigger.type === "inbox" && typeof task.payload.item_id === "string" && typeof task.payload.source_file === "string") {
+      const destination = [...state.values.values()].flatMap((value) => value && typeof value === "object" && !Array.isArray(value) && typeof (value as JsonObject).destination === "string" ? [String((value as JsonObject).destination)] : []).at(-1) ?? null;
+      await writeInboxState(vaultRoot, {
+        schema_version: 1, item_id: task.payload.item_id, path: task.payload.source_file, state: "processed",
+        attempts: task.attempt_count + 1, review_after: null, error: null, run_id: runId, plan_id: state.planId,
+        task_id: task.task_id, result: { status: "processed", destination, workflow: resolved.workflowId }, updated_at: new Date().toISOString(),
+      });
+      await rebuildTodayDashboard(vaultRoot);
     }
     return {
       completion_reason: `module-workflow:${resolved.workflowId}`,

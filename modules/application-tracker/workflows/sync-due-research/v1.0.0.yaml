@@ -3,6 +3,10 @@ workflow_version: 1.0.0
 inputs: [application-records]
 resources: { filesystem: required, network: not-required, codex: not-required, user: not-required }
 steps:
-  - { id: find-due, uses: core.find-by-fields }
-  - { id: create-request-plan, uses: core.build-operation-plan }
+  - id: prepare-due-requests
+    uses: component.research-request-scheduler
+  - id: create-request-plan
+    uses: core.build-operation-plan
+    with:
+      plan_from: prepare-due-requests
 outputs: [operation_plan, events]

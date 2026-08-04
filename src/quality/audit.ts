@@ -331,8 +331,8 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
         const targetPath = typeof stored.target.path === "string" ? stored.target.path.replaceAll("\\", "/").toLowerCase() : "";
         if (openRequestTargets.has(targetPath)) continue;
         followups.createTask({
-        job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: "application:sync-due-research", priority: "high", scheduled_for: now, available_after: now,
-        resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" }, trigger: { type: "quality-issue", issue_id: stored.issue_id }, catch_up_policy: "latest",
+        job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: "module:application-tracker:sync-due-research", priority: "high", scheduled_for: now, available_after: now,
+        resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" }, trigger: { type: "quality-issue", issue_id: stored.issue_id, workflow_id: "sync-due-research", workflow_version: "1.0.0" }, catch_up_policy: "latest",
         idempotency_key: `quality:${stored.fingerprint}:research-request`, max_attempts: 1, payload: { quality_issue_id: stored.issue_id, target: stored.target }, concurrency_key: `quality:${stored.instance_id ?? "global"}:research`, concurrency_policy: "merge",
         });
       }

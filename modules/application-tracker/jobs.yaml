@@ -2,8 +2,8 @@ jobs:
   - id: due-research-check
     scope: module
     enabled: true
-    task_type: core-operation
-    workflow: application:sync-due-research
+    task_type: workflow
+    workflow: module:application-tracker:sync-due-research
     workflow_id: sync-due-research
     workflow_version: 1.0.0
     trigger:

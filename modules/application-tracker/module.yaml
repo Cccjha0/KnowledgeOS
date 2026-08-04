@@ -97,6 +97,8 @@ dependencies:
     status-machine: ^1.0.0
     research-request: ^1.0.0
     comparison-table: ^1.0.0
+    research-reconciliation: ^1.0.0
+    research-request-scheduler: ^1.0.0
 
 scheduled_jobs: []
 

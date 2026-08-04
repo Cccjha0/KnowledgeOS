@@ -1,0 +1,5 @@
+id: research-reconciliation
+version: 1.0.0
+maturity: beta
+owns_business_data: false
+capabilities: [evidence-report-reconciliation, structured-comparison, research-request-lifecycle]

@@ -174,8 +174,8 @@ test("quality audit infers module ownership, honors frontmatter links, and suppr
     const runtime = await RuntimeRepository.open(vault);
     const task = runtime.createTask({
       job_id: "quality.stale-field-followup", module: "application-tracker", instance_id: "demo", task_type: "workflow",
-      workflow: "application:sync-due-research", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
-      trigger: { type: "quality-issue", issue_id: "QI-TEST" }, catch_up_policy: "latest", idempotency_key: "quality:demo:followup",
+      workflow: "module:application-tracker:sync-due-research", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
+      trigger: { type: "quality-issue", issue_id: "QI-TEST", workflow_id: "sync-due-research", workflow_version: "1.0.0" }, catch_up_policy: "latest", idempotency_key: "quality:demo:followup",
       payload: { quality_issue_id: "QI-TEST", target: { path: recordPath } }, concurrency_key: "quality:demo:research", concurrency_policy: "merge",
     }).task;
     runtime.transitionTask(task.task_id, "waiting-for-user"); runtime.close();

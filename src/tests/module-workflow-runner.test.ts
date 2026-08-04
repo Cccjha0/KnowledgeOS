@@ -3,10 +3,9 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { initializeVault } from "../core/vault.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
-import { platformRuntimeHandlers } from "../platform/runtimeHandlers.js";
 import { createModuleWorkflowRunner } from "../modules/workflowRunner.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -47,7 +46,6 @@ test("a declared experience-log workflow executes through the generic Runner wit
     repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
     repository.close();
 
-    assert.equal(platformRuntimeHandlers[task.workflow], undefined);
     const runner = createModuleWorkflowRunner(async () => ({ output, stderr: "" }));
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: runner });
     assert.equal(dispatched.completed, 1);
@@ -83,7 +81,6 @@ test("a workflow module Inbox item materializes a generic capture Task", async (
     const task = repository.getTask(materialized.created[0]!);
     assert.equal(task?.workflow, "module:experience-log:capture");
     assert.equal(task?.trigger.entrypoint, "capture");
-    assert.equal(platformRuntimeHandlers[task!.workflow], undefined);
     repository.close();
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
@@ -120,6 +117,39 @@ test("a configuration module uses the same generic Runner for an Inbox capture",
     assert.equal(dispatched.completed, 1);
     const note = path.join(vault, "20-Workspace", "Reading Log", instanceId, "Notes", `${String(task!.payload.item_id)}.md`);
     assert.equal(parseMarkdown(vault, note).data.type, "reading-note");
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("application due-research work runs as a declared module workflow without a Platform Handler", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-due-research-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "applications-2027";
+    await createInstance(vault, {
+      module_id: "application-tracker", instance_id: instanceId, display_name: "Applications 2027",
+      fields: { application_type: "masters", region: "Australia", intake: "2027-S1", default_currency: "AUD", "monitoring.enabled": true, "monitoring.default_check_interval_days": 30 },
+    });
+    const record = path.join(vault, "20-Workspace", "Applications", instanceId, "Records", "Monash-C6007.md");
+    await fs.mkdir(path.dirname(record), { recursive: true });
+    writeMarkdown(vault, record, { data: {
+      id: "APP-2027-0001", source_module: "application-tracker", instance_id: instanceId, type: "application-record",
+      institution: "Monash University", program_name: "Master of Artificial Intelligence", program_code: "C6007", country: "AU", intake: "2027-S1", application_status: "watching",
+      monitoring: { active: true, check_interval_days: 30, last_checked: null, next_check: "2020-01-01T00:00:00Z", stopped: [] }, facts: {}, source_files: [],
+      created: "2026-01-01T00:00:00Z", updated: "2026-01-01T00:00:00Z", schema_version: 1,
+    }, content: "# Monash C6007\n" });
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({
+      job_id: "application-tracker.due-research-check", module: "application-tracker", instance_id: null, task_type: "workflow", workflow: "module:application-tracker:sync-due-research", priority: "normal",
+      resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" },
+      trigger: { type: "field-due", workflow_id: "sync-due-research", workflow_version: "1.0.0" }, catch_up_policy: "latest", idempotency_key: "application:due-research:test",
+    }).task;
+    repository.close();
+    const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1 });
+    assert.equal(dispatched.completed, 1);
+    const requestRoot = path.join(vault, "20-Workspace", "Applications", instanceId, "Research Requests");
+    assert.equal((await fs.readdir(requestRoot)).filter((file) => file.endsWith(".md")).length, 1);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

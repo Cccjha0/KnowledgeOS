@@ -25,7 +25,6 @@ import { reconcileStartup } from "../runtime/reconciler.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { evaluateScheduler } from "../runtime/scheduler.js";
 import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
-import { platformRuntimeHandlers } from "./runtimeHandlers.js";
 import { probeRuntimeResources } from "../runtime/resourceMonitor.js";
 import { listCodexModels } from "../runtime/codexCli.js";
 import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
@@ -447,7 +446,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const startupTask = params.startup === true ? await materializeStartupJobs(vaultRoot) : null;
     const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
-    const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2, handlers: platformRuntimeHandlers });
+    const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2 });
     return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, resumed_after_file_close, dispatch } as unknown as JsonValue;
   }
   if (method === "listCodexModels") {
