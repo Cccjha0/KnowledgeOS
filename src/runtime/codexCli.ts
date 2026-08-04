@@ -153,7 +153,7 @@ export async function listCodexModels(executable = "codex", timeoutMs = 20_000):
 }
 
 export async function executeCodexJson(options: {
-  vaultRoot: string;
+  contextRoot: string;
   prompt: string;
   executable?: string;
   model?: string;
@@ -169,7 +169,7 @@ export async function executeCodexJson(options: {
     "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
     "--color", "never", "-m", model,
     "-c", "plugins={}", "-c", `model_reasoning_effort="${reasoningEffort}"`,
-    "-C", options.vaultRoot, "-o", outputPath, "-",
+    "-C", options.contextRoot, "-o", outputPath, "-",
   ];
   let stderr = "";
   try {

@@ -46,12 +46,23 @@ test("a declared experience-log workflow executes through the generic Runner wit
     repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
     repository.close();
 
-    const runner = createModuleWorkflowRunner(async () => ({ output, stderr: "" }));
+    let contextRoot = "";
+    let request = "";
+    const runner = createModuleWorkflowRunner(async (options) => {
+      contextRoot = options.contextRoot;
+      request = options.prompt;
+      assert.notEqual(contextRoot, vault, "Codex must not run with the real Vault as its working directory");
+      assert.match(await fs.readFile(path.join(contextRoot, "primary-input.md"), "utf8"), /Implemented the workflow runner/);
+      assert.match(await fs.readFile(path.join(contextRoot, "module-prompt.md"), "utf8"), /weekly-summary/);
+      return { output, stderr: "" };
+    });
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: runner });
-    assert.equal(dispatched.completed, 1);
+    assert.equal(dispatched.completed, 1, JSON.stringify(dispatched.tasks[0]?.last_error));
     const weeklyPath = path.join(vault, "20-Workspace", "Experience Log", instanceId, "Weekly", "2026-W31.md");
     assert.equal(parseMarkdown(vault, weeklyPath).data.type, "experience-weekly-summary");
     assert.equal((parseMarkdown(vault, weeklyPath).data.generation as { prompt?: { id?: string } }).prompt?.id, "weekly-summary");
+    assert.doesNotMatch(request, /Implemented the workflow runner/, "document bodies belong in the isolated context workspace, not the process prompt");
+    await assert.rejects(fs.access(contextRoot), "temporary context workspace should not remain after the Codex call");
 
     const after = await RuntimeRepository.open(vault);
     assert.equal(after.getTask(task.task_id)?.status, "completed");

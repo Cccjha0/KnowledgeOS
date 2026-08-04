@@ -12,9 +12,11 @@ import type { JsonObject, JsonValue, OperationPlan } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { prepareResearchReconciliation } from "../components/researchReconciliation.js";
 import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
+import { ModuleSdk } from "./sdk.js";
 import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { writeInboxState } from "../platform/inboxDiscovery.js";
 import { runManagedCodexStep } from "../runtime/codexAdapter.js";
+import { createCodexContextWorkspace, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
 
@@ -61,6 +63,8 @@ interface WorkflowState {
   planId: string | null;
   snapshot: string | null;
   codexCalls: number;
+  sdk: ModuleSdk;
+  codexContexts: CodexContextManifest[];
 }
 
 function object(value: unknown, code = "MODULE_WORKFLOW_INVALID"): JsonObject {
@@ -77,6 +81,25 @@ function relative(value: string, label: string): string {
   const normalized = value.replaceAll("\\", "/").replace(/^\/+/, "");
   if (!normalized || normalized.split("/").includes("..") || path.isAbsolute(normalized)) throw new PkbError("MODULE_WORKFLOW_PATH_INVALID", `${label} must be a Vault- or module-relative path.`);
   return normalized;
+}
+
+function instanceRoot(instance: JsonObject | null): string {
+  const root = typeof instance?.content_root === "string" ? relative(instance.content_root, "instance.content_root") : "";
+  if (!root) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance content root.");
+  return root;
+}
+
+function workflowSdk(vaultRoot: string, task: Parameters<RuntimeHandler>[0]["task"], resolved: ResolvedWorkflow): ModuleSdk {
+  const contentRoot = resolved.instance ? instanceRoot(resolved.instance) : null;
+  const permissions = resolved.manifest.permissions && typeof resolved.manifest.permissions === "object" && !Array.isArray(resolved.manifest.permissions)
+    ? resolved.manifest.permissions as JsonObject : {};
+  const maxReadLevel = typeof permissions.max_read_level === "number" ? permissions.max_read_level : 0;
+  return new ModuleSdk({
+    vaultRoot, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"), instanceId: task.instance_id,
+    // Module prompts may see only the current instance's data. Module assets
+    // are copied by Core into the isolated workspace, never mounted from disk.
+    allowedReadRoots: contentRoot ? [contentRoot] : [], ownedWriteRoots: contentRoot ? [contentRoot] : [], maxReadLevel,
+  });
 }
 
 function registry(moduleRoot: string, manifest: JsonObject, key: "schemas" | "prompts" | "workflows"): JsonObject {
@@ -204,8 +227,7 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   if (!source) throw new PkbError("MODULE_WORKFLOW_SOURCE_REQUIRED", "The workflow needs payload.source_file or payload.capture_path.");
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const normalized = relative(source, "source_file");
-  const contentRoot = String(state.resolved.instance.content_root ?? "");
-  if (!normalized.startsWith(`${contentRoot}/`)) throw new PkbError("MODULE_READ_DENIED", `Workflow cannot read ${normalized}.`);
+  state.sdk.assertReadable(normalized, 0);
   const document = parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, normalized));
   state.sourceFiles.add(normalized);
   return { path: normalized, data: document.data, content: document.content };
@@ -214,11 +236,11 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
 async function collectDocuments(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject): Promise<DocumentInput[]> {
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const root = relative(interpolate(string(settings.root, "find-by-fields.root"), state, task), "find-by-fields.root");
-  const contentRoot = String(state.resolved.instance.content_root ?? "");
-  if (!root.startsWith(contentRoot)) throw new PkbError("MODULE_READ_DENIED", `Workflow cannot scan ${root}.`);
+  state.sdk.assertReadable(root, 0);
   const output: DocumentInput[] = [];
   for (const file of await listFilesRecursive(fromVaultPath(vaultRoot, root), ".md")) {
     const relativePath = toVaultPath(vaultRoot, file);
+    state.sdk.assertReadable(relativePath, 0);
     const parsed = parseMarkdown(vaultRoot, file);
     if (parsed.data.instance_id !== task.instance_id) continue;
     const dateValue = typeof parsed.data.date === "string" ? parsed.data.date : typeof parsed.data.occurred_at === "string" ? parsed.data.occurred_at.slice(0, 10) : null;
@@ -255,12 +277,67 @@ function generation(task: Parameters<RuntimeHandler>[0]["task"], runId: string, 
   };
 }
 
+function isDocumentInput(value: JsonValue): value is DocumentInput {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && typeof (value as JsonObject).path === "string"
+    && typeof (value as JsonObject).content === "string"
+    && (value as JsonObject).data && typeof (value as JsonObject).data === "object"
+    && !Array.isArray((value as JsonObject).data));
+}
+
+function approvedDocuments(state: WorkflowState): DocumentInput[] {
+  const byPath = new Map<string, DocumentInput>();
+  const collect = (value: JsonValue): void => {
+    if (isDocumentInput(value)) { byPath.set(value.path, value); return; }
+    if (Array.isArray(value)) { value.forEach(collect); }
+  };
+  state.values.forEach(collect);
+  return [...byPath.values()];
+}
+
+function contextDocumentContent(document: DocumentInput): string {
+  // parseMarkdown separates frontmatter from the body. Both are approved task
+  // input, so materialize them together without copying the original Vault file.
+  return `# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n${document.content}`;
+}
+
+async function createPromptContext(state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], promptText: string): Promise<ReturnType<typeof createCodexContextWorkspace>> {
+  const documents = approvedDocuments(state);
+  const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
+    : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
+  const primary = (sourcePath ? documents.find((document) => document.path === sourcePath) : undefined) ?? documents[0] ?? {
+    path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n",
+  } satisfies DocumentInput;
+  const related = documents.filter((document) => document.path !== primary.path);
+  const context = await createCodexContextWorkspace({
+    modulePrompt: promptText,
+    instanceContext: state.resolved.instance ?? {},
+    runtimeContext: {
+      task_id: task.task_id,
+      module: task.module,
+      instance_id: task.instance_id,
+      workflow: { id: state.resolved.workflowId, version: state.resolved.workflowVersion },
+      schedule: state.schedule,
+      approved_input_files: [primary.path, ...related.map((document) => document.path)],
+    },
+    primary: { source_path: primary.path, content: contextDocumentContent(primary) },
+    related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document) })),
+    allowedReadRoots: state.sdk.context.allowedReadRoots,
+    maxReadLevel: state.sdk.context.maxReadLevel,
+  });
+  // The runner reads this information before launching Codex. It makes the
+  // audit trail useful without persisting private document content or a temp path.
+  state.codexContexts.push(context.manifest);
+  return context;
+}
+
 export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = executeCodexJson): RuntimeHandler {
   return async ({ vaultRoot, task, runId, checkpoint }): Promise<WorkerResult> => {
     const resolved = await resolveWorkflow(task, vaultRoot);
     const state: WorkflowState = {
       resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance ?? {}], ["schedule", {}]]),
       sourceFiles: new Set(), outputFiles: new Set(), planId: null, snapshot: null, codexCalls: 0,
+      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [],
     };
     state.values.set("schedule", state.schedule);
     const steps = (resolved.workflow.steps as unknown[] ?? []).map((raw) => {
@@ -296,14 +373,20 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         }
         const model = resolveCodexModel(typeof task.payload.codex_model === "string" ? task.payload.codex_model : undefined);
         const reasoningEffort = resolveCodexReasoningEffort(typeof task.payload.codex_reasoning_effort === "string" ? task.payload.codex_reasoning_effort : undefined);
-        const inputs = Object.fromEntries([...state.values.entries()].filter(([key]) => key !== "schedule"));
         const managed = await runManagedCodexStep(vaultRoot, {
           task_id: task.task_id, run_id: runId, prompt_id: prompt.id, prompt_version: prompt.version, adapter: "codex-cli", model, reasoning_effort: reasoningEffort,
           output_schema: outputSchema, module: task.module, instance_id: task.instance_id, workflow_id: resolved.workflowId, workflow_version: resolved.workflowVersion,
         }, async ({ repair_format }) => {
           const promptText = await fs.readFile(prompt.file, "utf8");
-          const request = `${promptText}\n\n# Runtime context\n\n${JSON.stringify({ instance: resolved.instance, schedule: state.schedule, inputs, source_files: [...state.sourceFiles] }, null, 2)}\n${repair_format ? "\nReturn only repaired JSON that conforms to the declared schema." : ""}`;
-          const result = await executeJson({ vaultRoot, prompt: request, model, reasoningEffort });
+          const context = await createPromptContext(state, task, promptText);
+          const request = [
+            "Read global-rules.md, module-prompt.md, instance-context.yaml, runtime-context.json, primary-input.md, and any files in related/ before answering.",
+            "Only those files are authorized input. Return only the structured JSON required by module-prompt.md.",
+            repair_format ? "Repair the previous result format and return JSON that conforms to the declared schema." : "",
+          ].filter(Boolean).join("\n");
+          let result: Awaited<ReturnType<CodexJsonExecutor>>;
+          try { result = await executeJson({ contextRoot: context.root, prompt: request, model, reasoningEffort }); }
+          finally { await context.cleanup(); }
           const raw = object(result.output, "CODEX_OUTPUT_INVALID");
           const fixed = step.with.fixed_fields && typeof step.with.fixed_fields === "object" && !Array.isArray(step.with.fixed_fields)
             ? fixedValue(step.with.fixed_fields as JsonObject, state, task) as JsonObject : {};
@@ -437,7 +520,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       completion_reason: `module-workflow:${resolved.workflowId}`,
       operation_plan_id: state.planId, git_snapshot_id: state.snapshot,
       input_files: [...state.sourceFiles], output_files: [...state.outputFiles],
-      metrics: { module_workflow: resolved.workflowId, module_workflow_version: resolved.workflowVersion, steps_executed: steps.length, codex_calls: state.codexCalls, files_read: state.sourceFiles.size, files_written: state.outputFiles.size },
+      metrics: {
+        module_workflow: resolved.workflowId, module_workflow_version: resolved.workflowVersion, steps_executed: steps.length,
+        codex_calls: state.codexCalls, files_read: state.sourceFiles.size, files_written: state.outputFiles.size,
+        codex_contexts: state.codexContexts.map((context) => ({
+          version: context.version, primary_input: context.primary_input.source_path,
+          related_input_count: context.related_inputs.length, allowed_read_roots: context.allowed_read_roots,
+          max_read_level: context.max_read_level,
+        })),
+      },
     };
   };
 }

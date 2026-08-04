@@ -39,9 +39,21 @@ function within(target: string, roots: string[]): boolean { return roots.some((r
 export class ModuleSdk {
   constructor(readonly context: ModuleContext) {}
 
-  async readText(relativePath: string, readLevel: number): Promise<string> {
+  canRead(relativePath: string, readLevel = 0): boolean {
+    try {
+      const target = normalize(relativePath);
+      return readLevel <= this.context.maxReadLevel && within(target, this.context.allowedReadRoots);
+    } catch { return false; }
+  }
+
+  assertReadable(relativePath: string, readLevel = 0): string {
     const target = normalize(relativePath);
-    if (readLevel > this.context.maxReadLevel || !within(target, this.context.allowedReadRoots)) throw new PkbError("MODULE_READ_DENIED", `Module ${this.context.moduleId} cannot read ${target}.`);
+    if (!this.canRead(target, readLevel)) throw new PkbError("MODULE_READ_DENIED", `Module ${this.context.moduleId} cannot read ${target}.`);
+    return target;
+  }
+
+  async readText(relativePath: string, readLevel: number): Promise<string> {
+    const target = this.assertReadable(relativePath, readLevel);
     return fs.readFile(path.join(this.context.vaultRoot, ...target.split("/")), "utf8");
   }
 
