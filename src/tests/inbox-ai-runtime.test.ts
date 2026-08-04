@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { writeMarkdown } from "../core/bridge.js";
-import { exists, readJson } from "../core/files.js";
+import { exists, readJson, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
@@ -128,6 +128,35 @@ test("application Inbox AI Task completes through the managed Run and archives t
     );
     assert.equal(state?.state, "processed");
     assert.equal(state?.task_id, taskId);
+
+    // Putting the exact processed report back into Inbox is a lifecycle event,
+    // not a request for the user to repeat the review or for AI to normalize it again.
+    const archivedPath = path.join(root, "Research", "Monash-report.md");
+    await writeJsonAtomic(
+      path.join(vault, "90-System", "State", "Inbox", `${itemId}.json`),
+      { ...state!, updated_at: "2000-01-01T00:00:00Z" },
+    );
+    await fs.rename(archivedPath, sourcePath);
+    const rematerialized = await materializeInboxAiTasks(vault, "gpt-5.6-terra", "high");
+    assert.equal(rematerialized.created.length, 1);
+    const restoreTaskId = rematerialized.created[0]!;
+    repository = await RuntimeRepository.open(vault);
+    assert.equal(repository.getTask(restoreTaskId)?.resources.codex, "not-required");
+    repository.close();
+
+    const restored = await dispatchOnce({
+      vaultRoot: vault,
+      limit: 1,
+      handlers: { "application:process-inbox-ai": handler },
+    });
+    assert.equal(restored.completed, 1);
+    assert.equal(await exists(sourcePath), false);
+    assert.equal(await exists(archivedPath), true);
+
+    const today = await invokeCommandApi({ vaultRoot: vault, requestId: "TODAY-AFTER-RESTORE", method: "getTodayItems", params: {} });
+    assert.equal(today.ok, true);
+    const focus = ((today.data as JsonObject).focus as JsonObject[]) ?? [];
+    assert.equal(focus.some((item) => item.title === "Process application Inbox item"), false);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

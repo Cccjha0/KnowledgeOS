@@ -35,6 +35,7 @@ import { runQualityAudit as executeQualityAudit, type AuditFrequency } from "../
 import { getFieldProvenance, getQualityDashboard, getQualityDashboardFromRuntimeSnapshot } from "../quality/presentation.js";
 import { QualityRepository } from "../quality/repository.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
+import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsidianCoordination.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -261,6 +262,8 @@ async function systemRuntimeData(vaultRoot: string): Promise<JsonObject> {
 
 async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
+  const obsidianOpenPaths = Array.isArray(params.obsidian_open_paths) ? params.obsidian_open_paths : null;
+  if (obsidianOpenPaths !== null) await syncObsidianOpenFiles(vaultRoot, obsidianOpenPaths);
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";
     if (!["full", "overview", "tasks", "quality", "modules", "history"].includes(section)) {
@@ -431,6 +434,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "runTaskCycle") {
     const jobs = await registerDeclaredJobs(vaultRoot);
+    const resumed_after_file_close = await resumeTasksAfterObsidianFileClose(vaultRoot);
     const inbox = await materializeInboxAiTasks(
       vaultRoot,
       typeof params.codex_model === "string" ? params.codex_model : undefined,
@@ -444,7 +448,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
     const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2, handlers: platformRuntimeHandlers });
-    return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, dispatch } as unknown as JsonValue;
+    return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, resumed_after_file_close, dispatch } as unknown as JsonValue;
   }
   if (method === "listCodexModels") {
     const models = await listCodexModels(typeof params.codex_executable === "string" ? params.codex_executable : undefined);
@@ -519,6 +523,7 @@ function userFacingError(error: unknown): UserFacingError {
     INBOX_ITEM_IN_PROGRESS: { impact: "系统拒绝重复执行当前条目。", actions: ["等待当前处理完成", "刷新 Inbox Center"], retryable: true },
     INBOX_ROUTE_INVALID: { impact: "条目仍保留在原路径。", actions: ["重新选择已启用模块或活跃实例", "再次预览后处理"], retryable: true },
     INBOX_RETRY_REQUIRED: { impact: "失败条目没有被静默重复执行。", actions: ["查看失败原因", "点击重试"], retryable: true },
+    OBSIDIAN_FILE_OPEN: { impact: "未移动或更新该笔记。", actions: ["保存并关闭正在打开的笔记", "等待下一次自动检查或在 Inbox 中点击“已关闭，继续”"], retryable: true },
     DESTINATION_EXISTS: { impact: "系统没有覆盖同名文件。", actions: ["打开目标 Inbox 处理同名冲突", "刷新后重试"], retryable: true },
     RUN_NOT_FOUND: { impact: "没有执行撤销或读取操作。", actions: ["刷新运行历史", "确认 Run ID"], retryable: true },
     RUN_NOT_ROLLBACKABLE: { impact: "现有文件保持不变。", actions: ["查看 Run 详情", "使用 Git 历史人工恢复"], retryable: false },

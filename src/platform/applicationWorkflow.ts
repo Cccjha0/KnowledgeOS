@@ -32,6 +32,7 @@ import { DeterministicComparisonAdapter, type ComparisonAdapter } from "../appli
 import { buildOperationPlan } from "../application/plan.js";
 import { applyReportToResearchRequest } from "../application/researchRequest.js";
 import { discoverModulesForVault } from "../core/discovery.js";
+import { assertMoveSourceNotOpen } from "./obsidianCoordination.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -274,6 +275,53 @@ export async function processApplicationReport(
   const processed = await readJson<ProcessedReportsFile>(processedPath, { reports: {} });
   const previous = processed.reports[report.report_id];
   if (previous && previous.hash === reportHash) {
+    const source = toVaultPath(vaultRoot, reportAbsolute);
+    const destination = fromVaultPath(vaultRoot, previous.destination);
+    if (source !== previous.destination && !(await exists(destination))) {
+      await assertMoveSourceNotOpen(vaultRoot, source);
+      const taskId = await allocateId(vaultRoot, "TASK");
+      const planId = await allocateId(vaultRoot, "PLAN");
+      const runId = await allocateId(vaultRoot, "RUN");
+      const plan: OperationPlan = {
+        plan_id: planId,
+        task_id: taskId,
+        source_module: "application-tracker",
+        instance_id: report.instance_id,
+        summary: "Restore an already processed application report to its archive",
+        operations: [{
+          operation_id: "OP-001",
+          type: "move-file",
+          target: source,
+          risk: "green",
+          confidence: 1,
+          idempotency_key: `restore-processed-report:${report.report_id}:${reportHash}`,
+          payload: { destination: previous.destination },
+          requires_review_id: null,
+        }],
+        review_items: [],
+      };
+      validateSchema(vaultRoot, SCHEMAS.plan, plan);
+      const planPath = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
+      await writeJsonAtomic(planPath, plan);
+      if (options.dryRun) {
+        return {
+          status: "dry-run", runId, reportId: report.report_id, recordPath: null,
+          destination: previous.destination, reviewCount: 0, snapshot: null,
+          planPath: toVaultPath(vaultRoot, planPath), todayPath: null,
+        };
+      }
+      const snapshot = await createGitSnapshot(vaultRoot, runId);
+      await executeOperationPlan(vaultRoot, plan, {
+        allowedTypes: ["move-file"], allowedTargets: [source], requiredReviewId: null, gitSnapshot: snapshot,
+      });
+      await writeRunLog(vaultRoot, runId, report, plan, snapshot, destination, []);
+      const todayPath = await rebuildTodayDashboard(vaultRoot);
+      return {
+        status: "already-processed", runId, reportId: report.report_id, recordPath: null,
+        destination: previous.destination, reviewCount: 0, snapshot,
+        planPath: toVaultPath(vaultRoot, planPath), todayPath: toVaultPath(vaultRoot, todayPath),
+      };
+    }
     return {
       status: "already-processed",
       runId: previous.run_id,
@@ -307,6 +355,9 @@ export async function processApplicationReport(
 
   const target = await locateRecord(vaultRoot, instanceRoot, report);
   const destination = await determineDestination(vaultRoot, instanceRoot, reportAbsolute, report);
+  if (toVaultPath(vaultRoot, reportAbsolute) !== toVaultPath(vaultRoot, destination)) {
+    await assertMoveSourceNotOpen(vaultRoot, toVaultPath(vaultRoot, reportAbsolute));
+  }
   const reportReference = reportWikiReference(vaultRoot, destination);
   const now = new Date().toISOString();
 

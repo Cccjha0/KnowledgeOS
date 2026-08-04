@@ -108,6 +108,9 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /审核决定已提交，正在后台应用/);
   assert.match(source, /this\.contentEl\.addClass\("is-review-detail"\)/);
   assert.match(source, /this\.contentEl\.removeClass\("is-review-detail"\)/);
+  assert.match(source, /this\.activeReviewId = review\.review_id/);
+  assert.match(source, /if \(!this\.activeReviewId \|\| this\.activeReviewId === review\.review_id\) this\.showCachedReviewList\(\)/);
+  assert.match(source, /void this\.loadReviews\(this\.activeReviewId\)/);
   assert.match(styles, /\.knowledgeos-review-center\.is-review-detail \.knowledgeos-review-filters/);
   assert.match(styles, /grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
   assert.doesNotMatch(source, /renderReviewList\(\) \{\s*this\.listEl\.empty\(\);\s*this\.renderReviewList/);

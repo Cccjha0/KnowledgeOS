@@ -287,6 +287,8 @@
 .knowledgeos-inbox-center .knowledgeos-inbox-reason { color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; margin-top: var(--size-4-1); overflow-wrap: anywhere; }
 .knowledgeos-inbox-center .knowledgeos-inbox-ai { background: transparent; border-radius: 0; color: var(--text-muted); font-size: var(--font-ui-smaller); margin-top: var(--size-4-2); padding: 0; }
 .knowledgeos-inbox-center .knowledgeos-inbox-item-error { background: var(--background-modifier-error); border-left: 3px solid var(--text-error); color: var(--text-normal); font-size: var(--font-ui-small); margin-top: var(--size-4-2); padding: var(--size-4-2); }
+.knowledgeos-inbox-center .knowledgeos-inbox-open-file,
+.knowledgeos-inbox-center .knowledgeos-inbox-empty-source { background: var(--background-secondary); border-left: 3px solid var(--text-warning); color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.5; margin-top: var(--size-4-2); padding: var(--size-4-2) var(--size-4-3); }
 .knowledgeos-inbox-center .knowledgeos-inbox-item-footer { align-items: center; display: flex; gap: var(--size-4-3); justify-content: space-between; margin-top: var(--size-4-3); }
 .knowledgeos-inbox-center .knowledgeos-inbox-item-meta { color: var(--text-faint); font-size: var(--font-ui-smaller); min-width: 0; }
 .knowledgeos-inbox-center .knowledgeos-inbox-primary { flex: 0 0 auto; }

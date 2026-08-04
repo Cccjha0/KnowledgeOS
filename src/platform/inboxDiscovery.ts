@@ -9,7 +9,7 @@ import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-export type InboxItemState = "pending" | "processing" | "waiting-for-user" | "waiting-for-ai" | "failed" | "processed" | "deferred" | "ignored" | "unmanaged";
+export type InboxItemState = "pending" | "processing" | "waiting-for-user" | "waiting-for-ai" | "failed" | "empty" | "processed" | "deferred" | "ignored" | "unmanaged";
 
 export interface InboxStateRecord extends JsonObject {
   schema_version: 1;
@@ -35,6 +35,7 @@ export interface InboxItemView extends JsonObject {
   size: number;
   created_at: string;
   modified_at: string;
+  lifecycle_revision: string;
   scope: "global" | "module" | "instance";
   source_module: string | null;
   instance_id: string | null;
@@ -49,6 +50,7 @@ export interface InboxItemView extends JsonObject {
   suggested_instance_id: string | null;
   auto_route_threshold: number;
   retryable: boolean;
+  blocked_by_open_editor: boolean;
   error: string | null;
   review_after: string | null;
   task_id: string | null;
@@ -118,10 +120,25 @@ export async function discoverInboxContext(vaultRoot: string, existing?: Routing
   return { roots: result, modules, instances };
 }
 
-function availableActions(state: InboxItemState): string[] {
+function availableActions(state: InboxItemState, blockedByOpenEditor = false): string[] {
+  if (blockedByOpenEditor) return ["preview", "open", "process", "ignore", "unmanage"];
+  if (state === "empty") return ["preview", "open", "quarantine-empty", "ignore"];
   if (state === "failed") return ["preview", "open", "retry", "defer", "ignore", "unmanage"];
   if (["ignored", "unmanaged", "processed"].includes(state)) return ["open"];
   return ["preview", "open", "process", "select-route", "defer", "ignore", "unmanage"];
+}
+
+function generatedFromEmptySource(data: JsonObject, content: string): boolean {
+  const generation = object(data.generation);
+  const prompt = object(generation?.prompt);
+  const source = Array.isArray(data.sources) && data.sources.length === 1 ? object(data.sources[0]) : null;
+  return content.trim().length === 0
+    && data.research_type === "application-update"
+    && data.institution === "unknown"
+    && data.program_name === "unknown"
+    && data.confidence === 0
+    && prompt?.id === "normalize-application-report"
+    && source?.source_type === "unknown";
 }
 
 async function inspectItem(
@@ -134,11 +151,18 @@ async function inspectItem(
   const vaultPath = toVaultPath(vaultRoot, absolute);
   const id = itemId(vaultPath);
   const stat = await fs.stat(absolute);
+  const lifecycleRevision = new Date(Math.max(stat.birthtimeMs, stat.ctimeMs, stat.mtimeMs)).toISOString();
   const extension = path.extname(absolute).toLowerCase();
   let data: JsonObject = {};
+  let content = "";
   if (extension === ".md") {
-    try { data = parseMarkdown(vaultRoot, absolute).data; } catch { data = {}; }
+    try {
+      const document = parseMarkdown(vaultRoot, absolute);
+      data = document.data;
+      content = document.content;
+    } catch { data = {}; }
   }
+  const emptySource = stat.size === 0 || generatedFromEmptySource(data, content);
   const hintModule = typeof data.source_module === "string" ? data.source_module : null;
   const hintInstance = typeof data.instance_id === "string" ? data.instance_id : null;
   const validInstance = instances.find((entry) => entry.data.instance_id === hintInstance);
@@ -160,23 +184,35 @@ async function inspectItem(
   const processor: InboxItemView["processor"] = applicationReport
     ? "application-research-report"
     : root.scope === "global" && suggestedModule ? "routing-only" : "module-workflow";
-  const requiresAi = processor === "module-workflow" || (extension !== ".md" && processor !== "routing-only");
+  const requiresAi = !emptySource && (processor === "module-workflow" || (extension !== ".md" && processor !== "routing-only"));
   const stored = await readJson<InboxStateRecord | null>(inboxStatePath(vaultRoot, id), null);
-  let state: InboxItemState = stored?.state ?? (!suggestedModule ? "waiting-for-user" : requiresAi ? "waiting-for-ai" : "pending");
+  let state: InboxItemState = emptySource ? "empty" : stored?.state ?? (!suggestedModule ? "waiting-for-user" : requiresAi ? "waiting-for-ai" : "pending");
+  const storedResult = object(stored?.result);
+  const blockedByOpenEditor = stored?.state === "waiting-for-user" && storedResult?.coordination === "obsidian-file-open";
+  const processedDestination = typeof storedResult?.destination === "string" ? storedResult.destination : null;
+  const reintroducedAfterProcessing = !emptySource && stored?.state === "processed" && processedDestination !== null && processedDestination !== vaultPath &&
+    Date.parse(lifecycleRevision) > Date.parse(stored.updated_at) + 1_000;
+  if (reintroducedAfterProcessing) {
+    state = requiresAi ? "waiting-for-ai" : "pending";
+    reasons.push("reintroduced-after-processing");
+  }
+  if (emptySource) reasons.push(stat.size === 0 ? "empty-source" : "empty-normalization-artifact");
+  if (blockedByOpenEditor) reasons.push("obsidian-file-open");
   const interrupted = state === "processing";
   if (interrupted) state = "failed";
   if (state === "deferred" && stored?.review_after && Date.parse(stored.review_after) <= Date.now()) state = requiresAi ? "waiting-for-ai" : "pending";
   return {
-    item_id: id, path: vaultPath, filename: path.basename(absolute), title: typeof data.title === "string" ? data.title : path.basename(absolute),
-    extension, size: stat.size, created_at: stat.birthtime.toISOString(), modified_at: stat.mtime.toISOString(),
+    item_id: id, path: vaultPath, filename: path.basename(absolute), title: emptySource ? `空白副本 · ${path.basename(absolute)}` : typeof data.title === "string" ? data.title : path.basename(absolute),
+    extension, size: stat.size, created_at: stat.birthtime.toISOString(), modified_at: stat.mtime.toISOString(), lifecycle_revision: lifecycleRevision,
     scope: root.scope, source_module: root.moduleId, instance_id: root.instanceId,
     content_type: typeof data.content_type === "string" ? data.content_type : applicationReport ? "research-report" : extension.slice(1) || "file",
     state, confidence, reasons, required_read_level: requiresAi ? 1 : 0, requires_ai: requiresAi,
     processor, suggested_module_id: suggestedModule, suggested_instance_id: suggestedInstance,
     auto_route_threshold: moduleThreshold(modules.find((entry) => entry.data.id === suggestedModule)),
-    retryable: state === "failed", error: interrupted ? "Previous processing was interrupted; explicit retry is required." : stored?.error ?? null, review_after: stored?.review_after ?? null,
-    task_id: stored?.task_id ?? null,
-    available_actions: availableActions(state),
+    retryable: state === "failed", blocked_by_open_editor: blockedByOpenEditor,
+    error: emptySource ? "此文件没有可处理的正文内容。它可能是归档后被重新创建的同名空白副本；请移至恢复区或手动补充内容。" : interrupted ? "Previous processing was interrupted; explicit retry is required." : stored?.error ?? null, review_after: stored?.review_after ?? null,
+    task_id: reintroducedAfterProcessing ? null : stored?.task_id ?? null,
+    available_actions: availableActions(state, blockedByOpenEditor),
   };
 }
 
@@ -223,15 +259,26 @@ export async function listInbox(vaultRoot: string, params: JsonObject = {}, cont
 }
 
 export function inboxDashboardItem(item: InboxItemView): DashboardItem {
+  const failedByModelVersion = item.error && /requires a newer version|model unavailable|model.*not available/i.test(item.error);
+  const title = item.state === "empty" ? "Inbox 中有空白副本" : item.state === "failed" ? "Inbox 文件处理失败" : item.title;
+  const description = item.state === "empty"
+    ? `文件“${item.filename}”没有正文内容，系统不会交给 AI 处理。请在 Inbox 中将它移至恢复区，或补充真实内容后再处理。`
+    : item.state === "failed"
+    ? failedByModelVersion
+      ? "当前选择的 Codex 模型无法运行，请在设置中更换模型或升级 Codex CLI 后重试。"
+      : `文件“${item.filename}”未能完成处理，请打开 Inbox 查看原因并重试。`
+    : item.state === "waiting-for-user" ? "Needs a routing decision." : item.state === "waiting-for-ai" ? "Waiting for module/Codex processing." : `Inbox state: ${item.state}`;
   const actions = item.state === "failed"
     ? ["open", "retry"]
     : item.state === "waiting-for-user"
       ? ["open", "run", "defer", "dismiss"]
-      : ["open", "run", "defer"];
+      : ["waiting-for-ai", "processing"].includes(item.state)
+        ? ["open"]
+        : ["open", "run", "defer"];
   return {
     item_id: `DSH-${item.item_id}`, source_module: item.suggested_module_id ?? "core", instance_id: item.suggested_instance_id,
-    category: item.state === "failed" ? "system" : "action", priority: item.state === "failed" ? "high" : "medium",
-    title: item.title, description: item.state === "waiting-for-user" ? "Needs a routing decision." : item.state === "waiting-for-ai" ? "Waiting for module/Codex processing." : `Inbox state: ${item.state}`,
+    category: ["failed", "empty"].includes(item.state) ? "system" : ["waiting-for-ai", "processing"].includes(item.state) ? "research" : "action", priority: item.state === "failed" ? "high" : "medium",
+    title, description,
     target: item.path, due_at: item.review_after, created_at: item.created_at, blocks_count: 0, active_context: true,
     actions,
   };

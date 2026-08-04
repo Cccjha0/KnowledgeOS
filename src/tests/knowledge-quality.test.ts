@@ -14,6 +14,7 @@ import { evaluateFreshness, resolveVerificationInterval } from "../quality/fresh
 import { reviewFingerprint } from "../quality/fingerprint.js";
 import { QualityRepository } from "../quality/repository.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import { qualityIssueToDashboardItem } from "../quality/presentation.js";
 import type { JsonObject } from "../core/types.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -82,6 +83,33 @@ test("freshness distinguishes verified, due-soon, stale, historical and hierarch
   assert.equal(evaluateFreshness({ lastVerified: "2026-07-22T00:00:00Z", intervalDays: 7, now }).verification_status, "due-soon");
   assert.equal(evaluateFreshness({ lastVerified: "2026-07-20T00:00:00Z", intervalDays: 7, now }).verification_status, "stale");
   assert.equal(evaluateFreshness({ lastVerified: "2020-01-01T00:00:00Z", intervalDays: 7, now, historical: true }).verification_status, "historical");
+});
+
+test("Today translates stale quality issues into a user action", () => {
+  const item = qualityIssueToDashboardItem({
+    issue_id: "QI-TEST-STALE",
+    fingerprint: "stale-presentation",
+    issue_type: "stale-critical-field",
+    dimension: "freshness",
+    severity: "high",
+    module: "application-tracker",
+    instance_id: "demo",
+    target: { path: "20-Workspace/Applications/demo/Records/Application.md", field: "application_open" },
+    detected_at: "2026-08-04T00:00:00Z",
+    detector: { id: "stale-field-auditor", version: "1" },
+    evidence: {},
+    status: "open",
+    recommended_action: { type: "create-research-request" },
+    first_seen: "2026-08-04T00:00:00Z",
+    last_seen: "2026-08-04T00:00:00Z",
+    occurrence_count: 1,
+    last_notified: null,
+    suppressed_until: null,
+    resolution: null,
+  });
+  assert.equal(item.title, "重要申请信息需要重新核验");
+  assert.match(item.description, /申请开放状态/);
+  assert.match(item.description, /不会直接覆盖正式档案/);
 });
 
 test("content ownership protects user and source regions while mixed AI changes require review", () => {

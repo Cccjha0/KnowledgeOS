@@ -104,6 +104,15 @@ export function createProcessApplicationInboxAi(executeJson: CodexJsonExecutor =
     }
     return { completion_reason: "inbox-item-no-longer-pending", input_files: [sourceFile], metrics: { skipped: 1 } as JsonObject };
   }
+  if (item.state === "empty") {
+    await writeState(vaultRoot, item, "empty", task.task_id, runId, { attempts: task.attempt_count, error: item.error });
+    await rebuildTodayDashboard(vaultRoot);
+    return {
+      completion_reason: "inbox-empty-source",
+      input_files: [sourceFile],
+      metrics: { skipped: 1, empty_source: 1, codex_calls: 0 } as JsonObject,
+    };
+  }
   await writeState(vaultRoot, item, "processing", task.task_id, runId, { attempts: task.attempt_count + 1 });
   try {
     checkpoint();
@@ -152,7 +161,12 @@ export function createProcessApplicationInboxAi(executeJson: CodexJsonExecutor =
       metrics: { files_read: 1, files_written: processed.destination ? 1 : 0, reviews_created: processed.reviewCount, codex_calls: item.processor === "application-research-report" ? 0 : 1 } as JsonObject,
     };
   } catch (error) {
-    await writeState(vaultRoot, item, "failed", task.task_id, runId, { attempts: task.attempt_count + 1, error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
+    const blockedByOpenEditor = error instanceof PkbError && error.code === "OBSIDIAN_FILE_OPEN";
+    await writeState(vaultRoot, item, blockedByOpenEditor ? "waiting-for-user" : "failed", task.task_id, runId, {
+      attempts: task.attempt_count + 1,
+      error: error instanceof Error ? error.message : String(error),
+      result: blockedByOpenEditor ? { status: "waiting-for-user", coordination: "obsidian-file-open", source_file: sourceFile } : null,
+    }).catch(() => undefined);
     await rebuildTodayDashboard(vaultRoot).catch(() => undefined);
     throw error;
   }

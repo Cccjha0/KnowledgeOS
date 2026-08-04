@@ -98,7 +98,7 @@ export interface CreateCaptureParams {
   preview_only?: boolean;
 }
 
-export type InboxAction = "preview" | "process" | "route" | "retry" | "defer" | "ignore" | "unmanage";
+export type InboxAction = "preview" | "process" | "route" | "retry" | "defer" | "ignore" | "unmanage" | "quarantine-empty";
 
 export interface ProcessInboxItemParams {
   item_id: string;

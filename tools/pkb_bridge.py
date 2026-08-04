@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+from datetime import date, datetime, time
 import json
 import sys
 import yaml
@@ -11,6 +12,19 @@ def fail(message: str, details=None, code: int = 2):
         payload["details"] = details
     print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
     raise SystemExit(code)
+
+
+def json_safe(value):
+    """Normalize valid YAML scalar types to the JSON contract used by Core."""
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, set):
+        return [json_safe(item) for item in sorted(value, key=str)]
+    return value
 
 
 def parse_frontmatter(text: str):
@@ -27,7 +41,7 @@ def parse_frontmatter(text: str):
     if end is None:
         fail("Markdown frontmatter is not closed")
     raw = "".join(lines[1:end])
-    data = yaml.safe_load(raw) or {}
+    data = json_safe(yaml.safe_load(raw) or {})
     if not isinstance(data, dict):
         fail("Markdown frontmatter must be a mapping")
     content = "".join(lines[end + 1:])
@@ -102,7 +116,7 @@ def main():
 
     if command == "parse-yaml":
         path = Path(sys.argv[2])
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = json_safe(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
         print(json.dumps(data, ensure_ascii=False))
         return
 
@@ -122,7 +136,7 @@ def main():
             schema_id = item["schema_id"]
             if schema_id not in schemas:
                 fail(f"Unknown schema: {schema_id}", {"index": index, "path": str(path)})
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data = json_safe(yaml.safe_load(path.read_text(encoding="utf-8")) or {})
             validator = Draft202012Validator(
                 schemas[schema_id],
                 registry=registry,

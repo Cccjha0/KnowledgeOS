@@ -184,6 +184,8 @@ function friendlyDashboardDescription(description) {
   if (parts.length === 1) {
     if (text === "assign-owner") return "选择这个文件的归属位置";
     if (text === "unowned-file") return "这个文件还没有归类";
+    if (text === "create-research-request") return "确认后会创建申请核验请求，研究结果仍需审核，不会直接覆盖正式档案";
+    if (text === "stale-critical-field") return "重要申请信息已超过建议核验周期，需要重新核验";
     return text;
   }
   const values = {};
@@ -212,6 +214,8 @@ function friendlyDashboardTitle(title) {
   const text = String(title || "").trim();
   if (text === "unowned-file") return "文件尚未归类";
   if (text === "assign-owner") return "选择文件归属";
+  if (text === "stale-critical-field") return "重要申请信息需要重新核验";
+  if (text === "quality.stale-field-followup") return "申请信息需要重新核验";
   if (/^Research Request(?:\s+REQ-[\w-]+)?$/i.test(text)) return "申请信息核验";
   return text || "待处理事项";
 }
@@ -871,6 +875,7 @@ class ReviewCenterView extends ItemView {
     this.actionPendingReviewId = null;
     this.pendingReviewActions = new Map();
     this.reviewActionErrors = new Map();
+    this.activeReviewId = null;
   }
   getViewType() { return REVIEW_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS Reviews"; }
@@ -989,7 +994,10 @@ class ReviewCenterView extends ItemView {
   }
 
   async loadReviews(selectedReviewId = null) {
-    if (selectedReviewId) this.pendingReviewId = selectedReviewId;
+    if (selectedReviewId) {
+      this.pendingReviewId = selectedReviewId;
+      this.activeReviewId = selectedReviewId;
+    }
     if (this.loadPromise) {
       this.loadQueued = true;
       return this.loadPromise;
@@ -1053,8 +1061,8 @@ class ReviewCenterView extends ItemView {
       this.actionFilter.value = selectedAction;
     }
     if (!this.reviews.length) { this.renderReviewEmpty(); return; }
-    if (selectedReviewId) {
-      const selected = this.reviews.find((review) => review.review_id === selectedReviewId);
+    if (this.activeReviewId) {
+      const selected = this.reviews.find((review) => review.review_id === this.activeReviewId);
       if (selected) { this.renderDetail(selected); return; }
     }
     this.renderReviewList();
@@ -1087,6 +1095,7 @@ class ReviewCenterView extends ItemView {
   }
 
   renderReviewEmpty() {
+    this.activeReviewId = null;
     this.contentEl.removeClass("is-review-detail");
     const empty = this.listEl.createDiv({ cls: "knowledgeos-review-empty" });
     const icon = empty.createSpan({ cls: "knowledgeos-review-empty-icon", attr: { "aria-hidden": "true" } });
@@ -1100,6 +1109,7 @@ class ReviewCenterView extends ItemView {
   }
 
   renderReviewList() {
+    this.activeReviewId = null;
     this.contentEl.removeClass("is-review-detail");
     this.listEl.empty();
     const section = this.listEl.createEl("section", { cls: "knowledgeos-review-results", attr: { "aria-label": "审核事项" } });
@@ -1134,6 +1144,7 @@ class ReviewCenterView extends ItemView {
   }
 
   showCachedReviewList() {
+    this.activeReviewId = null;
     this.contentEl.removeClass("is-review-detail");
     this.listEl.removeAttribute("aria-busy");
     this.backgroundStatus = null;
@@ -1210,6 +1221,7 @@ class ReviewCenterView extends ItemView {
   }
 
   renderDetail(review) {
+    this.activeReviewId = review.review_id;
     this.contentEl.addClass("is-review-detail");
     const root = this.listEl;
     root.empty();
@@ -1266,7 +1278,7 @@ class ReviewCenterView extends ItemView {
     if (review.available_actions.includes("approve-with-modification")) this.actionButton(actions, "修改后接受", review, "approve-with-modification");
     if (review.available_actions.includes("discuss")) {
       const discuss = actions.createEl("button", { text: "与 Codex 讨论" });
-      discuss.onclick = () => new ReviewDiscussionModal(this.app, this.plugin, review, () => this.loadReviews()).open();
+      discuss.onclick = () => new ReviewDiscussionModal(this.app, this.plugin, review, () => this.loadReviews(this.activeReviewId)).open();
     }
     if (review.available_actions.includes("defer")) this.actionButton(actions, "延后", review, "defer");
     if (review.available_actions.includes("reject")) this.actionButton(actions, "拒绝", review, "reject");
@@ -1298,15 +1310,16 @@ class ReviewCenterView extends ItemView {
     if (!response.ok) {
       const message = response.error?.message || "审核处理失败";
       this.reviewActionErrors.set(review.review_id, message);
-      this.showCachedReviewList();
+      if (!this.activeReviewId || this.activeReviewId === review.review_id) this.showCachedReviewList();
       this.plugin.notify(message, { error: true });
       return;
     }
     this.reviewActionErrors.delete(review.review_id);
     this.reviews = this.reviews.filter((item) => item.review_id !== review.review_id);
-    this.showCachedReviewList();
+    if (!this.activeReviewId || this.activeReviewId === review.review_id) this.showCachedReviewList();
+    else this.updateReviewSummary();
     this.plugin.notify(`审核已更新为 ${response.data.status}`);
-    void this.loadReviews();
+    void this.loadReviews(this.activeReviewId);
   }
 
   async simpleAction(review, mode) {
@@ -1331,7 +1344,7 @@ class ReviewCenterView extends ItemView {
       return;
     }
     this.plugin.notify("审核状态已更新");
-    await this.loadReviews();
+    await this.loadReviews(this.activeReviewId);
   }
 }
 
@@ -1461,13 +1474,15 @@ class InboxCenterView extends ItemView {
     root.removeAttribute("aria-busy");
     this.backgroundStatus = null;
     this.renderPageHeader(root);
-    const eligible = this.listing.items.filter((item) => item.confidence >= item.auto_route_threshold && !item.requires_ai);
+    const eligible = this.listing.items.filter((item) => item.state === "pending" && item.confidence >= item.auto_route_threshold && !item.requires_ai);
 
     const overview = root.createDiv({ cls: "knowledgeos-inbox-overview" });
     const summaryParts = [];
     if (this.listing.counts.total) summaryParts.push(`${this.listing.counts.total} 个待整理`);
     if (this.listing.counts.needs_routing) summaryParts.push(`${this.listing.counts.needs_routing} 个需要选择归属`);
     if (this.listing.counts.failed) summaryParts.push(`${this.listing.counts.failed} 个失败`);
+    const emptyCopies = this.listing.items.filter((item) => item.state === "empty").length;
+    if (emptyCopies) summaryParts.push(`${emptyCopies} 个空白副本`);
     if (this.listing.counts.waiting_for_ai) summaryParts.push(`${this.listing.counts.waiting_for_ai} 个等待 AI`);
     if (summaryParts.length) overview.createDiv({ cls: "knowledgeos-inbox-summary-line", text: summaryParts.join(" · ") });
     if (this.lastSuccessfulAt) {
@@ -1497,11 +1512,11 @@ class InboxCenterView extends ItemView {
     }
 
     const sections = [
-      ["attention", "需要处理", (item) => ["failed", "waiting-for-user"].includes(item.state)],
+      ["attention", "需要处理", (item) => ["failed", "empty", "waiting-for-user"].includes(item.state)],
       ["ready", "可以整理", (item) => item.state === "pending"],
       ["waiting", "等待系统", (item) => ["waiting-for-ai", "processing"].includes(item.state)],
       ["deferred", "已延后", (item) => item.state === "deferred"],
-      ["other", "其他", (item) => !["failed", "waiting-for-user", "pending", "waiting-for-ai", "processing", "deferred"].includes(item.state)],
+      ["other", "其他", (item) => !["failed", "empty", "waiting-for-user", "pending", "waiting-for-ai", "processing", "deferred"].includes(item.state)],
     ];
     let rendered = 0;
     for (const [id, label, matches] of sections) {
@@ -1552,8 +1567,9 @@ class InboxCenterView extends ItemView {
     return `建议归入：${module}${instance ? ` / ${instance}` : ""}`;
   }
 
-  inboxStateLabel(state) {
-    return ({ pending: "可以处理", processing: "正在处理", "waiting-for-user": "需要选择", "waiting-for-ai": "等待 AI", failed: "处理失败", deferred: "已延后" })[state] || labelStatus(state);
+  inboxStateLabel(state, blockedByOpenEditor = false) {
+    if (blockedByOpenEditor) return "等待关闭笔记";
+    return ({ pending: "可以处理", processing: "正在处理", "waiting-for-user": "需要选择", "waiting-for-ai": "等待 AI", failed: "处理失败", empty: "空白副本", deferred: "已延后" })[state] || labelStatus(state);
   }
 
   friendlyReason(item) {
@@ -1563,7 +1579,10 @@ class InboxCenterView extends ItemView {
       "valid-instance-hint": "文件包含有效实例信息",
       "valid-module-hint": "文件包含有效模块信息",
       "structured-application-research-report": "识别为结构化申请研究报告",
+      "obsidian-file-open": "该笔记仍在 Obsidian 编辑器中打开，系统已暂停移动以保护内容",
       "no-reliable-route": "尚无可靠归属",
+      "empty-source": "文件为空，没有可供处理的正文",
+      "empty-normalization-artifact": "检测到此前针对空文件生成的属性，原始正文不存在",
     };
     return item.reasons.map((reason) => labels[reason] || reason.replaceAll("-", " ")).join("；") || "尚无可靠路由依据";
   }
@@ -1581,11 +1600,13 @@ class InboxCenterView extends ItemView {
     const heading = card.createDiv({ cls: "knowledgeos-inbox-item-heading" });
     const title = heading.createEl("button", { cls: "knowledgeos-link knowledgeos-inbox-item-title", text: item.title });
     title.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
-    heading.createSpan({ cls: `knowledgeos-inbox-item-status state-${item.state}`, text: this.inboxStateLabel(item.state) });
+    heading.createSpan({ cls: `knowledgeos-inbox-item-status state-${item.state}`, text: this.inboxStateLabel(item.state, item.blocked_by_open_editor) });
     card.createDiv({ cls: `knowledgeos-inbox-ownership${item.suggested_module_id ? "" : " is-unresolved"}`, text: this.ownershipText(item) });
     card.createDiv({ cls: "knowledgeos-inbox-reason", text: this.friendlyReason(item) });
     const visibleError = this.itemActionErrors.get(item.item_id) || item.error;
     if (visibleError) markLiveRegion(card.createDiv({ cls: "knowledgeos-inbox-item-error", text: visibleError }), "assertive");
+    if (item.state === "empty") card.createDiv({ cls: "knowledgeos-inbox-empty-source", text: "系统不会将空白副本交给 AI。移至恢复区后可通过 System Center 的运行记录撤销。" });
+    if (item.blocked_by_open_editor) card.createDiv({ cls: "knowledgeos-inbox-open-file", text: "先保存并关闭这篇笔记。若它已有后台任务，系统会在下一次检查时继续；也可随后点击“已关闭，继续”。" });
     if (item.requires_ai) card.createDiv({ cls: "knowledgeos-inbox-ai", text: "需要 Codex 或模块工作流继续处理。" });
 
     const footer = card.createDiv({ cls: "knowledgeos-inbox-item-footer" });
@@ -1593,7 +1614,7 @@ class InboxCenterView extends ItemView {
     meta.createSpan({ text: item.content_type || "文件" });
     const time = createTime(meta, item.created_at, " · ");
     time.addClass("knowledgeos-inbox-created");
-    const primary = footer.createEl("button", { cls: "mod-cta knowledgeos-inbox-primary", text: pending ? "处理中…" : item.state === "failed" ? "重试" : item.state === "waiting-for-user" ? "选择归属" : item.state === "waiting-for-ai" ? "继续处理" : item.state === "deferred" ? "立即处理" : "处理" });
+    const primary = footer.createEl("button", { cls: `${item.state === "empty" ? "mod-warning" : "mod-cta"} knowledgeos-inbox-primary`, text: pending ? "处理中…" : item.state === "empty" ? "移至恢复区" : item.blocked_by_open_editor ? "已关闭，继续" : item.state === "failed" ? "重试" : item.state === "waiting-for-user" ? "选择归属" : item.state === "waiting-for-ai" ? "继续处理" : item.state === "deferred" ? "立即处理" : "处理" });
     primary.disabled = pending;
 
     const route = this.selectedRoute(item);
@@ -1627,7 +1648,17 @@ class InboxCenterView extends ItemView {
     moduleSelect.disabled = pending || this.partialWarnings.length > 0;
     instanceSelect.disabled = pending || this.partialWarnings.length > 0;
 
-    if (item.state === "waiting-for-user") {
+    if (item.state === "empty") {
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-empty-source", text: "该文件没有正文，无需选择归属。" });
+      moduleSelect.disabled = true;
+      instanceSelect.disabled = true;
+      primary.onclick = () => this.processItem(item, "quarantine-empty", {}, card);
+    } else if (item.blocked_by_open_editor) {
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-open-file", text: "为避免 Obsidian 的编辑器状态重新创建旧文件，归属不能在此状态下修改。保存并关闭笔记后再继续。" });
+      moduleSelect.disabled = true;
+      instanceSelect.disabled = true;
+      primary.onclick = () => this.processItem(item, "process", {}, card);
+    } else if (item.state === "waiting-for-user") {
       primary.onclick = () => { details.open = true; this.expandedItems.add(item.item_id); moduleSelect.focus(); };
       const process = routeFieldset.createEl("button", { cls: "mod-cta knowledgeos-inbox-route-process", text: pending ? "处理中…" : "处理" });
       process.disabled = pending || this.partialWarnings.length > 0;
@@ -1645,15 +1676,19 @@ class InboxCenterView extends ItemView {
     preview.onclick = () => this.previewItem(item, card);
     const open = actions.createEl("button", { text: "打开" });
     open.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
-    const defer = actions.createEl("button", { text: "明天提醒" });
-    defer.disabled = pending;
-    defer.onclick = () => this.processItem(item, "defer", { review_after: new Date(Date.now() + 86_400_000).toISOString() }, card);
+    if (item.state !== "empty" && !item.blocked_by_open_editor) {
+      const defer = actions.createEl("button", { text: "明天提醒" });
+      defer.disabled = pending;
+      defer.onclick = () => this.processItem(item, "defer", { review_after: new Date(Date.now() + 86_400_000).toISOString() }, card);
+    }
     const ignore = actions.createEl("button", { text: "忽略" });
     ignore.disabled = pending;
     ignore.onclick = () => this.processItem(item, "ignore", {}, card);
-    const unmanage = actions.createEl("button", { cls: "mod-warning knowledgeos-inbox-unmanage", text: "移出系统管理" });
-    unmanage.disabled = pending;
-    unmanage.onclick = () => this.processItem(item, "unmanage", {}, card);
+    if (item.state !== "empty") {
+      const unmanage = actions.createEl("button", { cls: "mod-warning knowledgeos-inbox-unmanage", text: "移出系统管理" });
+      unmanage.disabled = pending;
+      unmanage.onclick = () => this.processItem(item, "unmanage", {}, card);
+    }
 
     const fileInfo = detailBody.createDiv({ cls: "knowledgeos-inbox-file-info" });
     fileInfo.createDiv({ text: item.path });
@@ -1709,12 +1744,13 @@ class InboxCenterView extends ItemView {
     if (this.pendingItemIds.has(item.item_id)) return;
     this.pendingItemIds.add(item.item_id);
     this.itemActionErrors.delete(item.item_id);
-    if (card) this.setItemBusy(card, action === "retry" ? "正在重试处理…" : "正在处理条目…");
+    if (card) this.setItemBusy(card, action === "quarantine-empty" ? "正在移至恢复区…" : action === "retry" ? "正在重试处理…" : item.blocked_by_open_editor ? "正在确认笔记已关闭…" : "正在处理条目…");
     const route = this.selectedRoute(item);
     const response = await this.plugin.client.invoke("processInboxItem", {
       item_id: item.item_id, action,
       codex_model: this.plugin.settings.codexModel,
       codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      obsidian_open_paths: this.plugin.getOpenMarkdownPaths(),
       ...route, ...extra,
     });
     this.pendingItemIds.delete(item.item_id);
@@ -1727,7 +1763,11 @@ class InboxCenterView extends ItemView {
       return;
     }
     this.itemActionErrors.delete(item.item_id);
-    this.resultMessage = response.data.task_id
+    this.resultMessage = response.data.status === "quarantined-empty-source"
+      ? "空白副本已移至恢复区；原始文件内容不会被删除，可在 System Center 中通过该次运行撤销。"
+      : response.data.status === "waiting-for-user" && response.data.reason?.includes("Close the open Obsidian note")
+      ? "笔记仍处于打开状态，系统没有移动它。请保存并关闭后再继续。"
+      : response.data.task_id
       ? `AI 任务 ${response.data.task_id} 已${response.data.status === "queued" ? "进入队列" : "更新"}；Codex 可用时将自动继续。`
       : response.data.status === "waiting-for-ai" ? "条目已安全保留，等待 Codex / 模块工作流。" : `Inbox 状态已更新：${response.data.status}`;
     await this.refresh();
@@ -3393,6 +3433,12 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);
   }
 
+  getOpenMarkdownPaths() {
+    return [...new Set(this.app.workspace.getLeavesOfType("markdown")
+      .map((leaf) => leaf.view?.file?.path)
+      .filter((filePath) => typeof filePath === "string" && filePath.endsWith(".md")))].sort();
+  }
+
   async runTaskCycle(startup = false) {
     if (this.taskCycleRunning) return;
     this.taskCycleRunning = true;
@@ -3402,6 +3448,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
         network_probe_url: this.settings.networkProbeUrl || undefined,
         codex_model: this.settings.codexModel,
         codex_reasoning_effort: this.settings.codexReasoningEffort,
+        obsidian_open_paths: this.getOpenMarkdownPaths(),
       });
       if (!response.ok) return;
       if (!taskCycleChanged(response.data)) return;

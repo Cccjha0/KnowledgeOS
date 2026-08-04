@@ -98,6 +98,14 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     if (classified.code === "TASK_CANCELLED") {
       return repository.finishRun(run.run_id, { runStatus: "cancelled", taskStatus: "cancelled", error: classified, metrics: { duration_ms: performance.now() - started }, completionReason: "cooperative-cancelled" }).task;
     }
+    if (classified.code === "OBSIDIAN_FILE_OPEN") {
+      const finished = repository.finishRun(run.run_id, {
+        runStatus: "failed", taskStatus: "waiting-for-user", error: classified,
+        metrics: { duration_ms: performance.now() - started }, completionReason: "obsidian-file-open",
+      }).task;
+      repository.recordMetricEvent({ idempotency_key: `${run.run_id}:waiting-for-user`, event_type: "task.waiting-for-user", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { reason: "obsidian-file-open" }, values: { duration_ms: performance.now() - started } });
+      return finished;
+    }
     const attempt = run.attempt_number;
     const delays = [5, 15, 45];
     const retry = classified.retryable && attempt < task.max_attempts;

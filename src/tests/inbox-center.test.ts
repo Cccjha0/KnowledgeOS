@@ -76,6 +76,9 @@ test("Inbox routing uses an Operation Plan and module items wait for Codex inste
     const secondList = await invokeCommandApi({ vaultRoot: vault, requestId: "LIST-3", method: "listInboxItems", params: {} });
     const moduleItem = ((secondList.data as JsonObject).items as JsonObject[])[0]!;
     assert.equal(moduleItem.state, "waiting-for-ai");
+    const waitingToday = await invokeCommandApi({ vaultRoot: vault, requestId: "TODAY-WAITING-AI", method: "getTodayItems", params: {} });
+    assert.equal(waitingToday.ok, true);
+    assert.equal((((waitingToday.data as JsonObject).focus as JsonObject[]) ?? []).some((entry) => entry.target === moduleItem.path), false);
     const process = await invokeCommandApi({ vaultRoot: vault, requestId: "PROCESS-2", method: "processInboxItem", params: { item_id: String(moduleItem.item_id), action: "process" } });
     assert.equal(process.ok, true);
     assert.equal(process.state, "waiting-for-ai");
@@ -119,9 +122,63 @@ test("application Inbox AI work creates one durable Task and repeated Continue r
     repository = await RuntimeRepository.open(vault);
     assert.equal(repository.listTasks().filter((task) => task.payload.item_id === item.item_id).length, 1);
     repository.close();
-    const again = await materializeInboxAiTasks(vault);
+    const again = await materializeInboxAiTasks(vault, "gpt-5.6-terra", "high");
     assert.equal(again.created.length, 0);
     assert.equal(again.deduplicated, 1);
+
+    const changedProfile = await materializeInboxAiTasks(vault, "gpt-5.4", "medium");
+    assert.equal(changedProfile.created.length, 1);
+    repository = await RuntimeRepository.open(vault);
+    assert.equal(repository.getTask(changedProfile.created[0]!)?.payload.codex_model, "gpt-5.4");
+    assert.equal(repository.getTask(changedProfile.created[0]!)?.payload.codex_reasoning_effort, "medium");
+    repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("empty Inbox copies never reach Codex and can be moved to the recovery area", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-empty-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "empty-application";
+    const created = await invokeCommandApi({
+      vaultRoot: vault, requestId: "EMPTY-INSTANCE", method: "createInstance",
+      params: { module_id: "application-tracker", instance_id: instanceId, display_name: "Empty application", fields: { application_type: "masters", region: "Australia", intake: "2027-S1", default_currency: "AUD" } },
+    });
+    assert.equal(created.ok, true);
+    const inbox = path.join(vault, "20-Workspace", "Applications", instanceId, "Inbox");
+    const source = path.join(inbox, "stale-copy.md");
+    await fs.writeFile(source, "", "utf8");
+    await fs.writeFile(path.join(inbox, "normalized-empty-copy.md"), [
+      "---", "research_type: application-update", "institution: unknown", "program_name: unknown", "confidence: 0", "sources:", "  - source_type: unknown",
+      "generation:", "  prompt:", "    id: normalize-application-report", "---", "",
+    ].join("\n"), "utf8");
+
+    const listed = await invokeCommandApi({ vaultRoot: vault, requestId: "EMPTY-LIST", method: "listInboxItems", params: {} });
+    assert.equal(listed.ok, true);
+    const item = ((listed.data as JsonObject).items as JsonObject[]).find((candidate) => candidate.path === `20-Workspace/Applications/${instanceId}/Inbox/stale-copy.md`)!;
+    assert.equal(item.state, "empty");
+    assert.match(String(item.error), /没有可处理的正文内容/);
+    const artifact = ((listed.data as JsonObject).items as JsonObject[]).find((candidate) => candidate.path === `20-Workspace/Applications/${instanceId}/Inbox/normalized-empty-copy.md`)!;
+    assert.equal(artifact.state, "empty");
+    assert.ok((artifact.reasons as string[]).includes("empty-normalization-artifact"));
+
+    const materialized = await materializeInboxAiTasks(vault, "gpt-5.6-terra", "medium");
+    assert.equal(materialized.checked, 0);
+    const preview = await invokeCommandApi({ vaultRoot: vault, requestId: "EMPTY-PREVIEW", method: "processInboxItem", params: { item_id: String(item.item_id), action: "preview" } });
+    assert.equal(preview.ok, true);
+    assert.equal(((preview.data as JsonObject).operation_summary as JsonObject).kind, "quarantine-empty-inbox-file");
+
+    const process = await invokeCommandApi({ vaultRoot: vault, requestId: "EMPTY-PROCESS", method: "processInboxItem", params: { item_id: String(item.item_id), action: "process" } });
+    assert.equal(process.ok, false);
+    assert.equal(process.error?.code, "INBOX_EMPTY_SOURCE");
+
+    const quarantined = await invokeCommandApi({ vaultRoot: vault, requestId: "EMPTY-QUARANTINE", method: "processInboxItem", params: { item_id: String(item.item_id), action: "quarantine-empty" } });
+    assert.equal(quarantined.ok, true);
+    assert.equal((quarantined.data as JsonObject).status, "quarantined-empty-source");
+    assert.equal(await exists(source), false);
+    const destination = path.join(vault, String((quarantined.data as JsonObject).destination));
+    assert.equal(await exists(destination), true);
+    assert.equal((await fs.stat(destination)).size, 0);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -177,4 +234,8 @@ test("Inbox and Review refreshes preserve rendered content after their first loa
   assert.match(inboxSource, /const preserveContent = this\.listing !== null/);
   assert.match(inboxSource, /if \(preserveContent\) this\.renderBackgroundStatus\("更新中…"\)/);
   assert.match(inboxSource, /else renderLoadingSkeleton\(root, "正在加载 Inbox…"\)/);
+  assert.match(inboxSource, /blocked_by_open_editor/);
+  assert.match(inboxSource, /已关闭，继续/);
+  assert.match(source, /getOpenMarkdownPaths\(\)/);
+  assert.match(source, /obsidian_open_paths: this\.getOpenMarkdownPaths\(\)/);
 });

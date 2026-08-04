@@ -13,6 +13,7 @@ import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
 import { processApplicationReport } from "./applicationWorkflow.js";
+import { assertMoveSourceNotOpen } from "./obsidianCoordination.js";
 import { rebuildTodayDashboard } from "./dashboard.js";
 import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
 import { RuntimeRepository } from "../runtime/repository.js";
@@ -34,6 +35,16 @@ async function findItem(vaultRoot: string, itemId: string): Promise<InboxItemVie
 function preview(item: InboxItemView, overrides: { moduleId: string | null; instanceId: string | null } = { moduleId: null, instanceId: null }): JsonObject {
   const moduleId = overrides.moduleId ?? item.suggested_module_id;
   const instanceId = overrides.instanceId ?? item.suggested_instance_id;
+  if (item.state === "empty") {
+    return {
+      status: "preview", item_id: item.item_id, path: item.path, current_state: item.state,
+      suggested_ownership: { module_id: moduleId, instance_id: instanceId },
+      content_type: item.content_type, confidence: item.confidence, reasons: item.reasons,
+      required_read_level: 0, requires_codex: false, can_auto_process: false, processor: item.processor,
+      operation_summary: { kind: "quarantine-empty-inbox-file", estimated_operations: 1, target: "Inbox 恢复区（可通过运行记录撤销）" },
+      risk: "green",
+    };
+  }
   return {
     status: "preview", item_id: item.item_id, path: item.path, current_state: item.state,
     suggested_ownership: { module_id: moduleId, instance_id: instanceId },
@@ -69,22 +80,28 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
+    const previousTask = item.task_id ? repository.getTask(item.task_id) : null;
+    const effectiveModel = codexModel?.trim() || (typeof previousTask?.payload.codex_model === "string" ? previousTask.payload.codex_model : undefined);
+    const effectiveReasoningEffort = codexReasoningEffort?.trim() || (typeof previousTask?.payload.codex_reasoning_effort === "string" ? previousTask.payload.codex_reasoning_effort : undefined);
+    const executionProfile = item.requires_ai
+      ? `:${effectiveModel || "default"}:${effectiveReasoningEffort || "default"}`
+      : ":deterministic";
     const result = repository.createTask({
       job_id: `${moduleId}.inbox-processing`, module: moduleId, instance_id: instanceId,
       task_type: "workflow", workflow, priority: "normal", scheduled_for: new Date().toISOString(),
-      resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
+      resources: { filesystem: "required", network: "not-required", codex: item.requires_ai ? "required" : "not-required", user: "not-required" },
       trigger: { type: "inbox", item_id: item.item_id, source_file: item.path, workflow_id: "process-research-report", workflow_version: "1.0.0" },
-      catch_up_policy: "latest", idempotency_key: `inbox:${item.item_id}:${sourceHash}`,
+      catch_up_policy: "latest", idempotency_key: `inbox:${item.item_id}:${sourceHash}:${item.lifecycle_revision}${executionProfile}`,
       max_attempts: 3, payload: {
         item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
-        ...(codexModel?.trim() ? { codex_model: codexModel.trim() } : {}),
-        ...(codexReasoningEffort?.trim() ? { codex_reasoning_effort: codexReasoningEffort.trim() } : {}),
+        ...(effectiveModel ? { codex_model: effectiveModel } : {}),
+        ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
       },
       concurrency_key: `inbox:${item.item_id}`, concurrency_policy: "forbid",
     });
     let task = result.task;
     if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
-    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : "waiting-for-ai";
+    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : item.requires_ai ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
       attempts: task.attempt_count, task_id: task.task_id, error: task.last_error?.message ?? null,
       result: { status: task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated },
@@ -96,7 +113,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
 export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: string, codexReasoningEffort?: string): Promise<{ created: string[]; deduplicated: number; checked: number }> {
   const output = { created: [] as string[], deduplicated: 0, checked: 0 };
   for (const item of await discoverInboxItems(vaultRoot)) {
-    if (!item.requires_ai || item.scope !== "instance" || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
+    if (item.scope !== "instance" || item.state === "empty" || item.blocked_by_open_editor || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
     const moduleId = item.suggested_module_id; const instanceId = item.suggested_instance_id;
     if (!moduleId || !instanceId || !inboxAiWorkflow(moduleId)) continue;
     output.checked += 1;
@@ -158,6 +175,7 @@ async function executeRoute(vaultRoot: string, item: InboxItemView, moduleId: st
   const destination = await routeDestination(vaultRoot, item, moduleId, instanceId);
   if (destination === item.path) return { status: "waiting-for-ai", ui_state: "waiting-for-ai", item_id: item.item_id, path: item.path, reason: "Item is already in the selected module Inbox; its module workflow requires Codex." };
   if (await exists(fromVaultPath(vaultRoot, destination))) throw new PkbError("DESTINATION_EXISTS", `Inbox destination already exists: ${destination}`);
+  await assertMoveSourceNotOpen(vaultRoot, item.path);
   const runId = await allocateId(vaultRoot, "RUN");
   const taskId = await allocateId(vaultRoot, "TASK");
   const planId = await allocateId(vaultRoot, "PLAN");
@@ -184,6 +202,39 @@ async function executeRoute(vaultRoot: string, item: InboxItemView, moduleId: st
   return { status: "routed", item_id: item.item_id, source: item.path, destination, module_id: moduleId, instance_id: instanceId, run_id: runId, plan_id: planId, snapshot };
 }
 
+async function quarantineEmptyItem(vaultRoot: string, item: InboxItemView): Promise<JsonObject> {
+  const target = item.path;
+  const destination = `90-System/State/Quarantine/Inbox/${item.item_id}-${item.filename}`;
+  await assertMoveSourceNotOpen(vaultRoot, target);
+  const runId = await allocateId(vaultRoot, "RUN");
+  const taskId = await allocateId(vaultRoot, "TASK");
+  const planId = await allocateId(vaultRoot, "PLAN");
+  const plan: OperationPlan = {
+    plan_id: planId, task_id: taskId, source_module: item.suggested_module_id ?? "core", instance_id: item.suggested_instance_id,
+    summary: "Move an empty Inbox copy to the recovery area",
+    operations: [{
+      operation_id: "OP-001", type: "move-file", target, risk: "green", confidence: 1,
+      idempotency_key: `inbox-quarantine-empty:${item.item_id}:${await sha256File(fromVaultPath(vaultRoot, target))}`,
+      payload: { destination }, requires_review_id: null,
+    }], review_items: [],
+  };
+  await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
+  const startedAt = new Date().toISOString();
+  const snapshot = await createGitSnapshot(vaultRoot, runId);
+  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["move-file"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
+  const run: RunLog = {
+    run_id: runId, task_id: taskId, plan_id: planId, source_module: item.suggested_module_id ?? "core", instance_id: item.suggested_instance_id,
+    review_id: null, status: "completed", git_snapshot: snapshot, started_at: startedAt, completed_at: new Date().toISOString(), schema_version: 1,
+  };
+  await writeRunLog(vaultRoot, run, `# ${runId}\n\nMoved an empty Inbox copy to the recovery area.\n\n- From: ${target}\n- To: ${destination}\n`);
+  await writeInboxState(vaultRoot, stateFor(item, "ignored", {
+    attempts: item.state === "empty" ? 0 : 1, run_id: runId, plan_id: planId,
+    result: { status: "quarantined-empty-source", destination, snapshot },
+  }));
+  await rebuildTodayDashboard(vaultRoot);
+  return { status: "quarantined-empty-source", item_id: item.item_id, source: target, destination, run_id: runId, plan_id: planId, snapshot };
+}
+
 export async function processInboxItem(vaultRoot: string, params: ProcessInboxItemParams): Promise<JsonObject> {
   if (!params.item_id?.trim()) throw new PkbError("INVALID_REQUEST", "item_id is required.");
   const action = params.action ?? "process";
@@ -191,6 +242,12 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
   const moduleId = normalizedOptional(params.module_id) ?? item.suggested_module_id;
   const instanceId = normalizedOptional(params.instance_id) ?? item.suggested_instance_id;
   if (action === "preview") return preview(item, { moduleId, instanceId });
+  if (item.state === "empty") {
+    if (action === "quarantine-empty") return quarantineEmptyItem(vaultRoot, item);
+    if (action !== "ignore" && action !== "unmanage") {
+      throw new PkbError("INBOX_EMPTY_SOURCE", "这个 Inbox 文件没有可处理的正文内容。请补充真实内容，或使用“移至恢复区”清理该空白副本。");
+    }
+  }
   if (action === "defer") {
     if (!params.review_after || !Number.isFinite(Date.parse(params.review_after)) || Date.parse(params.review_after) <= Date.now()) throw new PkbError("INVALID_REQUEST", "review_after must be a future ISO date-time.");
     await writeInboxState(vaultRoot, stateFor(item, "deferred", { review_after: new Date(params.review_after).toISOString() }));
@@ -220,12 +277,32 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
     if (item.scope === "global" || action === "route" || moduleId !== item.source_module || instanceId !== item.instance_id) {
       return await executeRoute(vaultRoot, item, moduleId, instanceId);
     }
-    const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, action === "retry" || item.state === "waiting-for-ai", params.codex_model, params.codex_reasoning_effort);
+    const task = await enqueueInboxAiTask(
+      vaultRoot,
+      item,
+      moduleId,
+      instanceId,
+      action === "retry" || item.state === "waiting-for-ai" || (item.state === "waiting-for-user" && item.blocked_by_open_editor),
+      params.codex_model,
+      params.codex_reasoning_effort,
+    );
     if (task) return { status: task.status, ui_state: task.status === "queued" ? "waiting-for-ai" : task.status, item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id, reason: task.status === "queued" ? "AI Task is queued and will run when Codex is available." : "AI Task is waiting for Codex." };
     const waiting = { status: "waiting-for-ai", ui_state: "waiting-for-ai", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, reason: "This module workflow requires a Codex handoff, but no managed AI handler is available for this module." };
     await writeInboxState(vaultRoot, stateFor(item, "waiting-for-ai", { attempts: 1, result: waiting }));
     return waiting;
   } catch (error) {
+    if (error instanceof PkbError && error.code === "OBSIDIAN_FILE_OPEN") {
+      await writeInboxState(vaultRoot, stateFor(item, "waiting-for-user", {
+        attempts: 1,
+        error: error.message,
+        result: { status: "waiting-for-user", coordination: "obsidian-file-open", source_file: item.path },
+      })).catch(() => undefined);
+      await rebuildTodayDashboard(vaultRoot).catch(() => undefined);
+      return {
+        status: "waiting-for-user", ui_state: "waiting-for-user", item_id: item.item_id, path: item.path,
+        reason: "Close the open Obsidian note before it can be archived.",
+      };
+    }
     await writeInboxState(vaultRoot, stateFor(item, "failed", { attempts: 1, error: error instanceof Error ? error.message : String(error) })).catch(() => undefined);
     throw error;
   } finally {

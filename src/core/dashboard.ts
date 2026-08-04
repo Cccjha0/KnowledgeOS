@@ -172,13 +172,15 @@ export async function buildTodaySnapshot(
   for (const item of all) validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
   const sorted = sortItems(all);
   const reviews = sorted.filter((item) => item.category === "review");
-  const inboxItems = sorted.filter((item) => item.category === "action" && isInboxTarget(item.target));
+  const inboxItems = sorted.filter((item) => item.category !== "system" && isInboxTarget(item.target));
   const failures = sorted.filter((item) => item.category === "system");
   const waitingExternal = sorted.filter((item) => item.category === "research" && item.actions.includes("run"));
   const due = sorted.filter((item) => item.category === "deadline" || Boolean(item.due_at));
   const moduleSummaries = sorted.filter((item) => item.category === "status" || item.category === "summary");
   const focusPool = sorted.filter((item) =>
-    item.category !== "summary" && (item.category !== "status" || item.due_at !== null),
+    item.category !== "summary" &&
+    (item.category !== "status" || item.due_at !== null) &&
+    (item.category !== "research" || item.actions.includes("run")),
   );
   const recentCompleted = await collectRecentRuns(vaultRoot);
   return {
