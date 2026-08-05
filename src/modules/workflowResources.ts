@@ -4,6 +4,7 @@ import { PkbError } from "../core/errors.js";
 import type { DiscoveredDocument } from "../core/discovery.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ResourceRequirement, TaskResources } from "../runtime/domain.js";
+import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 
 const DEFAULT_RESOURCES: TaskResources = {
   filesystem: "required",
@@ -46,9 +47,8 @@ function inferredStepResources(workflow: JsonObject): PartialResources {
     const step = object(rawStep as JsonValue);
     if (!step) continue;
     const uses = typeof step.uses === "string" ? step.uses : "";
-    if (uses === "codex.prompt") inferred.codex = "required";
-    if (uses.startsWith("integration.") || uses.startsWith("network.")) inferred.network = "required";
-    if (uses === "core.await-user" || uses.startsWith("review.")) inferred.user = "required";
+    const definition = getWorkflowStepDefinition(uses);
+    if (definition) Object.assign(inferred, definition.resources);
     Object.assign(inferred, resourcePatch(step.resources, `workflow step ${String(step.id ?? uses)}.resources`));
   }
   return inferred;

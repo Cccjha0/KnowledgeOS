@@ -10,9 +10,8 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
 import type { JsonObject, JsonValue, OperationPlan } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
-import { prepareResearchReconciliation } from "../components/researchReconciliation.js";
-import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
 import { ModuleSdk } from "./sdk.js";
+import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { writeInboxState } from "../platform/inboxDiscovery.js";
 import { runManagedCodexStep } from "../runtime/codexAdapter.js";
@@ -21,16 +20,6 @@ import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const SUPPORTED_STEP_USES = new Set([
-  "core.validate-capture",
-  "core.parse-structured-document",
-  "core.query-documents",
-  "codex.prompt",
-  "component.research-reconciliation",
-  "component.research-request-scheduler",
-  "core.build-operation-plan",
-]);
-
 type CodexJsonExecutor = typeof executeCodexJson;
 
 interface WorkflowStep extends JsonObject {
@@ -436,7 +425,18 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
     if (!steps.length) throw new PkbError("MODULE_WORKFLOW_EMPTY", `${resolved.workflowId} has no steps.`);
     for (const step of steps) {
       checkpoint();
-      if (!SUPPORTED_STEP_USES.has(step.uses)) throw new PkbError("WORKFLOW_STEP_UNSUPPORTED", `${resolved.workflowId} uses unsupported step ${step.uses}.`);
+      const definition = getWorkflowStepDefinition(step.uses);
+      if (!definition) throw new PkbError("WORKFLOW_STEP_UNSUPPORTED", `${resolved.workflowId} uses unsupported step ${step.uses}.`);
+      if (definition.execute) {
+        const sourceFile = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
+          : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
+        state.values.set(step.id, await definition.execute({
+          vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
+          instance: resolved.instance, with: step.with, sourceFile, getValue: (key) => state.values.get(key),
+          allocateId: (prefix) => allocateId(vaultRoot, prefix),
+        }));
+        continue;
+      }
       if (step.uses === "core.validate-capture") {
         const capture = await sourceDocument(vaultRoot, state, task);
         // A Capture can come from Quick Capture (typed frontmatter) or a user
@@ -489,27 +489,6 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         });
         state.values.set(step.id, managed.output);
         state.codexCalls += 1;
-      } else if (step.uses === "component.research-reconciliation") {
-        const report = object(state.values.get(string(step.with.report, "research-reconciliation.report")), "MODULE_WORKFLOW_REPORT_MISSING");
-        const candidateKey = string(step.with.record_candidates, "research-reconciliation.record_candidates");
-        const candidates = state.values.get(candidateKey);
-        if (!Array.isArray(candidates)) throw new PkbError("MODULE_WORKFLOW_RECORD_CANDIDATES_MISSING", `${candidateKey} did not produce record candidates.`);
-        const sourceFile = typeof task.payload.source_file === "string" ? task.payload.source_file : typeof task.payload.capture_path === "string" ? task.payload.capture_path : null;
-        if (!sourceFile) throw new PkbError("MODULE_WORKFLOW_SOURCE_REQUIRED", "Research reconciliation requires source_file.");
-        const result = await prepareResearchReconciliation({
-          vaultRoot, taskId: task.task_id, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
-          instance: resolved.instance ?? (() => { throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Research reconciliation requires an instance."); })(), report, sourceFile: relative(sourceFile, "source_file"),
-          candidates: candidates.map((candidate) => {
-            const document = object(candidate, "MODULE_WORKFLOW_RECORD_CANDIDATE_INVALID");
-            return { path: string(document.path, "record-candidate.path"), data: object(document.data, "record-candidate.data") };
-          }),
-          allocateId: (prefix) => allocateId(vaultRoot, prefix),
-        });
-        state.values.set(step.id, result as unknown as JsonObject);
-      } else if (step.uses === "component.research-request-scheduler") {
-        const planId = await allocateId(vaultRoot, "PLAN");
-        const result = await prepareDueResearchRequests({ vaultRoot, taskId: task.task_id, planId, now: new Date().toISOString(), allocateId: (prefix) => allocateId(vaultRoot, prefix) });
-        state.values.set(step.id, result as unknown as JsonObject);
       } else if (step.uses === "core.build-operation-plan") {
         if (typeof step.with.plan_from === "string") {
           const prepared = object(state.values.get(step.with.plan_from), "MODULE_WORKFLOW_PLAN_MISSING");

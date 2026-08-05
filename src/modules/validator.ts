@@ -4,19 +4,10 @@ import { parseYaml, validateSchema } from "../core/bridge.js";
 import { exists, listFilesRecursive, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } from "./types.js";
+import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const SUPPORTED_WORKFLOW_USES = new Set([
-  "core.validate-capture",
-  "core.parse-structured-document",
-  "core.query-documents",
-  "codex.prompt",
-  "component.research-reconciliation",
-  "component.research-request-scheduler",
-  "core.build-operation-plan",
-]);
-
 function object(value: JsonValue | undefined): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value : null; }
 
 function check(category: ModuleValidationCheck["category"], code: string, status: ModuleValidationCheck["status"], message: string, file: string | null = null, critical = false): ModuleValidationCheck {
@@ -76,12 +67,13 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
       const workflowVersion = workflow.workflow_version ?? workflow.version;
       if (workflowId !== id || String(workflowVersion) !== version) checks.push(check("contracts", "WORKFLOW_METADATA_LEGACY", "warning", `${id} registry and file metadata should use workflow_id/workflow_version ${version}.`, relative));
       for (const step of (workflow.steps as JsonObject[] | undefined) ?? []) {
-        if (typeof step.uses !== "string" || !SUPPORTED_WORKFLOW_USES.has(step.uses)) {
+        const definition = typeof step.uses === "string" ? getWorkflowStepDefinition(step.uses) : null;
+        if (!definition) {
           checks.push(check("permissions", "WORKFLOW_STEP_UNSUPPORTED", "fail", `${id} uses unsupported Core step ${String(step.uses)}.`, relative, true));
           continue;
         }
-        if (step.uses.startsWith("component.")) {
-          const componentId = step.uses.slice("component.".length);
+        if (definition.componentId) {
+          const componentId = definition.componentId;
           const dependencies = object(object(manifest.dependencies)?.components);
           if (!dependencies || typeof dependencies[componentId] !== "string") checks.push(check("contracts", "WORKFLOW_COMPONENT_UNDECLARED", "fail", `${id} uses component ${componentId} without declaring it in dependencies.components.`, relative, true));
         }
