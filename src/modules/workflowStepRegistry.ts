@@ -1,5 +1,7 @@
 import { prepareResearchReconciliation } from "../components/researchReconciliation.js";
 import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
+import { prepareLinkReconciliation } from "../components/linkReconciliation.js";
+import { prepareIndexMaterialization, type IndexEntry } from "../components/indexMaterializer.js";
 import { PkbError } from "../core/errors.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { RuntimeTask, TaskResources } from "../runtime/domain.js";
@@ -66,6 +68,34 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
         }),
         allocateId: context.allocateId,
       });
+      return result as unknown as JsonValue;
+    },
+  },
+  {
+    id: "component.link-reconciliation", version: "1.0.0", resources: FILESYSTEM, componentId: "link-reconciliation",
+    execute: async (context) => {
+      if (!context.instance || typeof context.instance.content_root !== "string") throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Link reconciliation requires an instance content_root.");
+      const raw = context.with.links_from === undefined ? context.with.links : context.getValue(string(context.with.links_from, "LINKS_FROM_REQUIRED"));
+      if (!Array.isArray(raw) || !raw.every((value) => typeof value === "string")) throw new PkbError("LINKS_INVALID", "Link reconciliation requires an array of links.");
+      const result = await prepareLinkReconciliation({ vaultRoot: context.vaultRoot, planId: await context.allocateId("PLAN"), taskId: context.task.task_id, moduleId: context.moduleId,
+        instanceId: context.task.instance_id, instanceRoot: context.instance.content_root, target: string(context.with.target, "LINK_TARGET_REQUIRED"), links: raw,
+        ...(typeof context.with.field === "string" ? { field: context.with.field } : {}) });
+      return result as unknown as JsonValue;
+    },
+  },
+  {
+    id: "component.index-materializer", version: "1.0.0", resources: FILESYSTEM, componentId: "index-materializer",
+    execute: async (context) => {
+      if (!context.instance || typeof context.instance.content_root !== "string") throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Index materialization requires an instance content_root.");
+      const raw = context.with.entries_from === undefined ? context.with.entries : context.getValue(string(context.with.entries_from, "INDEX_ENTRIES_FROM_REQUIRED"));
+      if (!Array.isArray(raw)) throw new PkbError("INDEX_ENTRIES_INVALID", "Index materialization requires an array of entries.");
+      const entries: IndexEntry[] = raw.map((value) => {
+        const entry = object(value, "INDEX_ENTRY_INVALID");
+        return { title: string(entry.title, "INDEX_ENTRY_INVALID"), target: string(entry.target, "INDEX_ENTRY_INVALID"), ...(typeof entry.description === "string" ? { description: entry.description } : {}) };
+      });
+      const result = await prepareIndexMaterialization({ vaultRoot: context.vaultRoot, planId: await context.allocateId("PLAN"), taskId: context.task.task_id, moduleId: context.moduleId,
+        instanceId: context.task.instance_id, instanceRoot: context.instance.content_root, target: string(context.with.target, "INDEX_TARGET_REQUIRED"), title: string(context.with.title, "INDEX_TITLE_REQUIRED"), entries,
+        ...(typeof context.with.section === "string" ? { section: context.with.section } : {}) });
       return result as unknown as JsonValue;
     },
   },

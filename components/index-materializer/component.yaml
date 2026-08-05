@@ -1,0 +1,5 @@
+id: index-materializer
+version: 1.0.0
+maturity: beta
+owns_business_data: false
+capabilities: [system-index-materialization, idempotent-section-append]

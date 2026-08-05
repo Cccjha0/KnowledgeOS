@@ -1,0 +1,5 @@
+id: link-reconciliation
+version: 1.0.0
+maturity: beta
+owns_business_data: false
+capabilities: [frontmatter-link-reconciliation, idempotent-link-merge]
