@@ -12,11 +12,11 @@ parser = argparse.ArgumentParser(description="Validate KnowledgeOS engine and Va
 parser.add_argument(
     "--vault",
     type=Path,
-    default=ENGINE_ROOT.parent / "knowledgeos-vault",
-    help="Path to the Obsidian Vault repository.",
+    default=None,
+    help="Optional Vault path. When omitted, validate only versioned schemas and example fixtures.",
 )
 args = parser.parse_args()
-VAULT_ROOT = args.vault.resolve()
+VAULT_ROOT = args.vault.resolve() if args.vault else None
 
 schema_paths = list((ENGINE_ROOT / "core/schemas").rglob("*.schema.json"))
 schema_paths += list((ENGINE_ROOT / "modules").rglob("*.schema.json"))
@@ -66,15 +66,18 @@ for module_path in sorted((ENGINE_ROOT / "modules").glob("*/module.yaml")):
         str(module_path.relative_to(ENGINE_ROOT)).replace("\\", "/")
     )
 
-instance = yaml.safe_load(
-    (VAULT_ROOT / "90-System/Instances/australia-masters-2027/instance.yaml")
-    .read_text(encoding="utf-8")
-)
-ok &= validate(
-    "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
-    instance,
-    "australia-masters-2027/instance.yaml"
-)
+if VAULT_ROOT:
+    instance = yaml.safe_load(
+        (VAULT_ROOT / "90-System/Instances/australia-masters-2027/instance.yaml")
+        .read_text(encoding="utf-8")
+    )
+    ok &= validate(
+        "https://pkb.local/schemas/application-tracker/application-instance.schema.json",
+        instance,
+        "australia-masters-2027/instance.yaml"
+    )
+else:
+    print("[SKIP] Vault instance fixture (pass --vault to validate a local Vault instance).")
 
 record = json.loads(
     (ENGINE_ROOT / "examples/monash-application-record.json")

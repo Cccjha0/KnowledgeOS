@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['20', '22']
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Enforce Core boundaries
+        run: npm run check:boundaries
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Validate Python schemas and versioned fixtures
+        run: python tools/validate.py
+
+      - name: Run Engine tests, including the PDF adapter
+        run: node --test dist/tests/*.test.js
+
+      - name: Validate modules
+        run: |
+          node dist/cli.js module validate application-tracker
+          node dist/cli.js module validate experience-log
+          node dist/cli.js module validate reading-log
+
+      - name: Run executable module contracts
+        run: |
+          node dist/cli.js module test application-tracker
+          node dist/cli.js module test experience-log
+          node dist/cli.js module test reading-log
+
+  required:
+    name: required
+    if: always()
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix job to pass
+        env:
+          VERIFY_RESULT: ${{ needs.verify.result }}
+        run: |
+          if [ "$VERIFY_RESULT" != "success" ]; then
+            echo "At least one CI matrix job failed: $VERIFY_RESULT"
+            exit 1
+          fi

@@ -1,0 +1,31 @@
+name: Codex isolation (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codex-context-isolation:
+    # This job intentionally requires a controlled self-hosted runner with an
+    # authenticated Codex CLI. It never runs for ordinary pushes or PRs.
+    runs-on: self-hosted
+    environment: codex-integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Attempt a real Context Workspace escape
+        env:
+          KNOWLEDGEOS_RUN_CODEX_INTEGRATION: '1'
+        run: npm run test:codex-isolation
