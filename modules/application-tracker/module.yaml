@@ -100,11 +100,7 @@ dashboard:
 events:
   publishes:
     - research.required
-    - metadata.updated
-    - review.created
     - instance.archived
-  subscribes:
-    - file.added
 
 dependencies:
   components:

@@ -89,8 +89,6 @@ events:
   publishes:
     - experience.daily-log-created
     - experience.weekly-summary-created
-  subscribes:
-    - file.added
 
 dependencies:
   components:

@@ -5,7 +5,7 @@ export type ModuleMaturity = "experimental" | "beta" | "stable" | "deprecated";
 export type ValidationStatus = "pass" | "warning" | "fail";
 
 export interface ModuleValidationCheck extends JsonObject {
-  category: "manifest" | "compatibility" | "schema" | "references" | "permissions" | "contracts" | "behavior" | "prompt-regression" | "lifecycle" | "migration" | "documentation";
+  category: "manifest" | "compatibility" | "schema" | "references" | "permissions" | "contracts" | "behavior" | "prompt-regression" | "lifecycle" | "migration" | "documentation" | "events";
   code: string;
   status: ValidationStatus;
   message: string;

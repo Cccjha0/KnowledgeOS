@@ -3,7 +3,7 @@
   "module_id": "application-tracker",
   "module_version": "0.2.0",
   "maturity": "beta",
-  "generated_at": "2026-07-28T17:29:04.790Z",
+  "generated_at": "2026-08-05T13:49:21.406Z",
   "checks": [
     {
       "category": "manifest",
@@ -81,6 +81,14 @@
       "category": "prompt-regression",
       "code": "PROMPT_METADATA_VALID",
       "status": "pass",
+      "message": "normalize-application-report@1.0.0 has versioned metadata.",
+      "critical": false,
+      "path": "prompts/normalize-report/v1.0.0.md"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "PROMPT_METADATA_VALID",
+      "status": "pass",
       "message": "match-capture@1.0.0 has versioned metadata.",
       "critical": false,
       "path": "prompts/classify/v1.0.0.md"
@@ -118,12 +126,124 @@
       "path": "prompts/index.yaml"
     },
     {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "match uses documented-only Core step core.match-path.",
+      "critical": false,
+      "path": "match/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "match uses documented-only Core step core.match-frontmatter.",
+      "critical": false,
+      "path": "match/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.validate-review-decision.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.build-review-operation-plan.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.check-operation-plan-permissions.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.create-git-snapshot.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.execute-operation-plan.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.persist-review-result.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.write-run-log.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "review-resolve uses documented-only Core step core.build-today-dashboard.",
+      "critical": false,
+      "path": "review-resolve/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "archive-instance uses documented-only Core step core.query-review-items.",
+      "critical": false,
+      "path": "archive-instance/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "archive-instance uses documented-only Core step core.scan-directory.",
+      "critical": false,
+      "path": "archive-instance/v1.0.0.yaml"
+    },
+    {
+      "category": "permissions",
+      "code": "WORKFLOW_STEP_DOCUMENTED_ONLY",
+      "status": "warning",
+      "message": "archive-instance uses documented-only Core step core.update-instance.",
+      "critical": false,
+      "path": "archive-instance/v1.0.0.yaml"
+    },
+    {
       "category": "references",
       "code": "MODULE_WORKFLOWS_REGISTRY_VALID",
       "status": "pass",
       "message": "workflows registry references resolve.",
       "critical": false,
       "path": "workflows/index.yaml"
+    },
+    {
+      "category": "events",
+      "code": "EVENT_CONTRACTS_VALID",
+      "status": "pass",
+      "message": "Event declarations, publish steps, and Event Jobs were checked.",
+      "critical": false,
+      "path": "module.yaml"
     },
     {
       "category": "permissions",
@@ -166,6 +286,22 @@
       "path": "module.yaml"
     },
     {
+      "category": "compatibility",
+      "code": "COMPONENT_COMPATIBLE",
+      "status": "pass",
+      "message": "research-reconciliation 1.0.0 satisfies ^1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "compatibility",
+      "code": "COMPONENT_COMPATIBLE",
+      "status": "pass",
+      "message": "research-request-scheduler 1.0.0 satisfies ^1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
       "category": "documentation",
       "code": "DOC_README_MD",
       "status": "pass",
@@ -191,68 +327,36 @@
     },
     {
       "category": "behavior",
-      "code": "FIXTURES_PRESENT",
+      "code": "MODULE_TEST_SCENARIOS_VALID",
       "status": "pass",
-      "message": "1 fixture file(s) found.",
+      "message": "Executable fixture contract declares all required scenarios.",
       "critical": false,
-      "path": "fixtures"
-    },
-    {
-      "category": "contracts",
-      "code": "TEST_CONTRACT",
-      "status": "pass",
-      "message": "contract test fixture exists.",
-      "critical": false,
-      "path": "tests/contract"
-    },
-    {
-      "category": "behavior",
-      "code": "TEST_BEHAVIOR",
-      "status": "pass",
-      "message": "behavior test fixture exists.",
-      "critical": false,
-      "path": "tests/behavior"
-    },
-    {
-      "category": "permissions",
-      "code": "TEST_PERMISSION",
-      "status": "pass",
-      "message": "permission test fixture exists.",
-      "critical": false,
-      "path": "tests/permission"
+      "path": "fixtures/sample-instance/module-test.yaml"
     },
     {
       "category": "prompt-regression",
-      "code": "TEST_PROMPT_REGRESSION",
+      "code": "PROMPT_INVARIANTS_VALID",
       "status": "pass",
-      "message": "prompt-regression test fixture exists.",
+      "message": "Prompt regression fixture protects facts, uncertainty, and schema validity.",
       "critical": false,
-      "path": "tests/prompt-regression"
-    },
-    {
-      "category": "lifecycle",
-      "code": "TEST_LIFECYCLE",
-      "status": "pass",
-      "message": "lifecycle test fixture exists.",
-      "critical": false,
-      "path": "tests/lifecycle"
+      "path": "tests/prompt-regression/facts.yaml"
     },
     {
       "category": "migration",
-      "code": "TEST_MIGRATION",
+      "code": "MIGRATION_FIXTURE_DECLARED",
       "status": "pass",
-      "message": "migration test fixture exists.",
+      "message": "Migration fixture declares apply/repeat/rollback coverage.",
       "critical": false,
-      "path": "tests/migration"
+      "path": "fixtures/sample-instance/module-test.yaml"
     }
   ],
   "counts": {
     "pass": 30,
-    "warning": 0,
+    "warning": 13,
     "fail": 0,
     "critical": 0
   },
-  "overall": "PASS",
+  "overall": "PASS WITH WARNINGS",
   "beta_eligible": true,
   "stable_eligible": false
 }

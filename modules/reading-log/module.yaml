@@ -69,8 +69,6 @@ events:
   publishes:
   - reading-log.record-created
   - reading-log.weekly-summary-created
-  subscribes:
-  - capture.created
 dependencies:
   components:
     periodic-rollup: ^1.0.0

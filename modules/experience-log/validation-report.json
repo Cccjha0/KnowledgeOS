@@ -3,7 +3,7 @@
   "module_id": "experience-log",
   "module_version": "0.2.0",
   "maturity": "beta",
-  "generated_at": "2026-08-02T15:58:20.774Z",
+  "generated_at": "2026-08-05T13:49:23.771Z",
   "checks": [
     {
       "category": "manifest",
@@ -102,6 +102,14 @@
       "path": "workflows/index.yaml"
     },
     {
+      "category": "events",
+      "code": "EVENT_CONTRACTS_VALID",
+      "status": "pass",
+      "message": "Event declarations, publish steps, and Event Jobs were checked.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
       "category": "permissions",
       "code": "NO_CUSTOM_EXECUTABLES",
       "status": "pass",
@@ -151,63 +159,23 @@
     },
     {
       "category": "behavior",
-      "code": "FIXTURES_PRESENT",
+      "code": "MODULE_TEST_SCENARIOS_VALID",
       "status": "pass",
-      "message": "1 fixture file(s) found.",
+      "message": "Executable fixture contract declares all required scenarios.",
       "critical": false,
-      "path": "fixtures"
-    },
-    {
-      "category": "contracts",
-      "code": "TEST_CONTRACT",
-      "status": "pass",
-      "message": "contract test fixture exists.",
-      "critical": false,
-      "path": "tests/contract"
-    },
-    {
-      "category": "behavior",
-      "code": "TEST_BEHAVIOR",
-      "status": "pass",
-      "message": "behavior test fixture exists.",
-      "critical": false,
-      "path": "tests/behavior"
-    },
-    {
-      "category": "permissions",
-      "code": "TEST_PERMISSION",
-      "status": "pass",
-      "message": "permission test fixture exists.",
-      "critical": false,
-      "path": "tests/permission"
+      "path": "fixtures/sample-instance/module-test.yaml"
     },
     {
       "category": "prompt-regression",
-      "code": "TEST_PROMPT_REGRESSION",
+      "code": "PROMPT_INVARIANTS_VALID",
       "status": "pass",
-      "message": "prompt-regression test fixture exists.",
+      "message": "Prompt regression fixture protects facts, uncertainty, and schema validity.",
       "critical": false,
-      "path": "tests/prompt-regression"
-    },
-    {
-      "category": "lifecycle",
-      "code": "TEST_LIFECYCLE",
-      "status": "pass",
-      "message": "lifecycle test fixture exists.",
-      "critical": false,
-      "path": "tests/lifecycle"
-    },
-    {
-      "category": "migration",
-      "code": "TEST_MIGRATION",
-      "status": "pass",
-      "message": "migration test fixture exists.",
-      "critical": false,
-      "path": "tests/migration"
+      "path": "tests/prompt-regression/facts.yaml"
     }
   ],
   "counts": {
-    "pass": 25,
+    "pass": 21,
     "warning": 0,
     "fail": 0,
     "critical": 0

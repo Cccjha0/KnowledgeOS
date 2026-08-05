@@ -38,4 +38,9 @@ steps:
       template: templates/weekly-summary.md
       idempotency_key: "experience-log:{instance.instance_id}:weekly:{schedule.iso_week}"
       summary: "Create {schedule.iso_week} experience weekly summary"
+  - id: publish-weekly-summary-created
+    uses: core.publish-event
+    with:
+      event_type: experience.weekly-summary-created
+      payload: { period: "{schedule.iso_week}" }
 outputs: [operation_plan, dashboard_items, events]

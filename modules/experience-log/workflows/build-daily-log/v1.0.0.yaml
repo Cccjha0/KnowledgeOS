@@ -41,4 +41,9 @@ steps:
       template: templates/daily-log.md
       idempotency_key: "experience-log:{instance.instance_id}:daily:{schedule.date}"
       summary: "Create {schedule.date} experience daily log"
+  - id: publish-daily-log-created
+    uses: core.publish-event
+    with:
+      event_type: experience.daily-log-created
+      payload: { period: "{schedule.date}" }
 outputs: [operation_plan, dashboard_items, events]

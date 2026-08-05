@@ -4,7 +4,7 @@ import { PkbError } from "../core/errors.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { RuntimeTask, TaskResources } from "../runtime/domain.js";
 import { allocateId } from "../core/ids.js";
-import { publishRuntimeEvent } from "../runtime/triggers.js";
+import { eventFingerprint, publishRuntimeEvent } from "../runtime/triggers.js";
 
 type StepResources = Partial<TaskResources>;
 
@@ -90,10 +90,12 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
         const candidate = object(context.getValue(context.with.only_if_created_from), "EVENT_CONDITION_INVALID");
         if (!Array.isArray(candidate.created) || candidate.created.length === 0) return { skipped: true, reason: "no-created-items" };
       }
+      const stablePayload = payload;
       return await publishRuntimeEvent(context.vaultRoot, {
         type: eventType, module: context.moduleId, instance_id: context.task.instance_id, payload: {
-          ...payload, workflow_id: context.task.trigger.workflow_id ?? context.task.workflow, workflow_version: context.task.trigger.workflow_version ?? null, run_id: context.runId,
+          ...stablePayload, workflow_id: context.task.trigger.workflow_id ?? context.task.workflow, workflow_version: context.task.trigger.workflow_version ?? null, run_id: context.runId,
         },
+        fingerprint: eventFingerprint({ type: eventType, module: context.moduleId, instance_id: context.task.instance_id, payload: stablePayload }),
       }) as unknown as JsonValue;
     },
   },

@@ -85,6 +85,52 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
   checks.push(check("references", `MODULE_${section.toUpperCase()}_REGISTRY_VALID`, "pass", `${section} registry references resolve.`, registryRelative));
 }
 
+async function validateEventContracts(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+  const events = object(manifest.events) ?? {};
+  const declaredPublishes = new Set(Array.isArray(events.publishes) ? events.publishes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
+  const declaredSubscribes = new Set(Array.isArray(events.subscribes) ? events.subscribes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
+  const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((item): item is string => typeof item === "string") : []);
+  const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
+  const published = new Map<string, string[]>();
+  for (const [workflowId, raw] of Object.entries(workflows)) {
+    const entry = object(raw); const workflowPath = typeof entry?.path === "string" ? entry.path : null;
+    if (!workflowPath) continue;
+    const file = path.join(moduleRoot, "workflows", ...workflowPath.replace(/^workflows\//, "").split("/"));
+    if (!(await exists(file))) continue;
+    const workflow = parseYaml(moduleRoot, file);
+    const steps = Array.isArray(workflow.steps) ? workflow.steps.filter((step): step is JsonObject => Boolean(object(step as JsonValue))) : [];
+    const publishesHere = steps.filter((step) => step.uses === "core.publish-event");
+    const outputsEvents = Array.isArray(workflow.outputs) && workflow.outputs.includes("events");
+    if (outputsEvents && publishesHere.length === 0) checks.push(check("events", "WORKFLOW_EVENTS_WITHOUT_PUBLISH_STEP", "fail", `${workflowId} declares outputs.events but has no core.publish-event step.`, workflowPath, true));
+    for (const step of publishesHere) {
+      const withValue = object(step.with);
+      const eventType = typeof withValue?.event_type === "string" ? withValue.event_type : null;
+      if (!eventType) checks.push(check("events", "EVENT_TYPE_MISSING", "fail", `${workflowId} has core.publish-event without with.event_type.`, workflowPath, true));
+      else published.set(eventType, [...(published.get(eventType) ?? []), workflowId]);
+    }
+  }
+  if (capabilities.has("event-publishing") && published.size === 0) checks.push(check("events", "EVENT_PUBLISHING_CAPABILITY_UNFULFILLED", "fail", "event-publishing requires at least one executable core.publish-event step.", "module.yaml", true));
+  for (const eventType of declaredPublishes) if (!published.has(eventType)) checks.push(check("events", "DECLARED_EVENT_UNPUBLISHED", "fail", `Manifest declares ${eventType}, but no Workflow publishes it.`, "module.yaml", true));
+  for (const [eventType, workflowIds] of published) if (!declaredPublishes.has(eventType)) checks.push(check("events", "UNDECLARED_EVENT_PUBLISHED", "fail", `${workflowIds.join(", ")} publishes ${eventType}, which is absent from manifest.events.publishes.`, "module.yaml", true));
+
+  const jobsDescriptor = object(manifest.jobs);
+  const eventJobs = new Set<string>();
+  if (typeof jobsDescriptor?.registry === "string") {
+    const jobsFile = path.join(moduleRoot, ...jobsDescriptor.registry.split("/"));
+    if (await exists(jobsFile)) {
+      const registry = parseYaml(moduleRoot, jobsFile);
+      for (const raw of Array.isArray(registry.jobs) ? registry.jobs : []) {
+        const job = object(raw as JsonValue); const trigger = object(job?.trigger);
+        if (trigger?.type !== "event") continue;
+        const eventType = trigger.event ?? trigger.event_type ?? trigger.source;
+        if (typeof eventType === "string") eventJobs.add(eventType);
+      }
+    }
+  }
+  for (const eventType of declaredSubscribes) if (!eventJobs.has(eventType)) checks.push(check("events", "DECLARED_EVENT_UNSUBSCRIBED", "fail", `Manifest subscribes to ${eventType}, but no Event Job consumes it.`, "module.yaml", true));
+  checks.push(check("events", "EVENT_CONTRACTS_VALID", "pass", "Event declarations, publish steps, and Event Jobs were checked.", "module.yaml"));
+}
+
 async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, moduleType: string, checks: ModuleValidationCheck[]): Promise<void> {
   if (maturity !== "beta" && maturity !== "stable") return;
   const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
@@ -136,6 +182,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   await validateRegistry(moduleRoot, manifest, "schemas", checks);
   await validateRegistry(moduleRoot, manifest, "prompts", checks);
   await validateRegistry(moduleRoot, manifest, "workflows", checks);
+  await validateEventContracts(moduleRoot, manifest, checks);
 
   const permissions = object(manifest.permissions);
   if (permissions?.cross_module_write === true) checks.push(check("permissions", "CROSS_MODULE_WRITE_REQUESTED", "fail", "Business modules cannot request cross-module writes.", "module.yaml", true));

@@ -27,6 +27,11 @@ steps:
     template: templates/record.md
     idempotency_key: "reading-log:{instance.instance_id}:note:{task.payload.item_id}"
     summary: "Create a reading note from Inbox capture"
+- id: publish-record-created
+  uses: core.publish-event
+  with:
+    event_type: reading-log.record-created
+    payload: { source_item_id: "{task.payload.item_id}" }
 outputs:
 - operation_plan
 - dashboard_items
