@@ -79,6 +79,21 @@ export function representationFromLegacyReadLevel(value: number, label = "legacy
   return legacy === 0 ? "metadata" : legacy === 1 ? "summary" : legacy === 2 ? "full" : "sensitive-original";
 }
 
+/**
+ * Level-1 content is intentionally opt-in. Generic fields such as `summary`,
+ * `abstract`, or the first body paragraph may contain exactly the private text
+ * a user chose not to disclose. Only a deliberately authored `safe_summary`
+ * is eligible for a summary representation.
+ */
+export function requireSafeSummary(data: JsonObject, sourcePath: string): string {
+  if (typeof data.safe_summary === "string" && data.safe_summary.trim()) return data.safe_summary.trim();
+  throw new PkbError("SAFE_SUMMARY_REQUIRED", `Workflow requested a summary of ${sourcePath}, but the document has no explicit safe_summary.`, {
+    source_path: sourcePath,
+    required_field: "safe_summary",
+    requested_representation: "summary",
+  });
+}
+
 /** @deprecated Use SensitivityClass and RepresentationLevel separately. */
 export const assertReadLevel = assertSensitivityClass;
 /** @deprecated Use SensitivityClass and RepresentationLevel separately. */

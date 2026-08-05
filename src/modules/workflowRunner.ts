@@ -19,7 +19,7 @@ import { createCodexContextWorkspace, type CodexContextBudget, type CodexContext
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
 import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
-import { assertRepresentationLevel, assertSensitivityClass, representationFromLegacyReadLevel, representationPermits, resolveDocumentAccessPolicy, type DocumentAccessPolicy, type RepresentationLevel, type SensitivityClass } from "../core/readLevels.js";
+import { assertRepresentationLevel, assertSensitivityClass, representationFromLegacyReadLevel, representationPermits, requireSafeSummary, resolveDocumentAccessPolicy, type DocumentAccessPolicy, type RepresentationLevel, type SensitivityClass } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 type CodexJsonExecutor = typeof executeCodexJson;
@@ -260,15 +260,6 @@ function requestedRepresentation(settings: JsonObject | undefined, label: string
   return "metadata";
 }
 
-function summaryContent(content: string, data: JsonObject): string {
-  for (const field of ["summary", "ai_summary", "abstract", "excerpt"]) {
-    if (typeof data[field] === "string" && data[field].trim()) return data[field].trim();
-  }
-  const paragraph = content.replace(/\r\n/g, "\n").split(/\n\s*\n/).find((value) => value.trim());
-  const value = paragraph?.trim() ?? "";
-  return value.length <= 1_500 ? value : `${value.slice(0, 1_500)}\n\n[Summary excerpt truncated]`;
-}
-
 function assertDocumentReadable(state: WorkflowState, sourcePath: string, requested: RepresentationLevel, policy: DocumentAccessPolicy): void {
   state.sdk.assertReadable(sourcePath, policy.sensitivity_class);
   if (!representationPermits(policy.max_representation, requested)) {
@@ -286,7 +277,7 @@ function materializeDocument(input: { path: string; data: JsonObject; content: s
   return {
     path: input.path,
     data: input.data,
-    content: input.requested === "metadata" ? "" : input.requested === "summary" ? summaryContent(input.content, input.data) : input.content,
+    content: input.requested === "metadata" ? "" : input.requested === "summary" ? requireSafeSummary(input.data, input.path) : input.content,
     format: input.format,
     representation: input.requested,
     requested_representation: input.requested,
