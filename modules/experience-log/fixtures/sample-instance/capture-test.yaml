@@ -1,0 +1,33 @@
+capture:
+  path: module-test-entry.md
+  item_id: module-test-entry
+  content: |
+    ---
+    entry_id: EXP-2026-999001
+    type: experience-entry
+    instance_id: sample-experience
+    occurred_at: "2026-08-04T09:00:00+08:00"
+    raw_text: "Completed the module workflow fixture."
+    project: null
+    tags: [fixture]
+    source_path: "20-Workspace/Experience Log/sample-experience/Inbox/module-test-entry.md"
+    captured_at: "2026-08-04T09:00:00+08:00"
+    schema_version: 1
+    ---
+
+    # Fixture entry
+  expected_output: 20-Workspace/Experience Log/sample-experience/Daily/2026-08-04.md
+  codex_output:
+    daily_id: DAY-2026-08-04
+    type: experience-daily-log
+    instance_id: sample-experience
+    date: "2026-08-04"
+    entry_ids: [EXP-2026-999001]
+    accomplishments: ["Completed the module workflow fixture."]
+    blockers: []
+    learnings: []
+    next_actions: []
+    source_refs:
+      - 20-Workspace/Experience Log/sample-experience/Inbox/module-test-entry.md
+    created_at: "2026-08-04T10:00:00+08:00"
+    schema_version: 1

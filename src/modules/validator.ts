@@ -141,10 +141,6 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   }
 
   for (const file of ["README.md", "CHANGELOG.md", "docs/use-case.md"]) checks.push(check("documentation", `DOC_${file.replace(/\W/g, "_").toUpperCase()}`, await exists(path.join(moduleRoot, ...file.split("/"))) ? "pass" : "warning", `${file} ${await exists(path.join(moduleRoot, ...file.split("/"))) ? "exists" : "is missing"}.`, file));
-  const fixtureFiles = await listFilesRecursive(path.join(moduleRoot, "fixtures"));
-  checks.push(check("behavior", "FIXTURES_PRESENT", fixtureFiles.length ? "pass" : "fail", fixtureFiles.length ? `${fixtureFiles.length} fixture file(s) found.` : "At least one isolated fixture is required.", "fixtures"));
-  for (const folder of ["contract", "behavior", "permission", "prompt-regression", "lifecycle", "migration"]) checks.push(check(folder === "prompt-regression" ? "prompt-regression" : folder === "migration" ? "migration" : folder === "lifecycle" ? "lifecycle" : folder === "permission" ? "permissions" : folder === "behavior" ? "behavior" : "contracts", `TEST_${folder.toUpperCase().replace("-", "_")}`, (await listFilesRecursive(path.join(moduleRoot, "tests", folder))).length ? "pass" : maturity === "experimental" ? "warning" : "fail", `${folder} test fixture ${((await listFilesRecursive(path.join(moduleRoot, "tests", folder))).length ? "exists" : "is missing")}.`, `tests/${folder}`));
-
   const failed = checks.filter((item) => item.status === "fail").length;
   const warnings = checks.filter((item) => item.status === "warning").length;
   const critical = checks.filter((item) => item.critical && item.status === "fail").length;

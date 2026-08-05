@@ -60,7 +60,15 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   if (template === "workflow") workflowEntries["weekly-summary"] = { active_version: "1.0.0", path: "weekly-summary/v1.0.0.yaml", versions: { "1.0.0": "weekly-summary/v1.0.0.yaml" } };
   await yaml(root, "workflows/index.yaml", { workflows: workflowEntries });
   await yaml(root, "workflows/classify/v1.0.0.yaml", { workflow_id: "classify", workflow_version: "1.0.0", inputs: ["capture"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "classify", uses: "codex.prompt", with: { prompt_id: "classify-capture", output_schema: "https://pkb.local/schemas/core/match-result.schema.json" } }], outputs: ["match_result"] });
-  await yaml(root, "workflows/normalize/v1.0.0.yaml", { workflow_id: "normalize", workflow_version: "1.0.0", inputs: ["capture", "instance"], resources: { filesystem: "required", network: integrationResource(template), codex: "required", user: "not-required" }, steps: [{ id: "normalize", uses: "codex.prompt", with: { prompt_id: "normalize-record", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan" }], outputs: ["operation_plan", "dashboard_items", "events"] });
+  await yaml(root, "workflows/normalize/v1.0.0.yaml", {
+    workflow_id: "normalize", workflow_version: "1.0.0", inputs: ["capture", "instance"], resources: { filesystem: "required", network: integrationResource(template), codex: "required", user: "not-required" },
+    steps: [
+      { id: "validate-capture", uses: "core.validate-capture" },
+      { id: "parse-capture", uses: "core.parse-structured-document" },
+      { id: "normalize", uses: "codex.prompt", with: { prompt_id: "normalize-record", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } },
+      { id: "plan", uses: "core.build-operation-plan", with: { output: "normalize", output_schema: "record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/record.md", idempotency_key: `${id}:{instance.instance_id}:record:{task.payload.item_id}`, summary: "Create a normalized record" } },
+    ], outputs: ["operation_plan", "dashboard_items", "events"],
+  });
   if (template === "workflow") await yaml(root, "workflows/weekly-summary/v1.0.0.yaml", { workflow_id: "weekly-summary", workflow_version: "1.0.0", inputs: ["instance", "period"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "summarize", uses: "codex.prompt", with: { prompt_id: "weekly-summary", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan" }], outputs: ["operation_plan", "events"] });
   await yaml(root, "rules/paths.yaml", { owned_roots: [`20-Workspace/${displayName}/{instance_id}`], inbox: "{content_root}/Inbox", records: "{content_root}/Records", archive: "{content_root}/Archive" });
   await yaml(root, "rules/naming.yaml", { record: "{date}-{slug}.md", duplicate_key: "{instance_id}:{source_hash}" });
@@ -72,6 +80,16 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   await yaml(root, "jobs/jobs.yaml", { jobs: template === "workflow" ? [{ id: "weekly-summary", scope: "instance", enabled: true, task_type: "workflow", workflow: `${id}:weekly-summary`, workflow_id: "weekly-summary", workflow_version: "1.0.0", trigger: { type: "weekly", weekday: "Sun", at: "18:00", timezone: "instance" }, resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, catch_up: { policy: "aggregate", max_age_days: 21 }, retry: { max_attempts: 3 }, concurrency: { policy: "forbid", key: `${id}:{instance}:weekly-summary` }, priority: "normal" }] : [] });
   await yaml(root, "migrations/index.yaml", { migrations: [] });
   await yaml(root, "fixtures/sample-instance/instance.yaml", { instance_id: "sample-instance", module_id: id, status: "active", display_name: "Sample Instance", content_root: `20-Workspace/${displayName}/sample-instance`, inbox_path: `20-Workspace/${displayName}/sample-instance/Inbox`, timezone: "Asia/Shanghai", created: "2026-01-01T00:00:00Z", updated: "2026-01-01T00:00:00Z" });
+  await yaml(root, "fixtures/sample-instance/capture-test.yaml", {
+    capture: {
+      path: "module-test-capture.md", item_id: "module-test-capture", content: "# Fixture Capture\n\nA deterministic Capture used by pkb module test.\n",
+      expected_output: `20-Workspace/${displayName}/sample-instance/Records/module-test-capture.md`,
+      codex_output: {
+        id: `${id}-test-record`, type: `${id}-record`, schema_id: "record", schema_version: 1, module_version: "0.1.0", instance_id: "sample-instance",
+        title: "Fixture Capture", source_refs: [`20-Workspace/${displayName}/sample-instance/Inbox/module-test-capture.md`], created: "2026-01-01T00:00:00Z", updated: "2026-01-01T00:00:00Z",
+      },
+    },
+  });
   for (const [folder, fixture] of [["contract", "valid-plan.yaml"], ["behavior", "normal-input.md"], ["behavior", "ambiguous-input.md"], ["behavior", "invalid-input.md"], ["behavior", "duplicate-input.md"], ["permission", "cross-module-write.yaml"], ["prompt-regression", "facts.yaml"], ["lifecycle", "pause-archive.yaml"], ["migration", "v1-idempotency.yaml"]] as const) await text(path.join(root, "tests", folder, fixture), `# ${fixture}\nexpected: pass`);
   await text(path.join(root, "templates", "record.md"), `---\ntype: ${id}-record\nschema_id: record\nschema_version: 1\n---\n\n# {{title}}`);
   return { module_root: root, files: (await (async () => { const walk = async (dir: string): Promise<number> => (await fs.readdir(dir, { withFileTypes: true })).reduce(async (sumPromise, entry) => (await sumPromise) + (entry.isDirectory() ? await walk(path.join(dir, entry.name)) : 1), Promise.resolve(0)); return walk(root); })()) };

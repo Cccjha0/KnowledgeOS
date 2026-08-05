@@ -1,0 +1,54 @@
+capture:
+  path: module-test-report.md
+  item_id: module-test-report
+  content: |
+    ---
+    title: Fixture application report
+    ---
+
+    The official fixture says the application status has not changed.
+  expected_output: 20-Workspace/Applications/sample-applications/Research/module-test-report.md
+  restore_source_for_repeat: true
+  seed_documents:
+    - path: 20-Workspace/Applications/sample-applications/Records/Fixture-C6007.md
+      data:
+        id: APP-2027-9999
+        source_module: application-tracker
+        instance_id: sample-applications
+        type: application-record
+        institution: Fixture University
+        program_name: Fixture Programme
+        program_code: C6007
+        country: AU
+        intake: "2027"
+        application_status: watching
+        monitoring:
+          active: true
+          check_interval_days: 30
+          last_checked: null
+          next_check: null
+          stopped: []
+        facts: {}
+        source_files: []
+        created: "2026-08-01T00:00:00Z"
+        updated: "2026-08-01T00:00:00Z"
+        schema_version: 1
+      content: "# Fixture C6007\n"
+  codex_output:
+    institution: Fixture University
+    program_name: Fixture Programme
+    program_code: C6007
+    intake: "2027"
+    checked_at: "2026-08-04T10:00:00+08:00"
+    material_change: false
+    confidence: 0.95
+    sources:
+      - source_id: SRC-999
+        source_type: official-course-page
+        title: Fixture official source
+        url: https://example.edu/fixture
+        accessed_at: "2026-08-04T10:00:00+08:00"
+        notes: Fixture evidence
+    findings: {}
+    unresolved: []
+    summary: No material change.

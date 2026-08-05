@@ -31,6 +31,7 @@ import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.
 import { createModuleScaffold } from "./modules/scaffold.js";
 import { installModulePackage, packModule, rollbackModulePackage } from "./modules/packageManager.js";
 import { validateModule } from "./modules/validator.js";
+import { testModule } from "./modules/testRunner.js";
 import type { ModuleTemplate } from "./modules/types.js";
 
 interface ParsedArgs {
@@ -215,10 +216,16 @@ async function main(): Promise<void> {
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     console.log(JSON.stringify(await createModuleScaffold(engineRoot, value, template, parsed.positional[4] ?? value), null, 2)); return;
   }
-  if (command === "module" && ["validate", "test"].includes(subcommand ?? "")) {
+  if (command === "module" && subcommand === "validate") {
     if (!value) throw new Error(`module ${subcommand} requires MODULE_ID`);
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const report = await validateModule(engineRoot, path.join(engineRoot, "modules", value), { writeReport: true });
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
+  }
+  if (command === "module" && subcommand === "test") {
+    if (!value) throw new Error("module test requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const report = await testModule(engineRoot, value, { writeReport: true });
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
   }
   if (command === "module" && subcommand === "pack") {

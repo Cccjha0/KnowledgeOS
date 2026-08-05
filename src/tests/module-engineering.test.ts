@@ -13,6 +13,7 @@ import { installModulePackage, packModule, rollbackModulePackage } from "../modu
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
 import { ModuleSdk } from "../modules/sdk.js";
+import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -69,6 +70,14 @@ test("Prompt and Workflow registries support default, pin, testing and generatio
   const trace = generationTrace({ moduleId: "reading-log", moduleVersion: "0.1.0", workflow, prompt, adapter: "codex-cli", runId: "RUN-001", generatedAt: "2026-07-28T00:00:00Z" });
   assert.equal(trace.prompt_version, "1.0.0");
   assert.equal(trace.workflow_version, "1.0.0");
+});
+
+test("module test executes a fixture Capture, duplicate recovery, and lifecycle in an isolated Vault", async () => {
+  const report = await testModule(SOURCE_ROOT, "reading-log");
+  assert.equal(report.overall, "PASS");
+  assert.equal(report.checks.find((item) => item.category === "capture")?.status, "pass");
+  assert.equal(report.checks.find((item) => item.category === "idempotency")?.status, "pass");
+  assert.equal(report.checks.find((item) => item.category === "lifecycle")?.status, "pass");
 });
 
 test("reading-log test instance can be created, paused, resumed and archived without losing data", async () => {

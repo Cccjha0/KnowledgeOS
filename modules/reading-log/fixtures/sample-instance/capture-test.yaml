@@ -1,0 +1,20 @@
+capture:
+  path: module-test-capture.md
+  item_id: module-test-capture
+  content: |
+    # Fixture reading
+
+    A short reading note used to verify the Capture workflow.
+  expected_output: 20-Workspace/Reading Log/sample-instance/Notes/module-test-capture.md
+  codex_output:
+    id: READ-TEST-000001
+    type: reading-note
+    schema_id: record
+    schema_version: 1
+    module_version: 0.1.0
+    instance_id: sample-instance
+    title: Fixture reading
+    source_refs:
+      - 20-Workspace/Reading Log/sample-instance/Inbox/module-test-capture.md
+    created: "2026-08-05T09:00:00+08:00"
+    updated: "2026-08-05T09:00:00+08:00"

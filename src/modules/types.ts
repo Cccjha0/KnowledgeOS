@@ -26,6 +26,24 @@ export interface ModuleValidationReport extends JsonObject {
   stable_eligible: boolean;
 }
 
+export interface ModuleTestCheck extends JsonObject {
+  category: "capture" | "idempotency" | "lifecycle" | "periodic" | "migration";
+  status: "pass" | "fail" | "not-applicable";
+  message: string;
+  details: JsonObject | null;
+}
+
+export interface ModuleTestReport extends JsonObject {
+  report_version: 1;
+  module_id: string;
+  module_version: string;
+  generated_at: string;
+  static_validation: ModuleValidationReport;
+  checks: ModuleTestCheck[];
+  overall: "PASS" | "FAIL";
+  beta_eligible: boolean;
+}
+
 export interface ModuleLockEntry extends JsonObject {
   version: string;
   checksum: string;
