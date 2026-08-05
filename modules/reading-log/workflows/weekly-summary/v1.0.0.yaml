@@ -4,8 +4,18 @@ inputs: [instance, iso_week]
 resources: { filesystem: required, network: not-required, codex: required, user: not-required }
 steps:
   - id: collect-notes
-    uses: core.find-by-fields
-    with: { root: "{instance.content_root}/Notes", fields: [instance_id, created] }
+    uses: core.query-documents
+    with:
+      root: "{instance.content_root}/Notes"
+      filters:
+        instance_id:
+          equals: "{instance.instance_id}"
+      time_window:
+        field: created
+        unit: week
+        reference: "{schedule.iso_week}"
+      missing_time: fail
+      schema: record
   - id: summarize
     uses: codex.prompt
     with: { prompt_id: weekly-summary, output_schema: "https://pkb.local/schemas/reading-log/weekly-summary.schema.json" }

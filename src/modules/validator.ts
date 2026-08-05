@@ -10,7 +10,7 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SUPPORTED_WORKFLOW_USES = new Set([
   "core.validate-capture",
   "core.parse-structured-document",
-  "core.find-by-fields",
+  "core.query-documents",
   "codex.prompt",
   "component.research-reconciliation",
   "component.research-request-scheduler",

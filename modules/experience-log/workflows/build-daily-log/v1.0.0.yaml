@@ -8,11 +8,24 @@ steps:
     uses: core.validate-capture
   - id: parse-entry
     uses: core.parse-structured-document
+    with:
+      time_anchor:
+        field: occurred_at
+        unit: day
+        required: true
   - id: collect-same-day
-    uses: core.find-by-fields
+    uses: core.query-documents
     with:
       root: "{instance.content_root}/Inbox"
-      fields: [instance_id, occurred_at]
+      filters:
+        instance_id:
+          equals: "{instance.instance_id}"
+      time_window:
+        field: occurred_at
+        unit: day
+        reference: "{schedule.date}"
+      missing_time: fail
+      schema: experience-entry
   - id: structure-daily-log
     uses: codex.prompt
     with:

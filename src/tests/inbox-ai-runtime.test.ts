@@ -118,6 +118,7 @@ test("application Inbox AI Task completes through the managed Run and archives t
     repository = await RuntimeRepository.open(vault);
     assert.equal(repository.getTask(taskId)?.status, "completed");
     assert.equal(repository.getRuns(taskId).length, 1);
+    assert.ok(repository.getRuns(taskId)[0]?.input_files.some((item) => item.endsWith("Records/Monash-C6007.md")), "Application Record lookup must not require a date field or time window.");
     assert.equal(repository.listCodexInvocations(taskId).length, 1);
     repository.close();
     assert.equal(await exists(sourcePath), false);

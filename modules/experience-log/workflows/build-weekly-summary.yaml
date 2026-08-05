@@ -5,10 +5,18 @@ workflow_version: 1.0.0
 inputs: [instance, schedule]
 steps:
   - id: collect-week
-    uses: core.find-by-fields
+    uses: core.query-documents
     with:
       root: "{instance.content_root}/Daily"
-      fields: [instance_id, date]
+      filters:
+        instance_id:
+          equals: "{instance.instance_id}"
+      time_window:
+        field: date
+        unit: week
+        reference: "{schedule.iso_week}"
+      missing_time: fail
+      schema: daily-log
   - id: summarize
     uses: codex.prompt
     with:

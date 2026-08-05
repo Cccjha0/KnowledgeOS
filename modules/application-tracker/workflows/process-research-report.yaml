@@ -18,14 +18,14 @@ steps:
         - schemas/research-report.schema.json
 
   - id: locate-target-record
-    uses: core.find-by-fields
+    uses: core.query-documents
     with:
       root: "{instance.content_root}/Records"
-      fields:
-        - institution
-        - program_code
-        - program_name
-        - intake
+      filters:
+        instance_id:
+          equals: "{instance.instance_id}"
+      time_window: null
+      schema: application-record
 
   - id: compare
     uses: codex.prompt

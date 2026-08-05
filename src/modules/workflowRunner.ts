@@ -24,7 +24,7 @@ const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const SUPPORTED_STEP_USES = new Set([
   "core.validate-capture",
   "core.parse-structured-document",
-  "core.find-by-fields",
+  "core.query-documents",
   "codex.prompt",
   "component.research-reconciliation",
   "component.research-request-scheduler",
@@ -170,6 +170,30 @@ function scheduleFor(task: Parameters<RuntimeHandler>[0]["task"], instance: Json
   return { timezone, ...isoWeek(dateParts(task.scheduled_for, timezone)), window: task.payload.window ?? task.trigger.window ?? null };
 }
 
+function businessDate(value: JsonValue | undefined, timezone: string): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const plainDate = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(value.trim())?.[1];
+  if (plainDate && !value.includes("T")) return plainDate;
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) return null;
+  const parts = dateParts(instant.toISOString(), timezone);
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function setScheduleAnchor(state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject, data: JsonObject): void {
+  const anchor = object(settings.time_anchor, "MODULE_WORKFLOW_TIME_ANCHOR_INVALID");
+  if (string(anchor.unit, "time_anchor.unit") !== "day") throw new PkbError("MODULE_WORKFLOW_TIME_ANCHOR_INVALID", "Only a day time_anchor is supported.");
+  const timezone = String(state.schedule.timezone ?? "Asia/Shanghai");
+  const value = businessDate(lookup(data, string(anchor.field, "time_anchor.field")), timezone);
+  if (!value) {
+    if (anchor.required === false) return;
+    throw new PkbError("MODULE_WORKFLOW_TIME_ANCHOR_MISSING", `Capture is missing a valid ${String(anchor.field)} time anchor.`);
+  }
+  const [year, month, day] = value.split("-").map(Number);
+  state.schedule = { timezone, ...isoWeek({ year: year!, month: month!, day: day! }), window: task.payload.window ?? task.trigger.window ?? null };
+  state.values.set("schedule", state.schedule);
+}
+
 function lookup(root: JsonValue | undefined, dotted: string): JsonValue | undefined {
   let current = root;
   for (const part of dotted.split(".")) {
@@ -233,18 +257,55 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   return { path: normalized, data: document.data, content: document.content };
 }
 
-async function collectDocuments(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject): Promise<DocumentInput[]> {
+function queryValue(value: JsonValue, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): JsonValue {
+  return typeof value === "string" && /^\{[^}]+\}$/.test(value) ? interpolate(value, state, task) : value;
+}
+
+function matchesFilters(data: JsonObject, filters: JsonObject, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): boolean {
+  return Object.entries(filters).every(([field, raw]) => {
+    const rule = object(raw, "MODULE_QUERY_FILTER_INVALID");
+    if (!("equals" in rule) || rule.equals === undefined) throw new PkbError("MODULE_QUERY_FILTER_INVALID", `Filter ${field} requires equals.`);
+    return JSON.stringify(lookup(data, field)) === JSON.stringify(queryValue(rule.equals, state, task));
+  });
+}
+
+function matchesTimeWindow(data: JsonObject, settings: JsonObject, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], relativePath: string): boolean {
+  if (settings.time_window === null || settings.time_window === undefined) return true;
+  const window = object(settings.time_window, "MODULE_QUERY_TIME_WINDOW_INVALID");
+  const field = string(window.field, "time_window.field");
+  const unit = string(window.unit, "time_window.unit");
+  if (window.reference === undefined) throw new PkbError("MODULE_QUERY_TIME_WINDOW_INVALID", "time_window.reference is required.");
+  const reference = string(queryValue(window.reference, state, task), "time_window.reference");
+  const timezone = String(state.schedule.timezone ?? "Asia/Shanghai");
+  const date = businessDate(lookup(data, field), timezone);
+  if (!date) {
+    const policy = typeof settings.missing_time === "string" ? settings.missing_time : "fail";
+    if (policy === "exclude") return false;
+    if (policy !== "fail") throw new PkbError("MODULE_QUERY_TIME_POLICY_INVALID", `Unsupported missing_time policy ${policy}.`);
+    throw new PkbError("MODULE_QUERY_TIME_MISSING", `${relativePath} is missing a valid ${field} required by this query.`);
+  }
+  if (unit === "day") return date === reference;
+  if (unit === "week") {
+    const [year, month, day] = date.split("-").map(Number);
+    return isoWeek({ year: year!, month: month!, day: day! }).iso_week === reference;
+  }
+  throw new PkbError("MODULE_QUERY_TIME_WINDOW_INVALID", `Unsupported time_window unit ${unit}.`);
+}
+
+async function queryDocuments(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject): Promise<DocumentInput[]> {
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
-  const root = relative(interpolate(string(settings.root, "find-by-fields.root"), state, task), "find-by-fields.root");
+  const root = relative(interpolate(string(settings.root, "query-documents.root"), state, task), "query-documents.root");
   state.sdk.assertReadable(root, 0);
+  const filters = settings.filters === undefined ? {} : object(settings.filters, "MODULE_QUERY_FILTERS_INVALID");
+  const schema = typeof settings.schema === "string" ? schemaId(state.resolved.moduleRoot, state.resolved.manifest, settings.schema) : null;
   const output: DocumentInput[] = [];
   for (const file of await listFilesRecursive(fromVaultPath(vaultRoot, root), ".md")) {
     const relativePath = toVaultPath(vaultRoot, file);
     state.sdk.assertReadable(relativePath, 0);
     const parsed = parseMarkdown(vaultRoot, file);
-    if (parsed.data.instance_id !== task.instance_id) continue;
-    const dateValue = typeof parsed.data.date === "string" ? parsed.data.date : typeof parsed.data.occurred_at === "string" ? parsed.data.occurred_at.slice(0, 10) : null;
-    if (dateValue && (dateValue < String(state.schedule.period_start) || dateValue > String(state.schedule.period_end))) continue;
+    if (!matchesFilters(parsed.data, filters, state, task)) continue;
+    if (!matchesTimeWindow(parsed.data, settings, state, task, relativePath)) continue;
+    if (schema) validateSchema(vaultRoot, schema, parsed.data);
     output.push({ path: relativePath, data: parsed.data, content: parsed.content });
     state.sourceFiles.add(relativePath);
   }
@@ -357,9 +418,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       } else if (step.uses === "core.parse-structured-document") {
         const parsed = await sourceDocument(vaultRoot, state, task);
         if (typeof step.with.output_schema === "string") validateSchema(vaultRoot, schemaId(resolved.moduleRoot, resolved.manifest, step.with.output_schema), parsed.data);
+        if (step.with.time_anchor !== undefined) setScheduleAnchor(state, task, step.with, parsed.data);
         state.values.set(step.id, parsed);
-      } else if (step.uses === "core.find-by-fields") {
-        state.values.set(step.id, await collectDocuments(vaultRoot, state, task, step.with));
+      } else if (step.uses === "core.query-documents") {
+        state.values.set(step.id, await queryDocuments(vaultRoot, state, task, step.with));
       } else if (step.uses === "codex.prompt") {
         const prompt = promptEntry(resolved.moduleRoot, resolved.manifest, string(step.with.prompt_id, "codex.prompt.prompt_id"));
         const outputSchema = typeof step.with.output_schema === "string" ? schemaId(resolved.moduleRoot, resolved.manifest, step.with.output_schema) : prompt.schema;
