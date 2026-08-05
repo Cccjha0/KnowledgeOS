@@ -105,7 +105,7 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       module_id: moduleId, instance_id: instanceId, display_name: requiredString(fixtureInstance.display_name, "fixture display_name"),
       fields: fixtureFields(manifest, fixtureInstance),
     });
-    for (const raw of Array.isArray(fixtureCapture.seed_documents) ? fixtureCapture.seed_documents : []) {
+    for (const raw of Array.isArray(capture.seed_documents) ? capture.seed_documents : []) {
       const seed = object(raw as JsonValue, "MODULE_TEST_FIXTURE_INVALID");
       const target = requiredString(seed.path, "seed_documents[].path");
       if (target.split("/").includes("..") || path.isAbsolute(target)) throw new PkbError("MODULE_TEST_FIXTURE_INVALID", "Seed document paths must be Vault-relative.");

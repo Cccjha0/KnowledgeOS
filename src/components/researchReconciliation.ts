@@ -66,7 +66,18 @@ function locateRecord(vaultRoot: string, candidates: ReconciliationCandidate[], 
   if (exact.length === 1) return exact[0]!;
   if (exact.length === 0 && identity.length === 1) return identity[0]!;
   if (exact.length > 1) throw new PkbError("APPLICATION_RECORD_AMBIGUOUS", "Multiple application records match this report.", exact.map((item) => item.path));
-  throw new PkbError("APPLICATION_RECORD_NOT_FOUND", `No application record matches ${report.institution} ${report.program_name} ${report.intake}.`);
+  throw new PkbError("APPLICATION_RECORD_NOT_FOUND", `No application record matches ${report.institution} ${report.program_name} ${report.intake}.`, {
+    report: { institution: report.institution, program_name: report.program_name, program_code: report.program_code, intake: report.intake },
+    candidates: candidates.map((candidate) => ({
+      path: candidate.path,
+      type: candidate.data.type ?? null,
+      instance_id: candidate.data.instance_id ?? null,
+      institution: candidate.data.institution ?? null,
+      program_name: candidate.data.program_name ?? null,
+      program_code: candidate.data.program_code ?? null,
+      intake: candidate.data.intake ?? null,
+    })),
+  });
 }
 
 async function destinationFor(vaultRoot: string, instanceRoot: string, sourceFile: string, report: ResearchReport): Promise<string> {
