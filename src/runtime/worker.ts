@@ -59,7 +59,7 @@ function runtimeError(error: unknown): RuntimeError {
   const code = error instanceof PkbError ? error.code : "WORKER_FAILED";
   return {
     code, message: error instanceof Error ? error.message : String(error), retryable: ["EBUSY", "EACCES", "ETIMEDOUT", "RATE_LIMITED", "NETWORK_UNAVAILABLE", "CODEX_UNAVAILABLE", "CODEX_CONNECTION_FAILED", "CODEX_RATE_LIMITED", "CODEX_OUTPUT_INVALID", "RUNTIME_DB_LOCKED"].includes(code),
-    occurred_at: new Date().toISOString(), details: {},
+    occurred_at: new Date().toISOString(), details: error instanceof PkbError && error.details && typeof error.details === "object" && !Array.isArray(error.details) ? error.details as JsonObject : {},
   };
 }
 
@@ -99,12 +99,12 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     if (classified.code === "TASK_CANCELLED") {
       return repository.finishRun(run.run_id, { runStatus: "cancelled", taskStatus: "cancelled", error: classified, metrics: { duration_ms: performance.now() - started }, completionReason: "cooperative-cancelled" }).task;
     }
-    if (classified.code === "OBSIDIAN_FILE_OPEN") {
+    if (classified.code === "OBSIDIAN_FILE_OPEN" || classified.code === "CONTEXT_BUDGET_REVIEW_REQUIRED") {
       const finished = repository.finishRun(run.run_id, {
         runStatus: "failed", taskStatus: "waiting-for-user", error: classified,
-        metrics: { duration_ms: performance.now() - started }, completionReason: "obsidian-file-open",
+        metrics: { duration_ms: performance.now() - started }, completionReason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : "context-budget-review-required",
       }).task;
-      repository.recordMetricEvent({ idempotency_key: `${run.run_id}:waiting-for-user`, event_type: "task.waiting-for-user", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { reason: "obsidian-file-open" }, values: { duration_ms: performance.now() - started } });
+      repository.recordMetricEvent({ idempotency_key: `${run.run_id}:waiting-for-user`, event_type: "task.waiting-for-user", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { reason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : "context-budget-review-required" }, values: { duration_ms: performance.now() - started } });
       return finished;
     }
     const attempt = run.attempt_number;

@@ -24,3 +24,29 @@ test("Codex context workspace copies only approved inputs and is removed after t
   }
   await assert.rejects(fs.access(context.root));
 });
+
+test("Codex context budgets cap copied data and surface overflow for review", async () => {
+  const context = await createCodexContextWorkspace({
+    modulePrompt: "Return a JSON object.", instanceContext: {}, runtimeContext: {},
+    primary: { source_path: "Inbox/primary.md", content: "P".repeat(40) },
+    related: [
+      { source_path: "Daily/one.md", content: "A".repeat(40) },
+      { source_path: "Daily/two.md", content: "B".repeat(40) },
+    ],
+    allowedReadRoots: ["Inbox"], maxReadLevel: 0,
+    budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "summarize-or-review" },
+  });
+  try {
+    assert.equal(context.manifest.version, 2);
+    assert.equal(context.manifest.budget.candidate_files, 3);
+    assert.equal(context.manifest.budget.included_files, 2);
+    assert.equal(context.manifest.budget.excluded_file_count, 1);
+    assert.equal(context.manifest.budget.truncated_file_count, 2);
+    assert.equal(context.manifest.budget.total_bytes <= 30, true);
+    assert.equal(context.manifest.budget.estimated_tokens <= 8, true);
+    assert.equal(context.manifest.budget.review_required, true);
+    assert.equal(context.manifest.related_inputs.length, 1);
+  } finally {
+    await context.cleanup();
+  }
+});

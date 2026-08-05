@@ -54,6 +54,13 @@ test("a declared experience-log workflow executes through the generic Runner wit
       assert.notEqual(contextRoot, vault, "Codex must not run with the real Vault as its working directory");
       assert.match(await fs.readFile(path.join(contextRoot, "primary-input.md"), "utf8"), /Implemented the workflow runner/);
       assert.match(await fs.readFile(path.join(contextRoot, "module-prompt.md"), "utf8"), /weekly-summary/);
+      const manifest = JSON.parse(await fs.readFile(path.join(contextRoot, "context-manifest.json"), "utf8")) as { budget: { max_files: number; max_total_bytes: number; max_file_bytes: number; max_estimated_tokens: number; overflow_policy: string; candidate_files: number; included_files: number; excluded_file_count: number; truncated_file_count: number; review_required: boolean } };
+      assert.equal(manifest.budget.max_files, 50);
+      assert.equal(manifest.budget.max_total_bytes, 500000);
+      assert.equal(manifest.budget.max_file_bytes, 50000);
+      assert.equal(manifest.budget.max_estimated_tokens, 125000);
+      assert.equal(manifest.budget.overflow_policy, "summarize-or-review");
+      assert.deepEqual({ candidate_files: manifest.budget.candidate_files, included_files: manifest.budget.included_files, excluded_file_count: manifest.budget.excluded_file_count, truncated_file_count: manifest.budget.truncated_file_count, review_required: manifest.budget.review_required }, { candidate_files: 1, included_files: 1, excluded_file_count: 0, truncated_file_count: 0, review_required: false });
       return { output, stderr: "" };
     });
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: runner });

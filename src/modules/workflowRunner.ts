@@ -16,7 +16,7 @@ import { ModuleSdk } from "./sdk.js";
 import { rebuildTodayDashboard } from "../platform/dashboard.js";
 import { writeInboxState } from "../platform/inboxDiscovery.js";
 import { runManagedCodexStep } from "../runtime/codexAdapter.js";
-import { createCodexContextWorkspace, type CodexContextManifest } from "../runtime/codexContext.js";
+import { createCodexContextWorkspace, type CodexContextBudget, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
 
@@ -362,6 +362,24 @@ function contextDocumentContent(document: DocumentInput): string {
   return `# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n${document.content}`;
 }
 
+function contextBudget(workflow: JsonObject): CodexContextBudget {
+  const raw = workflow.context_budget;
+  if (raw === undefined) return { max_files: 50, max_total_bytes: 500_000, max_file_bytes: 50_000, max_estimated_tokens: 125_000, overflow_policy: "summarize-or-review" };
+  const value = object(raw, "CONTEXT_BUDGET_INVALID");
+  const budget = {
+    max_files: value.max_files,
+    max_total_bytes: value.max_total_bytes,
+    max_file_bytes: value.max_file_bytes,
+    max_estimated_tokens: value.max_estimated_tokens,
+    overflow_policy: value.overflow_policy,
+  };
+  for (const key of ["max_files", "max_total_bytes", "max_file_bytes", "max_estimated_tokens"] as const) {
+    if (!Number.isInteger(budget[key]) || Number(budget[key]) <= 0) throw new PkbError("CONTEXT_BUDGET_INVALID", `context_budget.${key} must be a positive integer.`);
+  }
+  if (budget.overflow_policy !== "summarize-or-review") throw new PkbError("CONTEXT_BUDGET_INVALID", "context_budget.overflow_policy must be summarize-or-review.");
+  return budget as CodexContextBudget;
+}
+
 async function createPromptContext(state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], promptText: string): Promise<ReturnType<typeof createCodexContextWorkspace>> {
   const documents = approvedDocuments(state);
   const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
@@ -385,10 +403,21 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
     related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document) })),
     allowedReadRoots: state.sdk.context.allowedReadRoots,
     maxReadLevel: state.sdk.context.maxReadLevel,
+    budget: contextBudget(state.resolved.workflow),
   });
   // The runner reads this information before launching Codex. It makes the
   // audit trail useful without persisting private document content or a temp path.
   state.codexContexts.push(context.manifest);
+  if (context.manifest.budget.review_required) {
+    await context.cleanup();
+    throw new PkbError("CONTEXT_BUDGET_REVIEW_REQUIRED", "The approved context exceeds this Workflow's budget. Review the budget or narrow the input set before running Codex.", {
+      candidate_files: context.manifest.budget.candidate_files,
+      included_files: context.manifest.budget.included_files,
+      excluded_file_count: context.manifest.budget.excluded_file_count,
+      truncated_file_count: context.manifest.budget.truncated_file_count,
+      overflow_policy: context.manifest.budget.overflow_policy,
+    });
+  }
   return context;
 }
 
@@ -589,6 +618,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           version: context.version, primary_input: context.primary_input.source_path,
           related_input_count: context.related_inputs.length, allowed_read_roots: context.allowed_read_roots,
           max_read_level: context.max_read_level,
+          budget: context.budget as unknown as JsonObject,
         })),
       },
     };

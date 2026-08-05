@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { exists } from "../core/files.js";
+import { PkbError } from "../core/errors.js";
 import { initializeVault } from "../core/vault.js";
 import type { TaskResources } from "../runtime/domain.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -62,6 +63,25 @@ test("Worker records a separate failed Run for an unknown workflow", async () =>
     assert.equal(repository.getTask(task.task_id)?.last_error?.code, "WORKFLOW_NOT_FOUND");
     assert.equal(repository.getRuns(task.task_id)[0]?.status, "failed");
     repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Context budget overflow waits for a user decision instead of silently running Codex", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-context-budget-wait-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({ job_id: "test.context-budget", module: "test", task_type: "workflow", workflow: "test:context-budget", resources: resources(false, true), trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: "context-budget:one" }).task;
+    repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: {} });
+    repository.close();
+    const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, handlers: {
+      "test:context-budget": async () => { throw new PkbError("CONTEXT_BUDGET_REVIEW_REQUIRED", "Context is over budget.", { excluded_file_count: 2 }); },
+    } });
+    assert.equal(dispatched.tasks[0]?.status, "waiting-for-user");
+    const after = await RuntimeRepository.open(vault);
+    assert.equal(after.getTask(task.task_id)?.last_error?.code, "CONTEXT_BUDGET_REVIEW_REQUIRED");
+    assert.equal(after.getTask(task.task_id)?.last_error?.details.excluded_file_count, 2);
+    after.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
