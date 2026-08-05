@@ -18,6 +18,7 @@ import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInb
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
+import { formatForExtension, ingestAsset, isAcceptedInput } from "../core/ingestion.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -70,20 +71,23 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   };
 }
 
-async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"] } | null> {
+async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"]; module: JsonObject } | null> {
   const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
   if (!module) return null;
   const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
   if (typeof entryWorkflows?.capture !== "string") return null;
   return {
     workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture",
-    resources: resolveWorkflowResourceRequirements(module, null, "capture"),
+    resources: resolveWorkflowResourceRequirements(module, null, "capture"), module: module.data,
   };
 }
 
 async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
   const workflow = await inboxAiWorkflow(vaultRoot, moduleId);
-  if (!workflow || !instanceId || item.extension !== ".md") return null;
+  if (!workflow || !instanceId) return null;
+  const format = formatForExtension(item.extension);
+  if (!format || !isAcceptedInput(workflow.module, format)) return null;
+  const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path);
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
@@ -107,6 +111,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
         item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
         ...(effectiveModel ? { codex_model: effectiveModel } : {}),
         ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
+        ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref } } : {}),
       },
       concurrency_key: `inbox:${item.item_id}`, concurrency_policy: "forbid",
     });

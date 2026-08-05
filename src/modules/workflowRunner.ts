@@ -18,6 +18,7 @@ import { runManagedCodexStep } from "../runtime/codexAdapter.js";
 import { createCodexContextWorkspace, type CodexContextBudget, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
+import { readCaptureEnvelope } from "../core/ingestion.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 type CodexJsonExecutor = typeof executeCodexJson;
@@ -41,6 +42,7 @@ interface DocumentInput extends JsonObject {
   path: string;
   data: JsonObject;
   content: string;
+  format: string | null;
 }
 
 interface WorkflowState {
@@ -242,9 +244,16 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const normalized = relative(source, "source_file");
   state.sdk.assertReadable(normalized, 0);
+  const ingestion = task.payload.ingestion;
+  if (ingestion && typeof ingestion === "object" && !Array.isArray(ingestion) && typeof (ingestion as JsonObject).capture_path === "string") {
+    const envelope = await readCaptureEnvelope(vaultRoot, relative(String((ingestion as JsonObject).capture_path), "ingestion.capture_path"));
+    if (envelope.source_path !== normalized) throw new PkbError("CAPTURE_ENVELOPE_SOURCE_MISMATCH", "Capture Envelope does not belong to this Inbox source.");
+    state.sourceFiles.add(normalized); state.sourceFiles.add(envelope.sidecar_path);
+    return { path: normalized, data: envelope.structured_data ?? {}, content: envelope.extracted_text, format: envelope.format };
+  }
   const document = parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, normalized));
   state.sourceFiles.add(normalized);
-  return { path: normalized, data: document.data, content: document.content };
+  return { path: normalized, data: document.data, content: document.content, format: "markdown" };
 }
 
 function queryValue(value: JsonValue, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): JsonValue {
@@ -296,7 +305,7 @@ async function queryDocuments(vaultRoot: string, state: WorkflowState, task: Par
     if (!matchesFilters(parsed.data, filters, state, task)) continue;
     if (!matchesTimeWindow(parsed.data, settings, state, task, relativePath)) continue;
     if (schema) validateSchema(vaultRoot, schema, parsed.data);
-    output.push({ path: relativePath, data: parsed.data, content: parsed.content });
+    output.push({ path: relativePath, data: parsed.data, content: parsed.content, format: "markdown" });
     state.sourceFiles.add(relativePath);
   }
   return output;
@@ -375,7 +384,7 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
   const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
     : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
   const primary = (sourcePath ? documents.find((document) => document.path === sourcePath) : undefined) ?? documents[0] ?? {
-    path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n",
+    path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n", format: null,
   } satisfies DocumentInput;
   const related = documents.filter((document) => document.path !== primary.path);
   const context = await createCodexContextWorkspace({
@@ -500,7 +509,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             state.values.set(step.id, { skipped: true });
             continue;
           }
-          if (typeof step.with.normalize_source_from === "string") {
+          if (typeof step.with.normalize_source_from === "string" && (await sourceDocument(vaultRoot, state, task)).format === "markdown") {
             const normalized = object(state.values.get(step.with.normalize_source_from), "MODULE_WORKFLOW_NORMALIZED_OUTPUT_MISSING");
             const source = await sourceDocument(vaultRoot, state, task);
             const removeTopLevel = Object.keys(source.data).filter((key) => !(key in normalized));
