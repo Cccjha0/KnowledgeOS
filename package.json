@@ -1,6 +1,6 @@
 {
   "name": "knowledgeos-engine",
-  "version": "0.1.0",
+  "version": "0.9.0-beta",
   "private": true,
   "type": "module",
   "bin": {

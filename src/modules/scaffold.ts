@@ -17,7 +17,7 @@ function manifest(id: string, name: string, template: ModuleTemplate): JsonObjec
   return {
     id, name, version: "0.1.0", maturity: "experimental", status: "disabled",
     description: `${name} module generated from the ${template} scaffold.`,
-    engine: { api_version: 1, min_version: "0.1.0", max_version: "0.x" }, data: { schema_version: 1 },
+    engine: { api_version: 1, min_version: "0.9.0-beta", max_version: "0.x" }, data: { schema_version: 1 },
     module_type: integration ? "integration" : workflow ? "workflow" : "configuration",
     capabilities: ["capture-processing", "metadata-enrichment", "dashboard-items", ...(workflow ? ["periodic-summary", "event-publishing"] : []), ...(integration ? ["event-publishing"] : [])],
     accepted_inputs: integration ? ["json", "email"] : ["markdown", "text"],

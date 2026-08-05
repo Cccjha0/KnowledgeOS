@@ -19,7 +19,17 @@ System Center 的运行摘要、撤销安全分级和恢复审计见 `docs/SYSTE
 
 KnowledgeOS 的代码仓库，包含 CLI、核心 Schema、模块定义、测试和设计文档。个人笔记与运行状态保存在相邻的 `knowledgeos-vault` 仓库。
 
-当前可运行模块是 `application-tracker`，主要命令为：
+## 当前发布定位
+
+- Engine：`0.9.0-beta`
+- Obsidian Plugin：`0.9.0-beta`
+- `application-tracker`：`0.3.0-beta`
+- `experience-log`：`0.3.0-beta`
+- `reading-log`：`0.2.0-beta`
+
+这三个模块都已通过实际 Workflow Runner 测试：`application-tracker` 处理申请研究报告和到期核验，`experience-log` 处理经历记录并生成日/周汇总，`reading-log` 将阅读 Capture 整理为笔记并生成周摘要。当前仍是 Beta：CI、PDF 的完整文字型处理，以及完整 Module Test 验收门槛完成后，才会进入 `1.0.0-rc.1`。
+
+常用申请处理命令为：
 
 ```text
 pkb application process-report

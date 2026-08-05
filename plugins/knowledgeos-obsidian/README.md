@@ -1,4 +1,4 @@
-# KnowledgeOS Obsidian Plugin (Milestone F MVP)
+# KnowledgeOS Obsidian Plugin (0.9.0-beta)
 
 This desktop-only MVP renders Today, provides Quick Capture, and completes Review decisions through the
 Core Command API. It does not read or write KnowledgeOS business files, Review Queue files, transaction

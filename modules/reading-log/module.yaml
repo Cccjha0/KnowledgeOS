@@ -1,6 +1,6 @@
 id: reading-log
 name: Reading Log
-version: 0.1.0
+version: 0.2.0-beta
 maturity: beta
 status: enabled
 description: Turn scattered reading captures into sourced reading notes, a lightweight title index, and weekly summaries.
@@ -17,7 +17,7 @@ ui:
 
 engine:
   api_version: 1
-  min_version: 0.1.0
+  min_version: 0.9.0-beta
   max_version: 0.x
 data:
   schema_version: 1

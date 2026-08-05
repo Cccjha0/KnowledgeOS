@@ -1,6 +1,6 @@
 id: experience-log
 name: 实习经历日志
-version: 0.2.0
+version: 0.3.0-beta
 maturity: beta
 status: enabled
 description: 将零散实习记录整理为结构化日报，并按周生成总结。
@@ -20,7 +20,7 @@ ui:
 
 engine:
   api_version: 1
-  min_version: 0.1.0
+  min_version: 0.9.0-beta
   max_version: 0.x
 
 data:
