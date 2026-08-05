@@ -9,4 +9,10 @@ steps:
     uses: core.build-operation-plan
     with:
       plan_from: prepare-due-requests
+  - id: publish-research-required
+    uses: core.publish-event
+    with:
+      event_type: research.required
+      payload_from: prepare-due-requests
+      only_if_created_from: prepare-due-requests
 outputs: [operation_plan, events]

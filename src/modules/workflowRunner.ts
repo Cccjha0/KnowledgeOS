@@ -52,6 +52,7 @@ interface WorkflowState {
   planId: string | null;
   snapshot: string | null;
   codexCalls: number;
+  eventIds: string[];
   sdk: ModuleSdk;
   codexContexts: CodexContextManifest[];
 }
@@ -416,7 +417,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
     const state: WorkflowState = {
       resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance ?? {}], ["schedule", {}]]),
       sourceFiles: new Set(), outputFiles: new Set(), planId: null, snapshot: null, codexCalls: 0,
-      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [],
+      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [], eventIds: [],
     };
     state.values.set("schedule", state.schedule);
     const steps = (resolved.workflow.steps as unknown[] ?? []).map((raw) => {
@@ -430,11 +431,13 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       if (definition.execute) {
         const sourceFile = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
           : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
-        state.values.set(step.id, await definition.execute({
+        const result = await definition.execute({
           vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
           instance: resolved.instance, with: step.with, sourceFile, getValue: (key) => state.values.get(key),
           allocateId: (prefix) => allocateId(vaultRoot, prefix),
-        }));
+        });
+        state.values.set(step.id, result);
+        if (definition.id === "core.publish-event" && result && typeof result === "object" && !Array.isArray(result) && typeof (result as JsonObject).event_id === "string") state.eventIds.push(String((result as JsonObject).event_id));
         continue;
       }
       if (step.uses === "core.validate-capture") {
@@ -593,6 +596,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       metrics: {
         module_workflow: resolved.workflowId, module_workflow_version: resolved.workflowVersion, steps_executed: steps.length,
         codex_calls: state.codexCalls, files_read: state.sourceFiles.size, files_written: state.outputFiles.size,
+        events_published: state.eventIds.length, event_ids: state.eventIds,
         codex_contexts: state.codexContexts.map((context) => ({
           version: context.version, primary_input: context.primary_input.source_path,
           related_input_count: context.related_inputs.length, allowed_read_roots: context.allowed_read_roots,

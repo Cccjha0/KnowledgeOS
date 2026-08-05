@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
+import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
 import { createModuleWorkflowRunner } from "../modules/workflowRunner.js";
@@ -169,6 +170,11 @@ test("application due-research work runs as a declared module workflow without a
     assert.equal(dispatched.completed, 1);
     const requestRoot = path.join(vault, "20-Workspace", "Applications", instanceId, "Research Requests");
     assert.equal((await fs.readdir(requestRoot)).filter((file) => file.endsWith(".md")).length, 1);
+    const events = await RuntimeRepository.open(vault);
+    const event = events.listEvents().find((candidate) => candidate.event_type === "research.required");
+    assert.equal(event?.status, "published");
+    assert.equal((event?.payload as JsonObject).created instanceof Array, true);
+    events.close();
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

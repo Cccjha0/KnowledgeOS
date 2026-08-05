@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { parseMarkdown } from "../core/bridge.js";
 import { listFilesRecursive } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { CreateTaskInput, JobDefinition } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
+import { PkbError } from "../core/errors.js";
 
 function valueAt(root: JsonObject, dottedPath: string): JsonValue | undefined {
   let current: JsonValue | undefined = root;
@@ -26,6 +27,26 @@ function taskFor(job: JobDefinition, options: { idempotency: string; trigger: Js
     concurrency_key: String(job.concurrency.key ?? job.job_id),
     concurrency_policy: String(job.concurrency.policy ?? "forbid") as CreateTaskInput["concurrency_policy"],
   };
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+export function eventFingerprint(event: { type: string; module?: string; instance_id?: string | null; payload?: JsonObject }): string {
+  return createHash("sha256").update(canonicalJson({
+    event_type: event.type, source_module: event.module ?? "core", instance_id: event.instance_id ?? null, payload: event.payload ?? {},
+  }), "utf8").digest("hex");
+}
+
+export function resolveEventSubscriptions(jobs: JobDefinition[], eventType: string): JobDefinition[] {
+  return jobs.filter((job) => {
+    if (!job.enabled || job.trigger.type !== "event") return false;
+    const subscribed = job.trigger.event ?? job.trigger.event_type ?? job.trigger.source;
+    return subscribed === eventType;
+  });
 }
 
 function localDateWindow(date: Date, timezone: string): string {
@@ -60,22 +81,33 @@ export async function materializeStartupJobs(vaultRoot: string, startupId: strin
   } finally { repository.close(); }
 }
 
-export async function publishRuntimeEvent(vaultRoot: string, event: { type: string; module?: string; instance_id?: string | null; occurred_at?: string; payload?: JsonObject; event_id?: string }): Promise<{ event_id: string; created: string[]; deduplicated: number }> {
+export async function publishRuntimeEvent(vaultRoot: string, event: { type: string; module?: string; instance_id?: string | null; occurred_at?: string; payload?: JsonObject; event_id?: string; fingerprint?: string }): Promise<{ event_id: string; created: string[]; deduplicated: number; event_deduplicated: boolean }> {
   const repository = await RuntimeRepository.open(vaultRoot);
   const eventId = event.event_id ?? `EVT-${randomUUID()}`;
   const occurredAt = event.occurred_at ?? new Date().toISOString();
-  const output = { event_id: eventId, created: [] as string[], deduplicated: 0 };
+  const fingerprint = event.fingerprint ?? eventFingerprint(event);
+  const output = { event_id: eventId, created: [] as string[], deduplicated: 0, event_deduplicated: false };
   try {
-    for (const job of repository.listJobs().filter((item) => item.enabled && item.trigger.type === "event" && item.trigger.event === event.type)) {
+    const stored = repository.recordEvent({ event_id: eventId, event_type: event.type, module: event.module ?? "core", instance_id: event.instance_id ?? null, occurred_at: occurredAt, payload: event.payload ?? {}, fingerprint });
+    if (!stored.created) {
+      output.event_deduplicated = true;
+      output.event_id = String(stored.event.event_id);
+      output.deduplicated = 1;
+      return output;
+    }
+    for (const job of resolveEventSubscriptions(repository.listJobs(), event.type)) {
       const result = repository.createTask(taskFor(job, {
-        idempotency: `${job.job_id}:event:${eventId}`, trigger: { ...job.trigger, event_id: eventId },
+        idempotency: `${job.job_id}:event:${fingerprint}`, trigger: { ...job.trigger, event_id: eventId, event_fingerprint: fingerprint },
         payload: { event_id: eventId, event_type: event.type, ...(event.payload ?? {}) }, instanceId: event.instance_id,
         scheduledFor: occurredAt,
       }));
       if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
     }
-    repository.recordEvent({ event_id: eventId, event_type: event.type, module: event.module ?? "core", instance_id: event.instance_id ?? null, occurred_at: occurredAt, payload: event.payload ?? {}, tasks_created: output.created });
+    repository.completeEvent(eventId, output.created);
     return output;
+  } catch (error) {
+    repository.failEvent(eventId, { code: "EVENT_DISPATCH_FAILED", message: error instanceof Error ? error.message : String(error) });
+    throw new PkbError("EVENT_DISPATCH_FAILED", `Event ${event.type} was persisted to the dead-letter queue.`, { event_id: eventId, fingerprint });
   } finally { repository.close(); }
 }
 

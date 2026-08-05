@@ -4,6 +4,7 @@ import { PkbError } from "../core/errors.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { RuntimeTask, TaskResources } from "../runtime/domain.js";
 import { allocateId } from "../core/ids.js";
+import { publishRuntimeEvent } from "../runtime/triggers.js";
 
 type StepResources = Partial<TaskResources>;
 
@@ -76,6 +77,24 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
         vaultRoot: context.vaultRoot, taskId: context.task.task_id, planId, now: new Date().toISOString(), allocateId: context.allocateId,
       });
       return result as unknown as JsonValue;
+    },
+  },
+  {
+    id: "core.publish-event", version: "1.0.0", resources: FILESYSTEM,
+    execute: async (context) => {
+      const eventType = string(context.with.event_type, "EVENT_TYPE_REQUIRED");
+      const source = typeof context.with.payload_from === "string" ? context.getValue(context.with.payload_from) : undefined;
+      const payload = source === undefined ? (context.with.payload && typeof context.with.payload === "object" && !Array.isArray(context.with.payload)
+        ? context.with.payload as JsonObject : {}) : object(source, "EVENT_PAYLOAD_INVALID");
+      if (typeof context.with.only_if_created_from === "string") {
+        const candidate = object(context.getValue(context.with.only_if_created_from), "EVENT_CONDITION_INVALID");
+        if (!Array.isArray(candidate.created) || candidate.created.length === 0) return { skipped: true, reason: "no-created-items" };
+      }
+      return await publishRuntimeEvent(context.vaultRoot, {
+        type: eventType, module: context.moduleId, instance_id: context.task.instance_id, payload: {
+          ...payload, workflow_id: context.task.trigger.workflow_id ?? context.task.workflow, workflow_version: context.task.trigger.workflow_version ?? null, run_id: context.runId,
+        },
+      }) as unknown as JsonValue;
     },
   },
   { id: "core.build-operation-plan", version: "1.0.0", resources: FILESYSTEM },

@@ -5,7 +5,7 @@ import json
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -181,6 +181,30 @@ def migrate(connection):
           COMMIT;
         """)
         current = 3
+    if current < 4:
+        if original_version >= 3:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          ALTER TABLE runtime_events ADD COLUMN fingerprint TEXT;
+          ALTER TABLE runtime_events ADD COLUMN status TEXT NOT NULL DEFAULT 'published';
+          ALTER TABLE runtime_events ADD COLUMN error_json TEXT;
+          UPDATE runtime_events SET fingerprint=event_id WHERE fingerprint IS NULL;
+          CREATE UNIQUE INDEX IF NOT EXISTS idx_events_fingerprint ON runtime_events(fingerprint);
+          CREATE INDEX IF NOT EXISTS idx_events_status_time ON runtime_events(status, occurred_at);
+          UPDATE runtime_metadata SET value='4' WHERE key='schema_version';
+          COMMIT;
+        """)
+        current = 4
 
 
 def decode_json(value, fallback):
@@ -453,11 +477,20 @@ def dispatch(command, connection, payload):
         if cursor.rowcount != 1: fail("TASK_PRIORITY_INVALID", "Task priority cannot be changed.")
         return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
     if command == "record-event":
-        connection.execute("INSERT OR IGNORE INTO runtime_events(event_id,event_type,module,instance_id,occurred_at,payload_json,tasks_created_json) VALUES(?,?,?,?,?,?,?)",
-          (payload["event_id"], payload["event_type"], payload["module"], payload.get("instance_id"), payload["occurred_at"], json.dumps(payload.get("payload") or {}), json.dumps(payload.get("tasks_created") or [])))
-        connection.commit(); return payload
+        existing = connection.execute("SELECT * FROM runtime_events WHERE event_id=? OR fingerprint=?", (payload["event_id"], payload["fingerprint"])).fetchone()
+        if existing:
+            return {"created": False, "event": {**dict(existing), "payload": decode_json(existing["payload_json"], {}), "tasks_created": decode_json(existing["tasks_created_json"], []), "error": decode_json(existing["error_json"], None)}}
+        connection.execute("INSERT INTO runtime_events(event_id,event_type,module,instance_id,occurred_at,payload_json,tasks_created_json,fingerprint,status,error_json) VALUES(?,?,?,?,?,?,?,?,?,'{}')",
+          (payload["event_id"], payload["event_type"], payload["module"], payload.get("instance_id"), payload["occurred_at"], json.dumps(payload.get("payload") or {}), json.dumps([]), payload["fingerprint"], "publishing"))
+        connection.commit(); return {"created": True, "event": {**payload, "status": "publishing", "tasks_created": [], "error": None}}
+    if command == "complete-event":
+        connection.execute("UPDATE runtime_events SET status='published',tasks_created_json=?,error_json=NULL WHERE event_id=?", (json.dumps(payload.get("tasks_created") or []), payload["event_id"]))
+        connection.commit(); return {"event_id": payload["event_id"], "status": "published"}
+    if command == "fail-event":
+        connection.execute("UPDATE runtime_events SET status='dead-letter',error_json=? WHERE event_id=?", (json.dumps(payload.get("error") or {}), payload["event_id"]))
+        connection.commit(); return {"event_id": payload["event_id"], "status": "dead-letter"}
     if command == "list-events":
-        return [{**dict(row), "payload": decode_json(row["payload_json"], {}), "tasks_created": decode_json(row["tasks_created_json"], [])}
+        return [{**dict(row), "payload": decode_json(row["payload_json"], {}), "tasks_created": decode_json(row["tasks_created_json"], []), "error": decode_json(row["error_json"], None)}
           for row in connection.execute("SELECT * FROM runtime_events ORDER BY occurred_at DESC LIMIT ?", (int(payload.get("limit", 100)),))]
     if command == "start-codex-invocation":
         connection.execute("""INSERT INTO codex_invocations(invocation_id,task_id,run_id,prompt_id,prompt_version,adapter,model,output_schema,

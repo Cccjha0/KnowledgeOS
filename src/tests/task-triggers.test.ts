@@ -24,13 +24,35 @@ test("startup and event triggers persist tasks and deduplicate the same source",
     assert.equal(first.created.length, 1); assert.equal(second.deduplicated, 1);
     const event = { type: "capture.created", event_id: "EVT-fixed", payload: { capture_id: "CAP-1" } };
     assert.equal((await publishRuntimeEvent(vault, event)).created.length, 1);
+    const repeat = await publishRuntimeEvent(vault, { ...event, event_id: "EVT-same-fact-different-id" });
+    assert.equal(repeat.event_deduplicated, true);
+    assert.equal(repeat.created.length, 0);
     const manual = await enqueueManualTask(vault, "core.manual");
     const duplicateClick = await enqueueManualTask(vault, "core.manual");
     assert.equal(duplicateClick.task_id, manual.task_id); assert.equal(duplicateClick.deduplicated, true);
     const repo2 = await RuntimeRepository.open(vault);
     assert.equal(repo2.listEvents()[0]?.event_type, "capture.created");
+    assert.equal(repo2.listEvents()[0]?.status, "published");
+    assert.equal(typeof repo2.listEvents()[0]?.fingerprint, "string");
     assert.equal(repo2.listTasks().length, 3);
     repo2.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Event Store preserves a dead-letter event for a failed dispatch", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-dead-letter-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    const stored = repository.recordEvent({
+      event_id: "EVT-dead-letter", event_type: "capture.created", module: "core", instance_id: null,
+      occurred_at: new Date().toISOString(), fingerprint: "dead-letter-test", payload: {},
+    });
+    assert.equal(stored.created, true);
+    repository.failEvent("EVT-dead-letter", { code: "EVENT_DISPATCH_FAILED", message: "fixture failure" });
+    const event = repository.listEvents()[0]!;
+    assert.equal(event.status, "dead-letter");
+    assert.equal((event.error as JsonObject).code, "EVENT_DISPATCH_FAILED");
+    repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

@@ -8,5 +8,6 @@ test("Workflow Step Registry is the single catalog for Core and Component steps"
   assert.equal(getWorkflowStepDefinition("codex.prompt")?.resources.codex, "required");
   assert.equal(getWorkflowStepDefinition("component.research-reconciliation")?.componentId, "research-reconciliation");
   assert.equal(typeof getWorkflowStepDefinition("component.research-reconciliation")?.execute, "function");
+  assert.equal(typeof getWorkflowStepDefinition("core.publish-event")?.execute, "function");
   assert.equal(getWorkflowStepDefinition("missing.step"), null);
 });

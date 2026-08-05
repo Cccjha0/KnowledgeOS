@@ -123,7 +123,9 @@ export class RuntimeRepository {
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
   cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
   setTaskPriority(taskId: string, priority: RuntimeTask["priority"]): RuntimeTask { return this.call("set-priority", { task_id: taskId, priority }); }
-  recordEvent(event: JsonObject): void { this.call("record-event", event); }
+  recordEvent(event: JsonObject): { created: boolean; event: JsonObject } { return this.call("record-event", event) as unknown as { created: boolean; event: JsonObject }; }
+  completeEvent(eventId: string, taskIds: string[]): void { this.call("complete-event", { event_id: eventId, tasks_created: taskIds }); }
+  failEvent(eventId: string, error: JsonObject): void { this.call("fail-event", { event_id: eventId, error }); }
   listEvents(limit = 100): JsonObject[] { return this.call("list-events", { limit }); }
   startCodexInvocation(invocation: JsonObject): void { this.call("start-codex-invocation", invocation); }
   finishCodexInvocation(invocation: JsonObject): void { this.call("finish-codex-invocation", invocation); }
