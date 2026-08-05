@@ -26,7 +26,7 @@ import { reconcileStartup } from "./runtime/reconciler.js";
 import { evaluateScheduler } from "./runtime/scheduler.js";
 import { dispatchOnce } from "./runtime/dispatcher.js";
 import { probeRuntimeResources } from "./runtime/resourceMonitor.js";
-import { materializeFieldDueJobs, materializeStartupJobs } from "./runtime/triggers.js";
+import { materializeFieldDueJobs, materializeStartupJobs, replayRuntimeEvent } from "./runtime/triggers.js";
 import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
 import { createModuleScaffold } from "./modules/scaffold.js";
 import { installModulePackage, packModule, rollbackModulePackage } from "./modules/packageManager.js";
@@ -136,7 +136,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test ID\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test ID\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime event-replay EVENT_ID [SUBSCRIPTION_KEY...] [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -403,6 +403,13 @@ async function main(): Promise<void> {
     const repository = await RuntimeRepository.open(parsed.vault);
     try { console.log(JSON.stringify({ restored: path.resolve(value), integrity: repository.integrityCheck(), schema_version: repository.schemaVersion() }, null, 2)); }
     finally { repository.close(); }
+    return;
+  }
+
+  if (command === "runtime" && subcommand === "event-replay") {
+    if (!value) throw new Error("runtime event-replay requires EVENT_ID");
+    const subscriptionKeys = parsed.positional.slice(3);
+    console.log(JSON.stringify(await replayRuntimeEvent(parsed.vault, value, subscriptionKeys.length ? subscriptionKeys : undefined), null, 2));
     return;
   }
 
