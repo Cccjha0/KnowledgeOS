@@ -8,6 +8,7 @@ import { exists } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
+import { readPluginSource } from "./plugin-source.js";
 
 async function call(vaultRoot: string, requestId: string, method: CommandApiMethod, params: JsonObject = {}) {
   return invokeCommandApi({ vaultRoot, requestId, method, params });
@@ -73,7 +74,7 @@ test("Milestone F journey survives view reloads and safely rolls back a Capture"
 });
 
 test("F07 plugin contract includes shortcuts, bounded lists, accessible status, and offline fallback", async () => {
-  const source = await fs.readFile(path.resolve("plugins/knowledgeos-obsidian/main.js"), "utf8");
+  const source = await readPluginSource();
   const styles = await fs.readFile(path.resolve("plugins/knowledgeos-obsidian/styles.css"), "utf8");
   assert.match(source, /LIST_PAGE_SIZE = 50/);
   assert.match(source, /id: "quick-capture"[\s\S]*modifiers: \["Mod", "Shift"\]/);

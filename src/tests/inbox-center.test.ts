@@ -10,6 +10,7 @@ import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import { readPluginSource } from "./plugin-source.js";
 
 async function writeCapture(vault: string, filename: string, frontmatter: string[], body = "Inbox test"): Promise<string> {
   const target = path.join(vault, "00-Inbox", filename);
@@ -217,9 +218,9 @@ test("Inbox defer, ignore and explicit high-confidence batch preserve low-confid
 });
 
 test("Inbox and Review refreshes preserve rendered content after their first load", async () => {
-  const source = await fs.readFile(path.resolve("plugins", "knowledgeos-obsidian", "main.js"), "utf8");
-  const reviewSource = source.slice(source.indexOf("class ReviewCenterView"), source.indexOf("class InboxCenterView"));
-  const inboxSource = source.slice(source.indexOf("class InboxCenterView"), source.indexOf("function rollbackLabel"));
+  const source = await readPluginSource("main.js");
+  const reviewSource = await readPluginSource("views/review-center.js");
+  const inboxSource = await readPluginSource("views/inbox-center.js");
 
   assert.match(reviewSource, /this\.loadPromise = null/);
   assert.match(reviewSource, /const preserveContent = Array\.isArray\(this\.reviews\)/);

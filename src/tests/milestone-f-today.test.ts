@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { invokeCommandApi } from "../platform/commandApi.js";
+import { readPluginSource } from "./plugin-source.js";
 import { buildTodaySnapshot, writeTodayMarkdown, writeTodayMarkdownWithResult } from "../core/dashboard.js";
 import { initializeVault } from "../core/vault.js";
 import type { DashboardItem } from "../core/types.js";
@@ -72,7 +73,7 @@ test("missing Inbox items fail through the stable user-facing envelope", async (
 });
 
 test("Obsidian UI delegates data access to the Core API", async () => {
-  const plugin = await fs.readFile(path.resolve("plugins", "knowledgeos-obsidian", "main.js"), "utf8");
+  const plugin = await readPluginSource();
   for (const forbidden of ["node:fs", "Review Queue", "operationExecutor", "parseMarkdown", "git "]) {
     assert.equal(plugin.includes(forbidden), false, `plugin contains forbidden access: ${forbidden}`);
   }
@@ -82,7 +83,7 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /invoke\("resolveReview"/);
   assert.match(plugin, /class InboxCenterView/);
   assert.match(plugin, /invoke\("getInboxCenterSnapshot"/);
-  assert.match(plugin, /this\.taskClient = new CoreCommandClient\(this\.settings\)/);
+  assert.match(plugin, /this\.taskClient = new SharedCoreCommandClient\(this\.settings/);
   assert.match(plugin, /this\.taskClient\.invoke\("runTaskCycle"/);
   assert.doesNotMatch(plugin, /this\.client\.invoke\("runTaskCycle"/);
   assert.match(plugin, /if \(this\.settings\.openTodayOnStartup\) await this\.activateToday\(\);\s+void this\.runTaskCycle\(true\)/);
@@ -114,6 +115,7 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /\["quality", "知识质量", "shield-check"\]/);
   assert.match(plugin, /getLeaf\("tab"\)/);
   assert.match(plugin, /closest\?\.\("\.mod-sidedock"\)/);
-  assert.match(plugin, /"application-tracker": "申请跟踪"/);
+  assert.match(plugin, /ModuleUiMetadataStore/);
+  assert.match(plugin, /function labelModule\(value\) \{ return manifestFormatters\.labelModule\(value\); \}/);
   assert.match(plugin, /"waiting-for-ai": "等待 AI 可用"/);
 });

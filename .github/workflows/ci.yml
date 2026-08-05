@@ -52,6 +52,9 @@ jobs:
       - name: Run Engine tests, including the PDF adapter
         run: node --test dist/tests/*.test.js
 
+      - name: Run plugin Command API smoke test
+        run: npm run test:plugin-smoke
+
       - name: Validate modules
         run: |
           node dist/cli.js module validate application-tracker

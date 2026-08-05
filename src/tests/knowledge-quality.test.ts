@@ -16,6 +16,7 @@ import { QualityRepository } from "../quality/repository.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { qualityIssueToDashboardItem } from "../quality/presentation.js";
 import type { JsonObject } from "../core/types.js";
+import { readPluginSource } from "./plugin-source.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -33,7 +34,7 @@ test("module templates expose stable user, AI, system and source ownership regio
     assert.match(template, /用户/, relative);
   }
   assert.match(await fs.readFile(path.join(ENGINE_ROOT, paths[3]!), "utf8"), /type: reading-note/);
-  assert.match(await fs.readFile(path.join(ENGINE_ROOT, "plugins", "knowledgeos-obsidian", "main.js"), "utf8"), /I14 真实观察/);
+  assert.match(await readPluginSource("views/system-center.js"), /I14 真实观察/);
 });
 
 test("review deduplication remains stable when only new evidence arrives", () => {

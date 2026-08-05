@@ -143,7 +143,7 @@ test("application Inbox AI Task completes through the managed Run and archives t
     assert.equal(rematerialized.created.length, 1);
     const restoreTaskId = rematerialized.created[0]!;
     repository = await RuntimeRepository.open(vault);
-    assert.equal(repository.getTask(restoreTaskId)?.resources.codex, "not-required");
+    assert.equal(repository.getTask(restoreTaskId)?.resources.codex, "required");
     repository.close();
 
     const restored = await dispatchOnce({

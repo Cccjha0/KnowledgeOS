@@ -25,7 +25,7 @@ async function temporaryEngine(): Promise<string> {
   await fs.cp(path.join(SOURCE_ROOT, "components"), path.join(root, "components"), { recursive: true });
   await fs.mkdir(path.join(root, "tools"), { recursive: true });
   await fs.cp(path.join(SOURCE_ROOT, "tools", "module_bridge.py"), path.join(root, "tools", "module_bridge.py"));
-  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.1.0" }), "utf8");
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.9.0-beta" }), "utf8");
   return root;
 }
 

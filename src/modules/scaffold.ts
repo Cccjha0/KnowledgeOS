@@ -14,6 +14,9 @@ async function yaml(root: string, relative: string, data: JsonObject): Promise<v
 function manifest(id: string, name: string, template: ModuleTemplate): JsonObject {
   const integration = template === "integration";
   const workflow = template === "workflow";
+  const publishedEvents = workflow
+    ? [`${id}.record-created`, `${id}.weekly-summary-created`]
+    : integration ? [`${id}.record-created`] : [];
   return {
     id, name, version: "0.1.0", maturity: "experimental", status: "disabled",
     description: `${name} module generated from the ${template} scaffold.`,
@@ -28,7 +31,7 @@ function manifest(id: string, name: string, template: ModuleTemplate): JsonObjec
     prompts: { registry: "prompts/index.yaml" }, workflows: { registry: "workflows/index.yaml" },
     rules: { paths: "rules/paths.yaml", review: "rules/review-policy.yaml", permissions: "rules/permissions.yaml" },
     dashboard: { provider: "dashboard/provider.yaml" }, jobs: { registry: "jobs/jobs.yaml" },
-    events: { publishes: [`${id}.record-created`], subscribes: ["capture.created"] },
+    ...(publishedEvents.length ? { events: { publishes: publishedEvents } } : {}),
     dependencies: { components: workflow ? { "periodic-rollup": "^1.0.0" } : {} }, scheduled_jobs: [],
     permissions: { max_read_level: integration ? 1 : 0, network: integration, codex: "optional", delete: false, cross_module_write: false, max_default_read_level: integration ? 1 : 0, allow_external_network: integration, allow_delete: false, allow_bulk_move: false },
     instance_form: { content_root_pattern: `20-Workspace/${name}/{instance_id}`, inbox_path_pattern: "{content_root}/Inbox", fields: [{ key: "timezone", label: "Timezone", type: "timezone", required: true, default: "Asia/Shanghai" }] },
@@ -39,6 +42,7 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   if (!MODULE_ID.test(id)) throw new PkbError("MODULE_ID_INVALID", "module_id must use lowercase kebab-case.");
   if (!["minimal-config", "workflow", "integration"].includes(template)) throw new PkbError("MODULE_TEMPLATE_INVALID", `Unknown module template ${template}.`);
   const root = path.join(engineRoot, "modules", id);
+  const publishesEvents = template === "workflow" || template === "integration";
   if (await exists(root)) throw new PkbError("MODULE_EXISTS", `Module ${id} already exists.`);
   await ensureDir(root);
   await yaml(root, "module.yaml", manifest(id, displayName, template));
@@ -60,16 +64,18 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   if (template === "workflow") workflowEntries["weekly-summary"] = { active_version: "1.0.0", path: "weekly-summary/v1.0.0.yaml", versions: { "1.0.0": "weekly-summary/v1.0.0.yaml" } };
   await yaml(root, "workflows/index.yaml", { workflows: workflowEntries });
   await yaml(root, "workflows/classify/v1.0.0.yaml", { workflow_id: "classify", workflow_version: "1.0.0", inputs: ["capture"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "classify", uses: "codex.prompt", with: { prompt_id: "classify-capture", output_schema: "https://pkb.local/schemas/core/match-result.schema.json" } }], outputs: ["match_result"] });
+  const normalizeSteps: JsonObject[] = [
+    { id: "validate-capture", uses: "core.validate-capture" },
+    { id: "parse-capture", uses: "core.parse-structured-document" },
+    { id: "normalize", uses: "codex.prompt", with: { prompt_id: "normalize-record", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } },
+    { id: "plan", uses: "core.build-operation-plan", with: { output: "normalize", output_schema: "record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/record.md", idempotency_key: `${id}:{instance.instance_id}:record:{task.payload.item_id}`, summary: "Create a normalized record" } },
+  ];
+  if (publishesEvents) normalizeSteps.push({ id: "publish-record-created", uses: "core.publish-event", with: { event_type: `${id}.record-created`, payload_from: "normalize" } });
   await yaml(root, "workflows/normalize/v1.0.0.yaml", {
     workflow_id: "normalize", workflow_version: "1.0.0", inputs: ["capture", "instance"], resources: { filesystem: "required", network: integrationResource(template), codex: "required", user: "not-required" },
-    steps: [
-      { id: "validate-capture", uses: "core.validate-capture" },
-      { id: "parse-capture", uses: "core.parse-structured-document" },
-      { id: "normalize", uses: "codex.prompt", with: { prompt_id: "normalize-record", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } },
-      { id: "plan", uses: "core.build-operation-plan", with: { output: "normalize", output_schema: "record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/record.md", idempotency_key: `${id}:{instance.instance_id}:record:{task.payload.item_id}`, summary: "Create a normalized record" } },
-    ], outputs: ["operation_plan", "dashboard_items", "events"],
+    steps: normalizeSteps, outputs: ["operation_plan", "dashboard_items", ...(publishesEvents ? ["events"] : [])],
   });
-  if (template === "workflow") await yaml(root, "workflows/weekly-summary/v1.0.0.yaml", { workflow_id: "weekly-summary", workflow_version: "1.0.0", inputs: ["instance", "period"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "summarize", uses: "codex.prompt", with: { prompt_id: "weekly-summary", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan" }], outputs: ["operation_plan", "events"] });
+  if (template === "workflow") await yaml(root, "workflows/weekly-summary/v1.0.0.yaml", { workflow_id: "weekly-summary", workflow_version: "1.0.0", inputs: ["instance", "period"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "summarize", uses: "codex.prompt", with: { prompt_id: "weekly-summary", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan" }, { id: "publish-weekly-summary", uses: "core.publish-event", with: { event_type: `${id}.weekly-summary-created`, payload: { summary: "weekly-summary" } } }], outputs: ["operation_plan", "events"] });
   await yaml(root, "rules/paths.yaml", { owned_roots: [`20-Workspace/${displayName}/{instance_id}`], inbox: "{content_root}/Inbox", records: "{content_root}/Records", archive: "{content_root}/Archive" });
   await yaml(root, "rules/naming.yaml", { record: "{date}-{slug}.md", duplicate_key: "{instance_id}:{source_hash}" });
   await yaml(root, "rules/linking.yaml", { cross_module_write: false, cross_module_communication: "events-only" });
@@ -91,6 +97,22 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
     },
   });
   for (const [folder, fixture] of [["contract", "valid-plan.yaml"], ["behavior", "normal-input.md"], ["behavior", "ambiguous-input.md"], ["behavior", "invalid-input.md"], ["behavior", "duplicate-input.md"], ["permission", "cross-module-write.yaml"], ["prompt-regression", "facts.yaml"], ["lifecycle", "pause-archive.yaml"], ["migration", "v1-idempotency.yaml"]] as const) await text(path.join(root, "tests", folder, fixture), `# ${fixture}\nexpected: pass`);
+  await yaml(root, "tests/prompt-regression/facts.yaml", { invariants: ["preserve-facts", "no-invented-values", "uncertainty-preserved", "schema-valid"] });
+  await yaml(root, "fixtures/sample-instance/module-test.yaml", {
+    contract_version: 1,
+    scenarios: {
+      normal_capture: { fixture: "fixtures/sample-instance/capture-test.yaml" },
+      ambiguous_capture: { fixture: "tests/behavior/ambiguous-input.md", expected: "review" },
+      permission_denied: { target: `20-Workspace/${displayName}/forbidden.md` },
+      repeat_execution: { enabled: true },
+      paused_instance: { enabled: true },
+      archived_instance: { enabled: true },
+      prompt_regression: { fixture: "tests/prompt-regression/facts.yaml" },
+      periodic_job: { enabled: template === "workflow", ...(template === "workflow" ? { scheduled_at: "2026-08-09T10:00:00Z" } : {}) },
+      event_consumption: { enabled: template === "workflow", ...(template === "workflow" ? { event_type: `${id}.fixture-event` } : {}) },
+      migration_apply: { enabled: false, rollback: false },
+    },
+  });
   await text(path.join(root, "templates", "record.md"), `---\ntype: ${id}-record\nschema_id: record\nschema_version: 1\n---\n\n# {{title}}`);
   return { module_root: root, files: (await (async () => { const walk = async (dir: string): Promise<number> => (await fs.readdir(dir, { withFileTypes: true })).reduce(async (sumPromise, entry) => (await sumPromise) + (entry.isDirectory() ? await walk(path.join(dir, entry.name)) : 1), Promise.resolve(0)); return walk(root); })()) };
 }

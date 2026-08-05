@@ -8,6 +8,7 @@ import type { JsonObject } from "../core/types.js";
 import type { TaskResources } from "../runtime/domain.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
+import { readPluginSource } from "./plugin-source.js";
 
 const local: TaskResources = { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" };
 
@@ -55,7 +56,7 @@ test("Today surfaces only actionable runtime Tasks and plugin exposes Task Cente
     const snapshot = today.data as JsonObject;
     assert.equal((snapshot.waiting_external as JsonObject[]).some((item) => item.item_id === `DSH-TASK-${waiting.task_id}`), true);
     assert.equal((snapshot.waiting_external as JsonObject[]).some((item) => item.item_id === `DSH-TASK-${lowNetwork.task_id}`), false);
-    const plugin = await fs.readFile(path.resolve("plugins/knowledgeos-obsidian/main.js"), "utf8");
+    const plugin = await readPluginSource("views/system-center.js");
     assert.match(plugin, /class TaskDetailsModal/);
     assert.match(plugin, /renderTasks\(root\)/);
     assert.match(plugin, /runTaskCycle/);

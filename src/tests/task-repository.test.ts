@@ -23,7 +23,7 @@ test("runtime repository persists Tasks and deduplicates one business window", a
   try {
     const now = new Date().toISOString();
     let repository = await RuntimeRepository.open(vault);
-    assert.equal(repository.schemaVersion(), 3);
+    assert.equal(repository.schemaVersion(), 5);
     assert.equal(repository.integrityCheck(), "ok");
     repository.registerJob(job(now));
     const input = {
@@ -112,7 +112,7 @@ test("opening a v1 runtime database creates a pre-migration snapshot", async () 
     const script = "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('DROP TABLE codex_invocations'); c.execute('DROP TABLE runtime_events'); c.execute(\"UPDATE runtime_metadata SET value='1' WHERE key='schema_version'\"); c.commit(); c.close()";
     const downgraded = spawnSync("python", ["-c", script, database], { encoding: "utf8", windowsHide: true });
     assert.equal(downgraded.status, 0, downgraded.stderr);
-    const migrated = await RuntimeRepository.open(vault); assert.equal(migrated.schemaVersion(), 3); migrated.close();
+    const migrated = await RuntimeRepository.open(vault); assert.equal(migrated.schemaVersion(), 5); migrated.close();
     const backups = await fs.readdir(path.join(vault, "90-System", "Backups"));
     assert.equal(backups.some((name) => name.startsWith("runtime-schema-v1-") && name.endsWith(".db")), true);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
