@@ -4,8 +4,10 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ingestAsset, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope } from "../core/ingestion.js";
+import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
 import { initializeVault } from "../core/vault.js";
+import { runQualityAudit } from "../quality/audit.js";
+import { QualityRepository } from "../quality/repository.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { RuntimeRepository } from "../runtime/repository.js";
@@ -48,9 +50,9 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
     const yaml = await ingestAsset(vault, "00-Inbox/notes.yaml");
     const image = await ingestAsset(vault, "00-Inbox/photo.png");
     assert.equal(json.format, "json");
-    assert.equal(json.structured_data?.deadline, "2027-05-01");
+    assert.equal((await readExtractionCache(vault, json)).structured_data?.deadline, "2027-05-01");
     assert.equal((await readCaptureEnvelope(vault, json.capture_path)).content_hash, json.content_hash);
-    assert.equal(yaml.structured_data?.open, true);
+    assert.equal((await readExtractionCache(vault, yaml)).structured_data?.open, true);
     assert.equal(image.metadata.ocr, "not-run");
     assert.equal(await fs.stat(path.join(vault, "00-Inbox", "report.json")).then(() => true), true, "Ingestion must not modify original assets.");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
@@ -66,6 +68,36 @@ test("binary asset Sidecars retain a user-set Read Level across repeat ingestion
     assert.equal(first.read_level, 3);
     const repeated = await ingestAsset(vault, "00-Inbox/private.txt");
     assert.equal(repeated.read_level, 3);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("asset cleanup tracks user references, expires extraction caches, and removes true orphans", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-cleanup-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.writeFile(path.join(vault, "00-Inbox", "asset.txt"), "Attachment", "utf8");
+    const asset = await ingestAsset(vault, "00-Inbox/asset.txt");
+    await fs.writeFile(path.join(vault, "30-Knowledge", "Reference.md"), `# Reference\n\n${asset.asset_id}\n`, "utf8");
+    assert.equal(await countAssetReferences(vault, asset), 1);
+    await fs.unlink(path.join(vault, "00-Inbox", "asset.txt"));
+    await cleanIngestionArtifacts(vault, { now: new Date(Date.now() + 91 * 86_400_000) });
+    assert.equal(await fs.stat(path.join(vault, ...asset.sidecar_path.split("/"))).then(() => true), true, "Referenced metadata remains available.");
+    await fs.unlink(path.join(vault, "30-Knowledge", "Reference.md"));
+    await fs.unlink(path.join(vault, ...asset.companion_note_path.split("/")));
+    await cleanIngestionArtifacts(vault);
+    await assert.rejects(fs.access(path.join(vault, ...asset.sidecar_path.split("/"))));
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Companion Notes are visible asset records, not unowned knowledge files", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-companion-quality-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.writeFile(path.join(vault, "00-Inbox", "asset.txt"), "Attachment", "utf8");
+    const asset = await ingestAsset(vault, "00-Inbox/asset.txt");
+    await runQualityAudit(vault, "daily", { now: "2026-08-05T00:00:00Z" });
+    const repository = await QualityRepository.open(vault); const issues = repository.listIssues(); repository.close();
+    assert.equal(issues.some((item) => item.issue_type === "unowned-file" && item.target.path === asset.companion_note_path), false);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -112,11 +144,16 @@ test("PDF ingestion preserves page-level text evidence and safely classifies sca
     const scanned = await ingestAsset(vault, "00-Inbox/scanned.pdf");
     const encryptedEnvelope = await ingestAsset(vault, "00-Inbox/encrypted.pdf");
     const corrupted = await ingestAsset(vault, "00-Inbox/corrupted.pdf");
-    const extraction = text.metadata.extraction as { status?: string; page_text?: Array<{ page: number; text: string }>; text_pages?: number };
+    const extraction = text.metadata.extraction as { status?: string; text_pages?: number };
+    const cache = await readExtractionCache(vault, text);
     assert.equal(extraction.status, "completed");
-    assert.equal(extraction.page_text?.[0]?.page, 1);
-    assert.match(extraction.page_text?.[0]?.text ?? "", /IELTS 6\.5/);
-    assert.match(text.extracted_text, /--- Page 1 ---/);
+    assert.equal(extraction.text_pages, 1);
+    assert.equal(cache.page_text[0]?.page, 1);
+    assert.match(cache.page_text[0]?.text ?? "", /IELTS 6\.5/);
+    assert.match(cache.extracted_text, /--- Page 1 ---/);
+    assert.deepEqual(evidenceLocator(text, [1], "English requirements").pages, [1]);
+    assert.equal(await fs.readFile(path.join(vault, ...text.sidecar_path.split("/")), "utf8").then((raw) => !raw.includes("IELTS 6.5")), true, "Sidecars must not duplicate extracted text.");
+    assert.equal(await fs.stat(path.join(vault, ...text.companion_note_path.split("/"))).then(() => true), true, "A visible Obsidian Companion Note must be created.");
     assert.equal(pdfExtractionIsUsable(text), true);
     assert.equal(pdfExtractionStatus(scanned), "scanned");
     assert.equal(pdfExtractionIsUsable(scanned), false);

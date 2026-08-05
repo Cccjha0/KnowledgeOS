@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { PkbError } from "../core/errors.js";
+import { cleanIngestionArtifacts } from "../core/ingestion.js";
 import type { JsonObject } from "../core/types.js";
 import { rebuildTodayDashboardWithResult } from "../platform/dashboard.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
@@ -46,7 +47,11 @@ const coreHandlers: Record<string, RuntimeHandler> = {
   },
   "core:cleanup-runtime": async ({ vaultRoot }) => {
     const repository = await RuntimeRepository.open(vaultRoot);
-    try { return { completion_reason: "runtime-history-cleaned", metrics: repository.cleanupHistory(90) }; }
+    try {
+      const runtime = repository.cleanupHistory(90);
+      const ingestion = await cleanIngestionArtifacts(vaultRoot, { cacheRetentionDays: 90 });
+      return { completion_reason: "runtime-history-and-ingestion-cleaned", metrics: { ...runtime, ...ingestion } };
+    }
     finally { repository.close(); }
   },
   "core:quality-audit-daily": async ({ vaultRoot }) => ({ completion_reason: "daily-quality-audit", metrics: await runQualityAudit(vaultRoot, "daily") }),
@@ -99,12 +104,12 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     if (classified.code === "TASK_CANCELLED") {
       return repository.finishRun(run.run_id, { runStatus: "cancelled", taskStatus: "cancelled", error: classified, metrics: { duration_ms: performance.now() - started }, completionReason: "cooperative-cancelled" }).task;
     }
-    if (classified.code === "OBSIDIAN_FILE_OPEN" || classified.code === "CONTEXT_BUDGET_REVIEW_REQUIRED" || classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" || classified.code === "MODULE_READ_DENIED") {
+    if (classified.code === "OBSIDIAN_FILE_OPEN" || classified.code === "CONTEXT_BUDGET_REVIEW_REQUIRED" || classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" || classified.code === "EXTRACTION_CACHE_UNAVAILABLE" || classified.code === "MODULE_READ_DENIED") {
       const finished = repository.finishRun(run.run_id, {
         runStatus: "failed", taskStatus: "waiting-for-user", error: classified,
-        metrics: { duration_ms: performance.now() - started }, completionReason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" ? "capture-extraction-unavailable" : classified.code === "MODULE_READ_DENIED" ? "read-level-denied" : "context-budget-review-required",
+        metrics: { duration_ms: performance.now() - started }, completionReason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" ? "capture-extraction-unavailable" : classified.code === "EXTRACTION_CACHE_UNAVAILABLE" ? "extraction-cache-unavailable" : classified.code === "MODULE_READ_DENIED" ? "read-level-denied" : "context-budget-review-required",
       }).task;
-      repository.recordMetricEvent({ idempotency_key: `${run.run_id}:waiting-for-user`, event_type: classified.code === "MODULE_READ_DENIED" ? "read.denied" : "task.waiting-for-user", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { reason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" ? "capture-extraction-unavailable" : classified.code === "MODULE_READ_DENIED" ? "read-level-denied" : "context-budget-review-required", error_code: classified.code }, values: { duration_ms: performance.now() - started } });
+      repository.recordMetricEvent({ idempotency_key: `${run.run_id}:waiting-for-user`, event_type: classified.code === "MODULE_READ_DENIED" ? "read.denied" : "task.waiting-for-user", module: task.module, instance_id: task.instance_id, workflow_id: String(task.trigger.workflow_id ?? task.workflow), workflow_version: typeof task.trigger.workflow_version === "string" ? task.trigger.workflow_version : null, prompt_id: null, prompt_version: null, run_id: run.run_id, occurred_at: new Date().toISOString(), dimensions: { reason: classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open" : classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" ? "capture-extraction-unavailable" : classified.code === "EXTRACTION_CACHE_UNAVAILABLE" ? "extraction-cache-unavailable" : classified.code === "MODULE_READ_DENIED" ? "read-level-denied" : "context-budget-review-required", error_code: classified.code }, values: { duration_ms: performance.now() - started } });
       return finished;
     }
     const attempt = run.attempt_number;

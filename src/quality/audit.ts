@@ -158,6 +158,10 @@ async function auditDocuments(vaultRoot: string, frequency: AuditFrequency, modu
     if (frequency !== "daily") {
       const normalized = normalizeContent(document.content); if (normalized.length > 40) { const hash = createHash("sha256").update(normalized).digest("hex"); hashes.set(hash, [...(hashes.get(hash) ?? []), relative]); if (frequency === "monthly" && normalized.length >= 80 && normalizedDocuments.length < 250) normalizedDocuments.push({ path: relative, hash, shingles: contentShingles(normalized) }); }
     }
+    // Companion Notes are Core-owned, user-visible attachment records. They
+    // deliberately do not belong to a business module and must not become
+    // noisy "unowned" findings merely because an asset was ingested.
+    if (entityType === "attachment-note") continue;
     if (!policy) {
       if (moduleId === "unowned") candidates.push({ issue_type: "unowned-file", dimension: "connectivity", severity: "high", module: "core", instance_id: null, target: { path: relative }, evidence: { source_module: null }, recommended_action: { type: "assign-owner" }, detector: "ownership-auditor" });
       continue;

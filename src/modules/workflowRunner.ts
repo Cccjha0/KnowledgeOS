@@ -18,7 +18,7 @@ import { runManagedCodexStep } from "../runtime/codexAdapter.js";
 import { createCodexContextWorkspace, type CodexContextBudget, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
-import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope } from "../core/ingestion.js";
+import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
 import { assertReadLevel, type ReadLevel } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -306,8 +306,10 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
         capture_path: envelope.capture_path,
       });
     }
+    const extraction = await readExtractionCache(vaultRoot, envelope);
     state.sourceFiles.add(normalized); state.sourceFiles.add(envelope.sidecar_path);
-    return materializeDocument({ path: normalized, data: envelope.structured_data ?? {}, content: envelope.extracted_text, format: envelope.format, requested, sourceLevel: envelope.read_level });
+    state.sourceFiles.add(envelope.extraction_cache_path);
+    return materializeDocument({ path: normalized, data: extraction.structured_data ?? {}, content: extraction.extracted_text, format: envelope.format, requested, sourceLevel: envelope.read_level });
   }
   const document = parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, normalized));
   const sourceLevel = documentReadLevel(document.data);
