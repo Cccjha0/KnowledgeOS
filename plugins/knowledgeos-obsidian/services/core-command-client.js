@@ -5,6 +5,8 @@ class CoreCommandClient {
     this.settings = settings;
     this.onModulesLoaded = options.onModulesLoaded || (() => {});
     this.missingBuiltCliFailure = options.missingBuiltCliFailure || (() => null);
+    this.execFile = options.execFile || execFile;
+    this.spawn = options.spawn || spawn;
     this.server = null;
     this.serverKey = null;
     this.stdoutBuffer = "";
@@ -43,7 +45,7 @@ class CoreCommandClient {
   invokeOnce(method, params, requestId) {
     const args = [this.settings.coreCliPath, "api", method, "--vault", this.settings.vaultPath, "--request-id", requestId, "--input", JSON.stringify(params)];
     return new Promise((resolve) => {
-      execFile(this.settings.nodePath || "node", args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
+      this.execFile(this.settings.nodePath || "node", args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
         try { resolve(this.resolveResponse(JSON.parse(stdout))); }
         catch {
           resolve({ ok: false, state: "failed", error: { message: error?.message || "Core 返回了无法解析的结果。", impact: "本次界面操作没有得到 Core 确认。", recovery_actions: ["检查 Core CLI 路径", "在设置页测试连接"] } });
@@ -57,7 +59,7 @@ class CoreCommandClient {
     if (this.server && this.serverKey === key && !this.server.killed) return true;
     this.close();
     try {
-      this.server = spawn(this.settings.nodePath || "node", [this.settings.coreCliPath, "api-server", "--vault", this.settings.vaultPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      this.server = this.spawn(this.settings.nodePath || "node", [this.settings.coreCliPath, "api-server", "--vault", this.settings.vaultPath], { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       this.serverKey = key;
       this.stdoutBuffer = "";
       this.stderrBuffer = "";

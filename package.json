@@ -13,6 +13,7 @@
     "validate": "node dist/cli.js validate --vault ../knowledgeos-vault",
     "test": "npm run check:boundaries && npm run build && node --test dist/tests/*.test.js",
     "test:codex-isolation": "node --test dist/tests/codex-context.integration.test.js",
+    "test:plugin-smoke": "node plugins/knowledgeos-obsidian/tests/core-command-client.smoke.test.cjs",
     "chain": "node dist/cli.js application process-report 20-Workspace/Applications/australia-masters-2027/Inbox/2026-07-27-Monash-C6007-Update.md --vault ../knowledgeos-vault"
   },
   "engines": {
