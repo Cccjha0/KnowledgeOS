@@ -49,6 +49,31 @@
     "description": {
       "type": "string"
     },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+        },
+        "icon": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "field_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+          }
+        },
+        "job_labels": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
     "engine": {
       "type": "object",
       "additionalProperties": false,

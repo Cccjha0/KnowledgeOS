@@ -1,27 +1,21 @@
 const { ItemView, Modal, Notice, Plugin, PluginSettingTab, Setting, setIcon } = require("obsidian");
 const { execFile, spawn } = require("node:child_process");
+const { VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE } = require("./views/view-types");
+const { registerKnowledgeViews } = require("./views/register");
+const settingsDefaults = require("./settings/defaults");
+const { ModuleUiMetadataStore } = require("./services/module-ui-metadata");
+const { CoreCommandClient: SharedCoreCommandClient } = require("./services/core-command-client");
+const { createPresentationFormatters } = require("./formatters/presentation");
 
-const VIEW_TYPE = "knowledgeos-today";
-const REVIEW_VIEW_TYPE = "knowledgeos-reviews";
-const INBOX_VIEW_TYPE = "knowledgeos-inbox";
-const SYSTEM_VIEW_TYPE = "knowledgeos-system";
+const moduleUiMetadata = new ModuleUiMetadataStore();
+const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
+
+function applyModuleUiMetadata(method, response) {
+  if (method === "getModules" && response?.ok && Array.isArray(response.data)) moduleUiMetadata.update(response.data);
+  return response;
+}
+
 const LIST_PAGE_SIZE = 50;
-const DEFAULT_SETTINGS = {
-  coreCliPath: "",
-  nodePath: "node",
-  vaultPath: "",
-  networkProbeUrl: "",
-  codexModel: "gpt-5.6-terra",
-  codexReasoningEffort: "medium",
-  codexModelCatalog: [],
-  codexModelsFetchedAt: null,
-  openTodayOnStartup: true,
-  autoRefresh: true,
-  developerMode: false,
-  notifyOnCompletion: true,
-  allowBatchOperations: true,
-};
-
 const FALLBACK_CODEX_MODELS = [
   { id: "gpt-5.6-terra", model: "gpt-5.6-terra", display_name: "GPT-5.6 Terra", description: "KnowledgeOS 默认模型", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: true },
   { id: "gpt-5.4-mini", model: "gpt-5.4-mini", display_name: "GPT-5.4 Mini", description: "较低延迟的兼容选项", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: false },
@@ -97,40 +91,12 @@ const STATUS_LABELS = {
   pending: "待处理",
 };
 
-const MODULE_LABELS = {
-  core: "KnowledgeOS",
-  "application-tracker": "申请跟踪",
-  "experience-log": "经历记录",
-  "reading-log": "阅读记录",
-};
-
-const JOB_LABELS = {
-  "core.daily-today": "更新今日页面",
-  "core.startup-today": "启动时更新今日页面",
-  "core.daily-quality-audit": "每日知识检查",
-  "core.weekly-quality-audit": "每周知识检查",
-  "core.monthly-quality-audit": "每月知识检查",
-  "core.weekly-vault-audit": "每周 Vault 检查",
-  "core.monthly-runtime-cleanup": "清理运行历史",
-  "experience-log.weekly-review": "生成经历周报",
-  "application-tracker.due-check": "检查到期申请",
-};
-
-const FIELD_LABELS = {
-  tuition: "学费",
-  deadline: "申请截止日期",
-  application_open: "申请开放状态",
-  application_status: "申请状态",
-  english_requirement: "英语要求",
-  academic_requirement: "学术要求",
-};
-
 function labelStatus(value) { return STATUS_LABELS[value] || String(value || "未知"); }
-function labelModule(value) { return MODULE_LABELS[value] || String(value || "系统"); }
-function labelJob(value) { return JOB_LABELS[value] || String(value || "系统任务").replaceAll("-", " "); }
-function labelField(value) { return FIELD_LABELS[value] || String(value || "信息").replaceAll("_", " "); }
+function labelModule(value) { return manifestFormatters.labelModule(value); }
+function labelJob(value, moduleId = null) { return manifestFormatters.labelJob(value, moduleId); }
+function labelField(value, moduleId = null) { return manifestFormatters.labelField(value, moduleId); }
 
-function friendlyAction(value) {
+function friendlyAction(value, moduleId = null) {
   const text = String(value || "").trim();
   if (!text) return "系统任务";
   const dueRequests = text.match(/^Create (\d+) due application Research Request\(s\)\.$/i);
@@ -141,7 +107,7 @@ function friendlyAction(value) {
   if (/quality audit/i.test(text)) return "已完成知识质量检查";
   if (/vault audit/i.test(text)) return "已完成 Vault 检查";
   if (/runtime cleanup/i.test(text)) return "已清理运行历史";
-  return labelJob(text);
+  return manifestFormatters.friendlyAction(text, moduleId);
 }
 
 function calendarDayDifference(value, now = new Date()) {
@@ -186,13 +152,13 @@ function createTime(element, value, prefix = "") {
   return node;
 }
 
-function friendlyDashboardDescription(description) {
+function friendlyDashboardDescription(description, moduleId = null) {
   const text = String(description || "").trim();
   if (!text) return "";
   const verify = text.match(/^Verify:\s*(.+)$/i);
-  if (verify) return `需要核验：${labelField(verify[1])}`;
+  if (verify) return `需要核验：${labelField(verify[1], moduleId)}`;
   const researchPending = text.match(/^Research pending:\s*(.+)$/i);
-  if (researchPending) return `核验请求已创建，等待研究结果：${labelField(researchPending[1])}`;
+  if (researchPending) return `核验请求已创建，等待研究结果：${labelField(researchPending[1], moduleId)}`;
   const parts = text.split(" | ");
   if (parts.length === 1) {
     if (text === "assign-owner") return "选择这个文件的归属位置";
@@ -309,7 +275,7 @@ class CoreCommandClient {
     requestId = requestId || `PLUGIN-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     if (this.ensureServer()) {
       return new Promise((resolve) => {
-        this.pending.set(requestId, resolve);
+        this.pending.set(requestId, (response) => resolve(applyModuleUiMetadata(method, response)));
         try {
           this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params })}\n`, (error) => {
             if (!error) return;
@@ -340,7 +306,7 @@ class CoreCommandClient {
     return new Promise((resolve) => {
       execFile(this.settings.nodePath || "node", args, { windowsHide: true, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
         try {
-          resolve(JSON.parse(stdout));
+          resolve(applyModuleUiMetadata(method, JSON.parse(stdout)));
         } catch {
           resolve({
             ok: false,
@@ -1140,7 +1106,7 @@ class ReviewCenterView extends ItemView {
       const state = heading.createDiv({ cls: "knowledgeos-review-item-state" });
       state.createSpan({ cls: `knowledgeos-review-priority is-${review.priority}`, text: this.priorityLabel(review.priority) });
       state.createSpan({ text: pendingDecision ? "正在应用" : this.reviewStatusLabel(review.status) });
-      const subject = review.field ? `${labelField(review.field)} · ${this.actionLabel(review.action)}` : this.actionLabel(review.action);
+      const subject = review.field ? `${labelField(review.field, review.source_module)} · ${this.actionLabel(review.action)}` : this.actionLabel(review.action);
       card.createDiv({ cls: "knowledgeos-review-subject", text: subject });
       const context = card.createDiv({ cls: "knowledgeos-review-item-context" });
       context.createSpan({ text: this.moduleName(review.source_module) });
@@ -1812,7 +1778,7 @@ class RollbackConfirmModal extends Modal {
     root.addClass("knowledgeos-review-modal"); root.addClass("knowledgeos-rollback-modal");
     root.createEl("h2", { text: "确认撤销" });
     const title = root.createEl("section", { cls: "knowledgeos-modal-title" });
-    title.createEl("h3", { text: friendlyAction(this.run.source_action || "系统运行") });
+    title.createEl("h3", { text: friendlyAction(this.run.source_action || "系统运行", this.run.source_module) });
     title.createDiv({ cls: "knowledgeos-modal-subtitle", text: this.run.run_id });
     const assessment = this.run.rollback;
     const warning = root.createEl("section", { cls: `knowledgeos-modal-alert ${assessment.requires_confirmation ? "is-warning" : "is-success"}`, attr: { "aria-label": "撤销影响" } });
@@ -1914,7 +1880,7 @@ class RunDetailsModal extends Modal {
     const root = this.renderShell();
     const title = root.createEl("section", { cls: "knowledgeos-modal-title" });
     const titleRow = title.createDiv({ cls: "knowledgeos-modal-title-row" });
-    titleRow.createEl("h3", { text: friendlyAction(run.source_action || run.input_summary || "Core operation") });
+    titleRow.createEl("h3", { text: friendlyAction(run.source_action || run.input_summary || "Core operation", run.source_module) });
     titleRow.createSpan({ cls: `knowledgeos-status status-${run.status}`, text: labelStatus(run.status) });
     const subtitle = title.createDiv({ cls: "knowledgeos-modal-subtitle" });
     subtitle.createSpan({ text: `${labelModule(run.source_module)}${run.instance_id ? ` / ${run.instance_id}` : ""}` });
@@ -1983,7 +1949,7 @@ class RunDetailsModal extends Modal {
       const list = reviews.createDiv({ cls: "knowledgeos-modal-list" });
       for (const review of run.reviews) {
         const row = list.createEl("article", { cls: "knowledgeos-modal-row" });
-        const button = row.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(review.action) });
+      const button = row.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(review.action, review.source_module) });
         button.onclick = () => { this.close(); this.plugin.activateReviews(review.review_id); };
         row.createDiv({ cls: "knowledgeos-modal-row-meta", text: review.review_id });
       }
@@ -2256,7 +2222,7 @@ class TaskDetailsModal extends Modal {
     const body = this.renderShell();
     const title = body.createEl("section", { cls: "knowledgeos-modal-title" });
     const titleRow = title.createDiv({ cls: "knowledgeos-modal-title-row" });
-    titleRow.createEl("h3", { text: labelJob(task.job_id) });
+    titleRow.createEl("h3", { text: labelJob(task.job_id, task.module) });
     titleRow.createSpan({ cls: `knowledgeos-status status-${task.status}`, text: labelStatus(task.status) });
     title.createDiv({ cls: "knowledgeos-modal-subtitle", text: `${labelModule(task.module)}${task.instance_id ? ` / ${task.instance_id}` : ""}` });
     if (warnings.length) this.renderPartial(body, `部分任务信息暂时不可用：${warnings.join("、")}。`);
@@ -2390,6 +2356,7 @@ class SystemCenterView extends ItemView {
       else this.renderFailure(response.error);
       return;
     }
+    if (Array.isArray(response.data?.modules)) moduleUiMetadata.update(response.data.modules);
     const normalized = this.normalizeSectionData(section, response.data);
     if (!normalized) {
       const error = { message: "Core 返回的分区数据缺少必要内容。", impact: "上次成功取得的系统状态没有被替换。", recovery_actions: ["重试加载当前分区"] };
@@ -2655,7 +2622,7 @@ class SystemCenterView extends ItemView {
   renderTask(root, task) {
     const card = root.createEl("article", { cls: `knowledgeos-system-row knowledgeos-system-task-row task-${task.status}` });
     const title = card.createDiv({ cls: "knowledgeos-system-row-heading" });
-    const open = title.createEl("button", { cls: "knowledgeos-link", text: labelJob(task.job_id) });
+    const open = title.createEl("button", { cls: "knowledgeos-link", text: labelJob(task.job_id, task.module) });
     open.onclick = () => new TaskDetailsModal(this.app, this.plugin, task.task_id, () => this.refresh()).open();
     title.createSpan({ cls: `knowledgeos-status status-${task.status}`, text: labelStatus(task.status) });
     const meta = card.createDiv({ cls: "knowledgeos-system-row-meta" });
@@ -2706,7 +2673,7 @@ class SystemCenterView extends ItemView {
       const list = details.createDiv({ cls: "knowledgeos-system-list" });
       for (const job of jobs) {
         const card = list.createEl("article", { cls: "knowledgeos-system-row knowledgeos-system-job-row" });
-        card.createEl("strong", { text: labelJob(job.job_id) });
+        card.createEl("strong", { text: labelJob(job.job_id, job.module) });
         card.createDiv({ cls: "knowledgeos-system-row-description", text: job.trigger?.type === "field-due" ? "在信息到期时检查" : "按计划自动运行" });
         const run = card.createEl("button", { text: "立即运行" });
         run.onclick = async () => { run.disabled = true; const response = await this.plugin.client.invoke("enqueueTask", { job_id: job.job_id }); if (!response.ok) this.plugin.notify(response.error?.message || "任务创建失败", { error: true }); else this.plugin.notify(response.data.deduplicated ? "任务已在队列中" : "任务已加入队列"); await this.refresh(); };
@@ -2730,6 +2697,11 @@ class SystemCenterView extends ItemView {
       const stats = this.moduleStats(module.id);
       const card = moduleList.createEl("article", { cls: "knowledgeos-system-row knowledgeos-system-module-row" });
       const title = card.createDiv({ cls: "knowledgeos-system-row-heading" });
+      const moduleIcon = moduleUiMetadata.icon(module.id);
+      if (moduleIcon) {
+        const icon = title.createSpan({ cls: "knowledgeos-module-icon", attr: { "aria-hidden": "true" } });
+        setIcon(icon, moduleIcon);
+      }
       title.createEl("strong", { text: module.name || labelModule(module.id) });
       title.createSpan({ cls: `knowledgeos-status status-${module.status}`, text: labelStatus(module.status) });
       if (module.description) card.createDiv({ cls: "knowledgeos-system-row-description", text: module.description.trim() });
@@ -2841,7 +2813,7 @@ class SystemCenterView extends ItemView {
       const list = issues.length ? details.createDiv({ cls: "knowledgeos-system-list" }) : null;
       for (const issue of issues) {
         const row = list.createEl("article", { cls: `knowledgeos-system-row knowledgeos-system-quality-row quality-${issue.severity}` });
-        row.createEl("strong", { text: issue.title || labelField(issue.target?.field) || "质量问题" });
+        row.createEl("strong", { text: issue.title || labelField(issue.target?.field, issue.module) || "质量问题" });
         row.createDiv({ cls: "knowledgeos-system-row-description", text: issue.message || String(issue.target?.path || issue.target?.entity_ref || "需要检查相关信息") });
         const actions = row.createDiv({ cls: "knowledgeos-system-row-actions" });
         for (const [action, label] of [["acknowledge", "知道了"], ["suppress", "暂时忽略"], ["resolve", "标记已解决"]]) { const button = actions.createEl("button", { text: label }); button.onclick = async () => { await this.plugin.client.invoke("manageQualityIssue", { issue_id: issue.issue_id, action }); await this.refresh(); }; }
@@ -2853,7 +2825,7 @@ class SystemCenterView extends ItemView {
   renderRun(root, run) {
     const card = root.createEl("article", { cls: `knowledgeos-system-row knowledgeos-system-run-row run-${run.status}` });
     const heading = card.createDiv({ cls: "knowledgeos-system-row-heading" });
-    const title = heading.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(run.source_action) });
+    const title = heading.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(run.source_action, run.source_module) });
     title.onclick = () => new RunDetailsModal(this.app, this.plugin, run.run_id, () => this.refresh()).open();
     heading.createSpan({ cls: `knowledgeos-status status-${run.status}`, text: labelStatus(run.status) });
     const meta = card.createDiv({ cls: "knowledgeos-system-row-meta" });
@@ -3110,7 +3082,7 @@ class TodayView extends ItemView {
         : item.target && this.app.workspace.openLinkText(item.target, "", false);
       if (item.priority === "critical" || item.priority === "high") titleRow.createSpan({ cls: `knowledgeos-today-priority is-${item.priority}`, text: item.priority === "critical" ? "紧急" : "高优先级" });
       addCardArrow(titleRow);
-      const description = friendlyDashboardDescription(item.description);
+      const description = friendlyDashboardDescription(item.description, item.source_module);
       if (description) card.createDiv({ cls: "knowledgeos-today-description", text: description });
       const scheduleAlreadyDescribed = description.includes("下次核验") || description.includes("核验已逾期");
       if ((item.due_at || item.scheduled_for) && !scheduleAlreadyDescribed) createTime(card.createDiv({ cls: "knowledgeos-today-item-time" }), item.due_at || item.scheduled_for);
@@ -3146,7 +3118,7 @@ class TodayView extends ItemView {
     const list = details.createDiv({ cls: "knowledgeos-today-run-list" });
     for (const run of runs.slice(0, this.plugin.settings.developerMode ? 5 : 3)) {
       const card = list.createEl("article", { cls: "knowledgeos-today-run-item" });
-      const button = card.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(run.source_action || run.job_id || "系统任务") });
+      const button = card.createEl("button", { cls: "knowledgeos-link", text: friendlyAction(run.source_action || run.job_id || "系统任务", run.source_module) });
       button.onclick = () => this.plugin.activateSystem(run.run_id);
       const meta = card.createDiv({ cls: "knowledgeos-today-run-meta" });
       meta.createSpan({ text: labelModule(run.source_module) });
@@ -3389,19 +3361,23 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
 module.exports = class KnowledgeOSPlugin extends Plugin {
   async onload() {
     const savedSettings = await this.loadData() || {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, savedSettings);
+    this.settings = Object.assign({}, settingsDefaults.DEFAULT_SETTINGS, savedSettings);
     if (!savedSettings.codexReasoningEffort && (!savedSettings.codexModel || savedSettings.codexModel === "gpt-5.4-mini")) {
       this.settings.codexModel = "gpt-5.6-terra";
       this.settings.codexReasoningEffort = "medium";
       await this.saveData(this.settings);
     }
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
-    this.client = new CoreCommandClient(this.settings);
-    this.taskClient = new CoreCommandClient(this.settings);
-    this.registerView(VIEW_TYPE, (leaf) => new TodayView(leaf, this));
-    this.registerView(REVIEW_VIEW_TYPE, (leaf) => new ReviewCenterView(leaf, this));
-    this.registerView(INBOX_VIEW_TYPE, (leaf) => new InboxCenterView(leaf, this));
-    this.registerView(SYSTEM_VIEW_TYPE, (leaf) => new SystemCenterView(leaf, this));
+    const clientOptions = { onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure };
+    this.client = new SharedCoreCommandClient(this.settings, clientOptions);
+    this.taskClient = new SharedCoreCommandClient(this.settings, clientOptions);
+    registerKnowledgeViews(this, {
+      today: VIEW_TYPE,
+      reviews: REVIEW_VIEW_TYPE,
+      inbox: INBOX_VIEW_TYPE,
+      system: SYSTEM_VIEW_TYPE,
+    }, { TodayView, ReviewCenterView, InboxCenterView, SystemCenterView });
+    void this.refreshModuleUiMetadata();
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
     this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
@@ -3443,6 +3419,12 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
   }
 
   onunload() { this.client?.close(); this.taskClient?.close(); }
+
+  async refreshModuleUiMetadata() {
+    if (this.moduleUiMetadataPromise) return this.moduleUiMetadataPromise;
+    this.moduleUiMetadataPromise = this.client.invoke("getModules", {}).finally(() => { this.moduleUiMetadataPromise = null; });
+    return this.moduleUiMetadataPromise;
+  }
 
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);

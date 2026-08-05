@@ -35,6 +35,9 @@ test("module lifecycle previews impact, requires disable confirmation, and survi
     assert.equal(disabled.ok, true);
     const modules = await invokeCommandApi({ vaultRoot: vault, requestId: "MOD-LIST", method: "getModules", params: {} });
     assert.equal((modules.data as JsonObject[]).find((item) => item.id === "experience-log")?.status, "disabled");
+    const readingModule = (modules.data as JsonObject[]).find((item) => item.id === "reading-log");
+    assert.equal(((readingModule?.ui as JsonObject)?.display_name), "阅读记录");
+    assert.equal((((readingModule?.ui as JsonObject)?.job_labels as JsonObject)?.["weekly-summary"]), "生成阅读周报");
     const afterToday = await invokeCommandApi({ vaultRoot: vault, requestId: "MOD-TODAY-AFTER", method: "getTodayItems", params: { refresh_markdown: false } });
     assert.equal(((afterToday.data as JsonObject).counts as JsonObject).inbox, 0);
     const capture = await invokeCommandApi({ vaultRoot: vault, requestId: "MOD-CAPTURE", method: "createCapture", params: { preview_only: true, module_id: "experience-log" } });

@@ -457,6 +457,10 @@
 .knowledgeos-system-center .knowledgeos-system-task-row.task-waiting-for-user,
 .knowledgeos-system-center .knowledgeos-system-task-row.task-interrupted { border-left: 3px solid var(--text-warning); padding-left: var(--size-4-3); }
 .knowledgeos-system-center .knowledgeos-system-row-heading { align-items: start; display: grid; gap: var(--size-4-2); grid-template-columns: minmax(0, 1fr) auto; }
+.knowledgeos-system-center .knowledgeos-system-module-row .knowledgeos-system-row-heading { grid-template-columns: auto minmax(0, 1fr) auto; }
+.knowledgeos-system-center .knowledgeos-module-icon { align-items: center; color: var(--text-muted); display: inline-flex; grid-row: 1; height: var(--icon-size); width: var(--icon-size); }
+.knowledgeos-system-center .knowledgeos-system-module-row .knowledgeos-system-row-heading strong { grid-column: 2; }
+.knowledgeos-system-center .knowledgeos-system-module-row .knowledgeos-system-row-heading .knowledgeos-status { grid-column: 3; }
 .knowledgeos-system-center .knowledgeos-system-row-heading strong,
 .knowledgeos-system-center .knowledgeos-system-row-heading .knowledgeos-link { max-width: none; overflow-wrap: anywhere; text-wrap: pretty; }
 .knowledgeos-system-center .knowledgeos-system-row-meta { color: var(--text-faint); display: flex; flex-wrap: wrap; font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; margin-top: var(--size-4-1); }

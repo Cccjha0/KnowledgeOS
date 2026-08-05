@@ -8,6 +8,20 @@ description: >
   管理硕士、博士、奖学金、工作和实习申请。
   MVP 先实现外部研究报告的路由、比较、审核和复查提醒。
 
+ui:
+  display_name: 申请跟踪
+  icon: graduation-cap
+  field_labels:
+    application_status: 申请状态
+    application_open: 申请开放状态
+    deadline: 申请截止日期
+    tuition: 学费
+    english_requirement: 英语要求
+    academic_requirement: 学术要求
+  job_labels:
+    due-check: 检查到期申请
+    sync-due-research: 同步到期核验请求
+
 engine:
   api_version: 1
   min_version: 0.1.0

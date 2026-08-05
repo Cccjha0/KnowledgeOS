@@ -5,6 +5,19 @@ maturity: beta
 status: enabled
 description: 将零散实习记录整理为结构化日报，并按周生成总结。
 
+ui:
+  display_name: 经历记录
+  icon: briefcase-business
+  field_labels:
+    title: 标题
+    occurred_at: 发生时间
+    organization: 组织
+    role: 职位
+    start_date: 开始日期
+    end_date: 结束日期
+  job_labels:
+    weekly-summary: 生成经历周报
+
 engine:
   api_version: 1
   min_version: 0.1.0

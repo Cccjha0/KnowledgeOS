@@ -76,6 +76,7 @@ async function moduleViews(
       version: module.data.version,
       status: module.data.status,
       description: module.data.description,
+      ui: module.data.ui ?? null,
       maturity: module.data.maturity,
       schema_version: (module.data.data as JsonObject)?.schema_version ?? null,
       engine_api_version: (module.data.engine as JsonObject)?.api_version ?? null,

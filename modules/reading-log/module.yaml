@@ -4,6 +4,17 @@ version: 0.1.0
 maturity: beta
 status: enabled
 description: Turn scattered reading captures into sourced reading notes, a lightweight title index, and weekly summaries.
+ui:
+  display_name: 阅读记录
+  icon: book-open
+  field_labels:
+    title: 标题
+    created: 创建时间
+    author: 作者
+    source: 来源
+  job_labels:
+    weekly-summary: 生成阅读周报
+
 engine:
   api_version: 1
   min_version: 0.1.0
