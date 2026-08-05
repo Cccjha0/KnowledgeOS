@@ -140,7 +140,7 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     const permission = object(scenarios.permission_denied, "MODULE_TEST_CONTRACT_INVALID");
     const deniedTarget = requiredString(permission.target, "permission_denied.target");
     const instance = await instanceLocation(vault, instanceId);
-    const sdk = new ModuleSdk({ vaultRoot: vault, moduleId, moduleVersion: String(manifest.version), instanceId, allowedReadRoots: [requiredString(instance.content_root, "instance.content_root")], ownedWriteRoots: [requiredString(instance.content_root, "instance.content_root")], maxReadLevel: 0 });
+    const sdk = new ModuleSdk({ vaultRoot: vault, moduleId, moduleVersion: String(manifest.version), instanceId, allowedReadRoots: [requiredString(instance.content_root, "instance.content_root")], ownedWriteRoots: [requiredString(instance.content_root, "instance.content_root")], maxSensitivityClass: 0 });
     let denied = false;
     try { sdk.buildOperationPlan({ planId: "PLAN-TEST-DENIED", taskId: "TASK-TEST-DENIED", summary: "permission fixture", operations: [{ operation_id: "OP-001", type: "create-file", target: deniedTarget, risk: "green", confidence: 1, idempotency_key: "test-denied", requires_review_id: null, payload: { format: "text", text: "must not write" } }] }); }
     catch { denied = true; }

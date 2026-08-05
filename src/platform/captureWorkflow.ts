@@ -161,7 +161,8 @@ async function finalizeCapture(
     file_hash: `sha256:${await sha256File(target)}`,
     frontmatter: data,
     text_preview: (params.content ?? "").slice(0, 500),
-    content_read_level: 0,
+    sensitivity_class: 0,
+    access_policy: { max_representation: "full" },
     attachment_metadata: { count: (params.attachments ?? []).length, paths: params.attachments ?? [] },
   };
   validateSchema(vaultRoot, CAPTURE_SCHEMA, envelope);

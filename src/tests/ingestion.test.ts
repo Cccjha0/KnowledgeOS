@@ -58,16 +58,18 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
-test("binary asset Sidecars retain a user-set Read Level across repeat ingestion", async () => {
+test("binary asset Sidecars retain sensitivity and representation policy across repeat ingestion", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-read-level-"));
   try {
     await initializeVault(vault, "disabled");
     const source = path.join(vault, "00-Inbox", "private.txt");
     await fs.writeFile(source, "Private attachment text", "utf8");
-    const first = await ingestAsset(vault, "00-Inbox/private.txt", { readLevel: 3 });
-    assert.equal(first.read_level, 3);
+    const first = await ingestAsset(vault, "00-Inbox/private.txt", { sensitivityClass: 3, maxRepresentation: "sensitive-original" });
+    assert.equal(first.sensitivity_class, 3);
+    assert.equal(first.access_policy.max_representation, "sensitive-original");
     const repeated = await ingestAsset(vault, "00-Inbox/private.txt");
-    assert.equal(repeated.read_level, 3);
+    assert.equal(repeated.sensitivity_class, 3);
+    assert.equal(repeated.access_policy.max_representation, "sensitive-original");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

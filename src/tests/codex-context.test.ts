@@ -11,15 +11,16 @@ test("Codex context workspace copies only approved inputs and is removed after t
     primary: { source_path: "20-Workspace/Demo/Inbox/input.md", content: "# Approved input\n" },
     related: [{ source_path: "20-Workspace/Demo/Records/record.md", content: "# Approved related record\n" }],
     allowedReadRoots: ["20-Workspace/Demo"],
-    maxReadLevel: 0,
+    maxSensitivityClass: 0,
   });
   try {
     assert.match(await fs.readFile(`${context.root}/primary-input.md`, "utf8"), /Approved input/);
     assert.match(await fs.readFile(`${context.root}/related/001-record.md`, "utf8"), /Approved related record/);
-    const manifest = JSON.parse(await fs.readFile(`${context.root}/context-manifest.json`, "utf8")) as { primary_input: { source_path: string; read_level: number; content_mode: string }; related_inputs: unknown[]; };
+    const manifest = JSON.parse(await fs.readFile(`${context.root}/context-manifest.json`, "utf8")) as { primary_input: { source_path: string; sensitivity_class: number; requested_representation: string; representation: string }; related_inputs: unknown[]; };
     assert.equal(manifest.primary_input.source_path, "20-Workspace/Demo/Inbox/input.md");
-    assert.equal(manifest.primary_input.read_level, 0);
-    assert.equal(manifest.primary_input.content_mode, "metadata");
+    assert.equal(manifest.primary_input.sensitivity_class, 0);
+    assert.equal(manifest.primary_input.requested_representation, "metadata");
+    assert.equal(manifest.primary_input.representation, "metadata");
     assert.equal(manifest.related_inputs.length, 1);
   } finally {
     await context.cleanup();
@@ -35,11 +36,11 @@ test("Codex context budgets cap copied data and surface overflow for review", as
       { source_path: "Daily/one.md", content: "A".repeat(40) },
       { source_path: "Daily/two.md", content: "B".repeat(40) },
     ],
-    allowedReadRoots: ["Inbox"], maxReadLevel: 0,
+    allowedReadRoots: ["Inbox"], maxSensitivityClass: 0,
     budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "truncate-and-review" },
   });
   try {
-    assert.equal(context.manifest.version, 3);
+    assert.equal(context.manifest.version, 4);
     assert.equal(context.manifest.budget.candidate_files, 3);
     assert.equal(context.manifest.budget.included_files, 2);
     assert.equal(context.manifest.budget.excluded_file_count, 1);

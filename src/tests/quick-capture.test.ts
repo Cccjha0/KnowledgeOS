@@ -94,6 +94,8 @@ test("Quick Capture saves through an idempotent Operation Plan without overwriti
     const state = await readJson<JsonObject | null>(path.join(vault, "90-System", "State", "Captures", `${String(firstData.capture_id)}.json`), null);
     assert.equal(state?.source_level, "global-inbox");
     assert.equal(typeof state?.file_hash, "string");
+    assert.equal(state?.sensitivity_class, 0);
+    assert.deepEqual(state?.access_policy, { max_representation: "full" });
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

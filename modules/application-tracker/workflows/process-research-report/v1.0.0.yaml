@@ -16,11 +16,11 @@ resources:
 steps:
   - id: validate-capture
     uses: core.validate-capture
-    with: { read_level: 2 }
+    with: { read: { representation: full } }
 
   - id: parse-source
     uses: core.parse-structured-document
-    with: { read_level: 2 }
+    with: { read: { representation: full } }
 
   - id: normalize-report
     uses: codex.prompt
@@ -41,7 +41,8 @@ steps:
     uses: core.query-documents
     with:
       root: "{instance.content_root}/Records"
-      read_level: 2
+      read:
+        representation: full
       filters:
         instance_id:
           equals: "{instance.instance_id}"

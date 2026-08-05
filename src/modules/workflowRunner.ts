@@ -19,7 +19,7 @@ import { createCodexContextWorkspace, type CodexContextBudget, type CodexContext
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
 import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
-import { assertReadLevel, type ReadLevel } from "../core/readLevels.js";
+import { assertRepresentationLevel, assertSensitivityClass, representationFromLegacyReadLevel, representationPermits, resolveDocumentAccessPolicy, type DocumentAccessPolicy, type RepresentationLevel, type SensitivityClass } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 type CodexJsonExecutor = typeof executeCodexJson;
@@ -45,10 +45,13 @@ interface DocumentInput extends JsonObject {
   content: string;
   format: string | null;
   /** The representation actually delivered to this Workflow step. */
-  read_level: ReadLevel;
+  representation: RepresentationLevel;
+  /** The representation declared by the Workflow before Core applies policy. */
+  requested_representation: RepresentationLevel;
   /** The document's user-controlled sensitivity classification. */
-  source_read_level: ReadLevel;
-  content_mode: "metadata" | "summary" | "full" | "sensitive";
+  sensitivity_class: SensitivityClass;
+  max_representation: RepresentationLevel;
+  policy_source: DocumentAccessPolicy["policy_source"];
 }
 
 interface WorkflowState {
@@ -91,12 +94,16 @@ function workflowSdk(vaultRoot: string, task: Parameters<RuntimeHandler>[0]["tas
   const contentRoot = resolved.instance ? instanceRoot(resolved.instance) : null;
   const permissions = resolved.manifest.permissions && typeof resolved.manifest.permissions === "object" && !Array.isArray(resolved.manifest.permissions)
     ? resolved.manifest.permissions as JsonObject : {};
-  const maxReadLevel = assertReadLevel(typeof permissions.max_read_level === "number" ? permissions.max_read_level : 0, "permissions.max_read_level");
+  const maxSensitivityClass = assertSensitivityClass(
+    typeof permissions.max_sensitivity_class === "number" ? permissions.max_sensitivity_class
+      : typeof permissions.max_read_level === "number" ? permissions.max_read_level : 0,
+    "permissions.max_sensitivity_class",
+  );
   return new ModuleSdk({
     vaultRoot, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"), instanceId: task.instance_id,
     // Module prompts may see only the current instance's data. Module assets
     // are copied by Core into the isolated workspace, never mounted from disk.
-    allowedReadRoots: contentRoot ? [contentRoot] : [], ownedWriteRoots: contentRoot ? [contentRoot] : [], maxReadLevel,
+    allowedReadRoots: contentRoot ? [contentRoot] : [], ownedWriteRoots: contentRoot ? [contentRoot] : [], maxSensitivityClass,
   });
 }
 
@@ -244,12 +251,13 @@ function requireText(file: string): string {
   return readFileSync(file, "utf8");
 }
 
-function requestedReadLevel(settings: JsonObject | undefined, label: string): ReadLevel {
-  return assertReadLevel(Number(settings?.read_level ?? 0), `${label}.read_level`);
-}
-
-function documentReadLevel(data: JsonObject, fallback = 0): ReadLevel {
-  return assertReadLevel(typeof data.read_level === "number" ? data.read_level : fallback, "document read_level");
+function requestedRepresentation(settings: JsonObject | undefined, label: string): RepresentationLevel {
+  const read = settings?.read;
+  if (read && typeof read === "object" && !Array.isArray(read)) {
+    return assertRepresentationLevel((read as JsonObject).representation, `${label}.read.representation`);
+  }
+  if (settings?.read_level !== undefined) return representationFromLegacyReadLevel(Number(settings.read_level), `${label}.read_level`);
+  return "metadata";
 }
 
 function summaryContent(content: string, data: JsonObject): string {
@@ -261,30 +269,30 @@ function summaryContent(content: string, data: JsonObject): string {
   return value.length <= 1_500 ? value : `${value.slice(0, 1_500)}\n\n[Summary excerpt truncated]`;
 }
 
-function assertDocumentReadable(state: WorkflowState, sourcePath: string, requested: ReadLevel, sourceLevel: ReadLevel): void {
-  state.sdk.assertReadable(sourcePath, requested);
-  // Metadata is intentionally visible to allowed modules for routing/auditing.
-  // Any body-derived representation must be within the module's declared policy.
-  if (requested > 0 && sourceLevel > state.sdk.context.maxReadLevel) {
-    throw new PkbError("MODULE_READ_DENIED", `Module ${state.sdk.context.moduleId} cannot receive ${sourcePath}: the document is classified Level ${sourceLevel}.`, {
+function assertDocumentReadable(state: WorkflowState, sourcePath: string, requested: RepresentationLevel, policy: DocumentAccessPolicy): void {
+  state.sdk.assertReadable(sourcePath, policy.sensitivity_class);
+  if (!representationPermits(policy.max_representation, requested)) {
+    throw new PkbError("DOCUMENT_REPRESENTATION_DENIED", `Workflow requested ${requested} for ${sourcePath}, but its policy allows at most ${policy.max_representation}.`, {
       source_path: sourcePath,
-      requested_read_level: requested,
-      source_read_level: sourceLevel,
-      module_max_read_level: state.sdk.context.maxReadLevel,
+      requested_representation: requested,
+      document_max_representation: policy.max_representation,
+      source_sensitivity_class: policy.sensitivity_class,
+      policy_source: policy.policy_source,
     });
   }
 }
 
-function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: ReadLevel; sourceLevel: ReadLevel }): DocumentInput {
-  const contentMode = input.requested === 0 ? "metadata" : input.requested === 1 ? "summary" : input.requested === 2 ? "full" : "sensitive";
+function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: RepresentationLevel; policy: DocumentAccessPolicy }): DocumentInput {
   return {
     path: input.path,
     data: input.data,
-    content: input.requested === 0 ? "" : input.requested === 1 ? summaryContent(input.content, input.data) : input.content,
+    content: input.requested === "metadata" ? "" : input.requested === "summary" ? summaryContent(input.content, input.data) : input.content,
     format: input.format,
-    read_level: input.requested,
-    source_read_level: input.sourceLevel,
-    content_mode: contentMode,
+    representation: input.requested,
+    requested_representation: input.requested,
+    sensitivity_class: input.policy.sensitivity_class,
+    max_representation: input.policy.max_representation,
+    policy_source: input.policy.policy_source,
   };
 }
 
@@ -293,12 +301,13 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   if (!source) throw new PkbError("MODULE_WORKFLOW_SOURCE_REQUIRED", "The workflow needs payload.source_file or payload.capture_path.");
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const normalized = relative(source, "source_file");
-  const requested = requestedReadLevel(settings, "source document");
+  const requested = requestedRepresentation(settings, "source document");
   const ingestion = task.payload.ingestion;
   if (ingestion && typeof ingestion === "object" && !Array.isArray(ingestion) && typeof (ingestion as JsonObject).capture_path === "string") {
     const envelope = await readCaptureEnvelope(vaultRoot, relative(String((ingestion as JsonObject).capture_path), "ingestion.capture_path"));
     if (envelope.source_path !== normalized) throw new PkbError("CAPTURE_ENVELOPE_SOURCE_MISMATCH", "Capture Envelope does not belong to this Inbox source.");
-    assertDocumentReadable(state, normalized, requested, envelope.read_level);
+    const policy: DocumentAccessPolicy = { sensitivity_class: envelope.sensitivity_class, max_representation: envelope.access_policy.max_representation, policy_source: envelope.policy_source, ...(envelope.legacy_read_level === null ? {} : { legacy_read_level: envelope.legacy_read_level }) };
+    assertDocumentReadable(state, normalized, requested, policy);
     if (!pdfExtractionIsUsable(envelope)) {
       throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfExtractionStatus(envelope)}. OCR or a text-based PDF is required before this workflow can run.`, {
         source_path: envelope.source_path,
@@ -309,13 +318,13 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
     const extraction = await readExtractionCache(vaultRoot, envelope);
     state.sourceFiles.add(normalized); state.sourceFiles.add(envelope.sidecar_path);
     state.sourceFiles.add(envelope.extraction_cache_path);
-    return materializeDocument({ path: normalized, data: extraction.structured_data ?? {}, content: extraction.extracted_text, format: envelope.format, requested, sourceLevel: envelope.read_level });
+    return materializeDocument({ path: normalized, data: extraction.structured_data ?? {}, content: extraction.extracted_text, format: envelope.format, requested, policy });
   }
   const document = parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, normalized));
-  const sourceLevel = documentReadLevel(document.data);
-  assertDocumentReadable(state, normalized, requested, sourceLevel);
+  const policy = resolveDocumentAccessPolicy(document.data);
+  assertDocumentReadable(state, normalized, requested, policy);
   state.sourceFiles.add(normalized);
-  return materializeDocument({ path: normalized, data: document.data, content: document.content, format: "markdown", requested, sourceLevel });
+  return materializeDocument({ path: normalized, data: document.data, content: document.content, format: "markdown", requested, policy });
 }
 
 function queryValue(value: JsonValue, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"]): JsonValue {
@@ -356,7 +365,7 @@ function matchesTimeWindow(data: JsonObject, settings: JsonObject, state: Workfl
 async function queryDocuments(vaultRoot: string, state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], settings: JsonObject): Promise<DocumentInput[]> {
   if (!state.resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "This workflow step requires an instance.");
   const root = relative(interpolate(string(settings.root, "query-documents.root"), state, task), "query-documents.root");
-  const requested = requestedReadLevel(settings, "query-documents");
+  const requested = requestedRepresentation(settings, "query-documents");
   state.sdk.assertReadable(root, 0);
   const filters = settings.filters === undefined ? {} : object(settings.filters, "MODULE_QUERY_FILTERS_INVALID");
   const schema = typeof settings.schema === "string" ? schemaId(state.resolved.moduleRoot, state.resolved.manifest, settings.schema) : null;
@@ -367,9 +376,9 @@ async function queryDocuments(vaultRoot: string, state: WorkflowState, task: Par
     if (!matchesFilters(parsed.data, filters, state, task)) continue;
     if (!matchesTimeWindow(parsed.data, settings, state, task, relativePath)) continue;
     if (schema) validateSchema(vaultRoot, schema, parsed.data);
-    const sourceLevel = documentReadLevel(parsed.data);
-    assertDocumentReadable(state, relativePath, requested, sourceLevel);
-    output.push(materializeDocument({ path: relativePath, data: parsed.data, content: parsed.content, format: "markdown", requested, sourceLevel }));
+    const policy = resolveDocumentAccessPolicy(parsed.data);
+    assertDocumentReadable(state, relativePath, requested, policy);
+    output.push(materializeDocument({ path: relativePath, data: parsed.data, content: parsed.content, format: "markdown", requested, policy }));
     state.sourceFiles.add(relativePath);
   }
   return output;
@@ -422,8 +431,8 @@ function approvedDocuments(state: WorkflowState): DocumentInput[] {
 function contextDocumentContent(document: DocumentInput): string {
   // parseMarkdown separates frontmatter from the body. Both are approved task
   // input, so materialize them together without copying the original Vault file.
-  const label = document.content_mode === "metadata" ? "No document body was authorized for this context." : document.content;
-  return `# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n# Authorized ${document.content_mode} content (Read Level ${document.read_level})\n\n${label}`;
+  const label = document.representation === "metadata" ? "No document body was authorized for this context." : document.content;
+  return `# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n# Authorized ${document.representation} content (Sensitivity Class ${document.sensitivity_class})\n\n${label}`;
 }
 
 function contextBudget(workflow: JsonObject): CodexContextBudget {
@@ -449,7 +458,8 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
   const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
     : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
   const primary = (sourcePath ? documents.find((document) => document.path === sourcePath) : undefined) ?? documents[0] ?? {
-    path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n", format: null, read_level: 0, source_read_level: 0, content_mode: "metadata",
+    path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n", format: null,
+    representation: "metadata", requested_representation: "metadata", sensitivity_class: 0, max_representation: "metadata", policy_source: "default",
   } satisfies DocumentInput;
   const related = documents.filter((document) => document.path !== primary.path);
   const context = await createCodexContextWorkspace({
@@ -463,10 +473,10 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
       schedule: state.schedule,
       approved_input_files: [primary.path, ...related.map((document) => document.path)],
     },
-    primary: { source_path: primary.path, content: contextDocumentContent(primary), read_level: primary.read_level, content_mode: primary.content_mode },
-    related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document), read_level: document.read_level, content_mode: document.content_mode })),
+    primary: { source_path: primary.path, content: contextDocumentContent(primary), sensitivity_class: primary.sensitivity_class, requested_representation: primary.requested_representation, representation: primary.representation, policy_source: primary.policy_source },
+    related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document), sensitivity_class: document.sensitivity_class, requested_representation: document.requested_representation, representation: document.representation, policy_source: document.policy_source })),
     allowedReadRoots: state.sdk.context.allowedReadRoots,
-    maxReadLevel: state.sdk.context.maxReadLevel,
+    maxSensitivityClass: state.sdk.context.maxSensitivityClass,
     budget: contextBudget(state.resolved.workflow),
   });
   // The runner reads this information before launching Codex. It makes the
@@ -674,7 +684,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         codex_contexts: state.codexContexts.map((context) => ({
           version: context.version, primary_input: context.primary_input.source_path,
           related_input_count: context.related_inputs.length, allowed_read_roots: context.allowed_read_roots,
-          max_read_level: context.max_read_level,
+          max_sensitivity_class: context.max_sensitivity_class,
           budget: context.budget as unknown as JsonObject,
         })),
       },

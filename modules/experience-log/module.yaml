@@ -101,12 +101,11 @@ scheduled_jobs:
     timezone: instance
 
 permissions:
-  max_read_level: 2
+  max_sensitivity_class: 2
   network: false
   codex: optional
   delete: false
   cross_module_write: false
-  max_default_read_level: 0
   allow_external_network: false
   allow_delete: false
   allow_bulk_move: false

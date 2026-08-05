@@ -41,7 +41,7 @@ function preview(item: InboxItemView, overrides: { moduleId: string | null; inst
       status: "preview", item_id: item.item_id, path: item.path, current_state: item.state,
       suggested_ownership: { module_id: moduleId, instance_id: instanceId },
       content_type: item.content_type, confidence: item.confidence, reasons: item.reasons,
-      required_read_level: 0, requires_codex: false, can_auto_process: false, processor: item.processor,
+      required_representation: "metadata", requires_codex: false, can_auto_process: false, processor: item.processor,
       operation_summary: { kind: "quarantine-empty-inbox-file", estimated_operations: 1, target: "Inbox 恢复区（可通过运行记录撤销）" },
       risk: "green",
     };
@@ -50,7 +50,7 @@ function preview(item: InboxItemView, overrides: { moduleId: string | null; inst
     status: "preview", item_id: item.item_id, path: item.path, current_state: item.state,
     suggested_ownership: { module_id: moduleId, instance_id: instanceId },
     content_type: item.content_type, confidence: item.confidence, reasons: item.reasons,
-    required_read_level: item.required_read_level, requires_codex: item.requires_ai,
+    required_representation: item.required_representation, requires_codex: item.requires_ai,
     can_auto_process: item.confidence >= item.auto_route_threshold && !item.requires_ai,
     processor: item.processor,
     operation_summary: item.processor === "application-research-report"

@@ -30,7 +30,7 @@ test("integration: Codex cannot escape the isolated context workspace", { skip: 
   const context = await createCodexContextWorkspace({
     modulePrompt: "Return only a JSON object.", instanceContext: {}, runtimeContext: {},
     primary: { source_path: "Inbox/approved.md", content: "# Approved context\nNo private data is present here.\n" },
-    related: [], allowedReadRoots: ["Inbox"], maxReadLevel: 0,
+    related: [], allowedReadRoots: ["Inbox"], maxSensitivityClass: 0,
   });
   const audit: CodexExecutionAudit = { events: [] };
   try {

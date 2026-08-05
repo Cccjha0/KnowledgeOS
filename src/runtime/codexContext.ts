@@ -3,12 +3,15 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { JsonObject } from "../core/types.js";
+import type { DocumentAccessPolicy, RepresentationLevel, SensitivityClass } from "../core/readLevels.js";
 
 export interface CodexContextDocument {
   source_path: string;
   content: string;
-  read_level?: number;
-  content_mode?: "metadata" | "summary" | "full" | "sensitive";
+  sensitivity_class?: SensitivityClass;
+  requested_representation?: RepresentationLevel;
+  representation?: RepresentationLevel;
+  policy_source?: DocumentAccessPolicy["policy_source"];
 }
 
 export interface CodexContextBudget {
@@ -26,8 +29,10 @@ interface ContextInputManifest {
   bytes: number;
   original_bytes: number;
   truncated: boolean;
-  read_level: number;
-  content_mode: "metadata" | "summary" | "full" | "sensitive";
+  sensitivity_class: SensitivityClass;
+  requested_representation: RepresentationLevel;
+  representation: RepresentationLevel;
+  policy_source: DocumentAccessPolicy["policy_source"];
 }
 
 interface ContextBudgetManifest extends CodexContextBudget {
@@ -43,11 +48,11 @@ interface ContextBudgetManifest extends CodexContextBudget {
 }
 
 export interface CodexContextManifest {
-  version: 3;
+  version: 4;
   primary_input: ContextInputManifest;
   related_inputs: ContextInputManifest[];
   allowed_read_roots: string[];
-  max_read_level: number;
+  max_sensitivity_class: SensitivityClass;
   budget: ContextBudgetManifest;
 }
 
@@ -61,10 +66,10 @@ function digest(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-function inputReadLevel(document: CodexContextDocument): number { return document.read_level ?? 0; }
-function inputContentMode(document: CodexContextDocument): "metadata" | "summary" | "full" | "sensitive" {
-  return document.content_mode ?? (inputReadLevel(document) === 0 ? "metadata" : inputReadLevel(document) === 1 ? "summary" : inputReadLevel(document) === 2 ? "full" : "sensitive");
-}
+function inputSensitivityClass(document: CodexContextDocument): SensitivityClass { return document.sensitivity_class ?? 0; }
+function inputRequestedRepresentation(document: CodexContextDocument): RepresentationLevel { return document.requested_representation ?? document.representation ?? "metadata"; }
+function inputRepresentation(document: CodexContextDocument): RepresentationLevel { return document.representation ?? inputRequestedRepresentation(document); }
+function inputPolicySource(document: CodexContextDocument): DocumentAccessPolicy["policy_source"] { return document.policy_source ?? "default"; }
 
 function safeName(value: string, index: number): string {
   const base = path.basename(value).replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "document.md";
@@ -128,7 +133,7 @@ export async function createCodexContextWorkspace(input: {
   primary: CodexContextDocument;
   related: CodexContextDocument[];
   allowedReadRoots: string[];
-  maxReadLevel: number;
+  maxSensitivityClass: SensitivityClass;
   budget?: Partial<CodexContextBudget>;
 }): Promise<CodexContextWorkspace> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-run-context-${process.pid}-${randomUUID()}-`));
@@ -188,15 +193,17 @@ export async function createCodexContextWorkspace(input: {
         bytes: Buffer.byteLength(item.content, "utf8"),
         original_bytes: item.originalBytes,
         truncated: item.truncated,
-        read_level: inputReadLevel(item.document),
-        content_mode: inputContentMode(item.document),
+        sensitivity_class: inputSensitivityClass(item.document),
+        requested_representation: inputRequestedRepresentation(item.document),
+        representation: inputRepresentation(item.document),
+        policy_source: inputPolicySource(item.document),
       });
     }
     const truncatedFiles = [primary, ...included].flatMap((item) => item.truncated && item.reason
       ? [{ source_path: item.document.source_path, original_bytes: item.originalBytes, included_bytes: Buffer.byteLength(item.content, "utf8"), reason: item.reason }]
       : []);
     const manifest: CodexContextManifest = {
-      version: 3,
+      version: 4,
       primary_input: {
         source_path: primary.document.source_path,
         context_path: primaryPath,
@@ -204,12 +211,14 @@ export async function createCodexContextWorkspace(input: {
         bytes: Buffer.byteLength(primary.content, "utf8"),
         original_bytes: primary.originalBytes,
         truncated: primary.truncated,
-        read_level: inputReadLevel(primary.document),
-        content_mode: inputContentMode(primary.document),
+        sensitivity_class: inputSensitivityClass(primary.document),
+        requested_representation: inputRequestedRepresentation(primary.document),
+        representation: inputRepresentation(primary.document),
+        policy_source: inputPolicySource(primary.document),
       },
       related_inputs: relatedManifest,
       allowed_read_roots: [...input.allowedReadRoots],
-      max_read_level: input.maxReadLevel,
+      max_sensitivity_class: input.maxSensitivityClass,
       budget: {
         ...budget,
         candidate_files: candidates.length,

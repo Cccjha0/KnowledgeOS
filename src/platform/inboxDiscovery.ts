@@ -6,7 +6,8 @@ import { parseMarkdown } from "../core/bridge.js";
 import { discoverRoutingContext, type DiscoveredDocument, type RoutingDiscoveryContext } from "../core/discovery.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
-import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
+import { resolveWorkflowResourceContract } from "../modules/workflowResources.js";
+import type { RepresentationLevel } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -44,6 +45,8 @@ export interface InboxItemView extends JsonObject {
   state: InboxItemState;
   confidence: number;
   reasons: string[];
+  required_representation: RepresentationLevel;
+  /** @deprecated UI compatibility alias for required_representation; never an authorization input. */
   required_read_level: number;
   requires_ai: boolean;
   processor: "application-research-report" | "module-workflow" | "routing-only";
@@ -186,11 +189,11 @@ async function inspectItem(
     ? "application-research-report"
     : root.scope === "global" && suggestedModule ? "routing-only" : "module-workflow";
   const workflowModule = modules.find((entry) => String(entry.data.id) === suggestedModule);
-  let workflowResources = null;
+  let workflowContract = null;
   if (!emptySource && processor !== "routing-only" && workflowModule) {
-    workflowResources = resolveWorkflowResourceRequirements(workflowModule, null, "capture");
+    workflowContract = resolveWorkflowResourceContract(workflowModule, null, "capture");
   }
-  const requiresAi = workflowResources?.codex === "required";
+  const requiresAi = workflowContract?.resources.codex === "required";
   const stored = await readJson<InboxStateRecord | null>(inboxStatePath(vaultRoot, id), null);
   let state: InboxItemState = emptySource ? "empty" : stored?.state ?? (!suggestedModule ? "waiting-for-user" : requiresAi ? "waiting-for-ai" : "pending");
   const storedResult = object(stored?.result);
@@ -212,7 +215,10 @@ async function inspectItem(
     extension, size: stat.size, created_at: stat.birthtime.toISOString(), modified_at: stat.mtime.toISOString(), lifecycle_revision: lifecycleRevision,
     scope: root.scope, source_module: root.moduleId, instance_id: root.instanceId,
     content_type: typeof data.content_type === "string" ? data.content_type : applicationReport ? "research-report" : extension.slice(1) || "file",
-    state, confidence, reasons, required_read_level: requiresAi ? 1 : 0, requires_ai: requiresAi,
+    state, confidence, reasons,
+    required_representation: workflowContract?.read_representation ?? "metadata",
+    required_read_level: ({ metadata: 0, summary: 1, full: 2, "sensitive-original": 3 } as const)[workflowContract?.read_representation ?? "metadata"],
+    requires_ai: requiresAi,
     processor, suggested_module_id: suggestedModule, suggested_instance_id: suggestedInstance,
     auto_route_threshold: moduleThreshold(modules.find((entry) => entry.data.id === suggestedModule)),
     retryable: state === "failed", blocked_by_open_editor: blockedByOpenEditor,

@@ -13,8 +13,7 @@
     "created_at",
     "modified_at",
     "file_hash",
-    "frontmatter",
-    "content_read_level"
+    "frontmatter"
   ],
   "properties": {
     "capture_id": {
@@ -70,12 +69,31 @@
     "text_preview": {
       "type": "string"
     },
-    "content_read_level": {
+    "sensitivity_class": {
       "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+    },
+    "access_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_representation"],
+      "properties": {
+        "max_representation": {
+          "type": "string",
+          "enum": ["metadata", "summary", "full", "sensitive-original"]
+        }
+      }
+    },
+    "content_read_level": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel",
+      "description": "Deprecated compatibility field. Use sensitivity_class and access_policy."
     },
     "attachment_metadata": {
       "type": "object",
       "additionalProperties": true
     }
-  }
+  },
+  "anyOf": [
+    { "required": ["sensitivity_class", "access_policy"] },
+    { "required": ["content_read_level"] }
+  ]
 }
