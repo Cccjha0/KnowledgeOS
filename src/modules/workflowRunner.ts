@@ -18,7 +18,7 @@ import { runManagedCodexStep } from "../runtime/codexAdapter.js";
 import { createCodexContextWorkspace, type CodexContextBudget, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
-import { readCaptureEnvelope } from "../core/ingestion.js";
+import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope } from "../core/ingestion.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 type CodexJsonExecutor = typeof executeCodexJson;
@@ -248,6 +248,13 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   if (ingestion && typeof ingestion === "object" && !Array.isArray(ingestion) && typeof (ingestion as JsonObject).capture_path === "string") {
     const envelope = await readCaptureEnvelope(vaultRoot, relative(String((ingestion as JsonObject).capture_path), "ingestion.capture_path"));
     if (envelope.source_path !== normalized) throw new PkbError("CAPTURE_ENVELOPE_SOURCE_MISMATCH", "Capture Envelope does not belong to this Inbox source.");
+    if (!pdfExtractionIsUsable(envelope)) {
+      throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfExtractionStatus(envelope)}. OCR or a text-based PDF is required before this workflow can run.`, {
+        source_path: envelope.source_path,
+        extraction_status: pdfExtractionStatus(envelope),
+        capture_path: envelope.capture_path,
+      });
+    }
     state.sourceFiles.add(normalized); state.sourceFiles.add(envelope.sidecar_path);
     return { path: normalized, data: envelope.structured_data ?? {}, content: envelope.extracted_text, format: envelope.format };
   }

@@ -8,6 +8,7 @@ import { ensureDir, fromVaultPath, sha256File, writeJsonAtomic } from "./files.j
 import type { JsonObject, JsonValue } from "./types.js";
 
 export type IngestionFormat = "markdown" | "text" | "json" | "yaml" | "pdf" | "image";
+export type PdfExtractionStatus = "pending" | "completed" | "partial" | "empty" | "scanned" | "encrypted" | "corrupted" | "unsupported" | "failed";
 
 export interface CaptureEnvelope extends JsonObject {
   schema_version: 1;
@@ -39,16 +40,39 @@ function asObject(value: JsonValue, message: string): JsonObject {
   return value as JsonObject;
 }
 
+const PDF_LIMITS = { maxPages: 200, maxTextChars: 500_000, maxPageTextChars: 50_000 } as const;
+
+interface PdfBridgeResponse {
+  text?: unknown;
+  metadata?: unknown;
+}
+
 function extractPdfText(source: string): { text: string; metadata: JsonObject } {
   const bridge = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "tools", "ingestion_bridge.py");
-  const result = spawnSync("python", ["-X", "utf8", bridge, source], { encoding: "utf8", windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnSync("python", ["-X", "utf8", bridge, source, "--max-pages", String(PDF_LIMITS.maxPages), "--max-text-chars", String(PDF_LIMITS.maxTextChars), "--max-page-text-chars", String(PDF_LIMITS.maxPageTextChars)], { encoding: "utf8", windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
   if (result.error || result.status !== 0) {
     throw new PkbError("PDF_EXTRACTION_FAILED", result.stderr.trim() || result.error?.message || "PDF text extraction failed.");
   }
   try {
-    const parsed = JSON.parse(result.stdout) as { text?: unknown; metadata?: unknown };
+    const parsed = JSON.parse(result.stdout) as PdfBridgeResponse;
     return { text: typeof parsed.text === "string" ? parsed.text : "", metadata: parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {} };
   } catch { throw new PkbError("PDF_EXTRACTION_FAILED", "PDF extraction returned invalid JSON."); }
+}
+
+/** A PDF is eligible for module/Codex workflows only when it has usable local text. */
+export function pdfExtractionIsUsable(envelope: CaptureEnvelope): boolean {
+  if (envelope.format !== "pdf") return true;
+  const extraction = envelope.metadata.extraction;
+  if (!extraction || typeof extraction !== "object" || Array.isArray(extraction)) return false;
+  const status = (extraction as JsonObject).status;
+  return (status === "completed" || status === "partial") && envelope.extracted_text.trim().length > 0;
+}
+
+export function pdfExtractionStatus(envelope: CaptureEnvelope): PdfExtractionStatus | null {
+  if (envelope.format !== "pdf") return null;
+  const extraction = envelope.metadata.extraction;
+  const status = extraction && typeof extraction === "object" && !Array.isArray(extraction) ? (extraction as JsonObject).status : null;
+  return typeof status === "string" ? status as PdfExtractionStatus : "failed";
 }
 
 /** Core-owned ingestion: modules consume the resulting Envelope/Sidecar, never mutate the original asset. */

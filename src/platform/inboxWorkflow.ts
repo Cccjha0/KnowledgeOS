@@ -18,7 +18,7 @@ import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInb
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
-import { formatForExtension, ingestAsset, isAcceptedInput } from "../core/ingestion.js";
+import { formatForExtension, ingestAsset, isAcceptedInput, pdfExtractionIsUsable, pdfExtractionStatus } from "../core/ingestion.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -88,6 +88,9 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
   const format = formatForExtension(item.extension);
   if (!format || !isAcceptedInput(workflow.module, format)) return null;
   const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path);
+  const requiresExtractionAction = ingestion?.format === "pdf" && !pdfExtractionIsUsable(ingestion);
+  const extractionStatus = ingestion ? pdfExtractionStatus(ingestion) : null;
+  const resources = requiresExtractionAction ? { ...workflow.resources, codex: "not-required" as const, user: "required" as const } : workflow.resources;
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
@@ -100,7 +103,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
     const result = repository.createTask({
       job_id: `${moduleId}.inbox-processing`, module: moduleId, instance_id: instanceId,
       task_type: "workflow", workflow: workflow.workflow, priority: "normal", scheduled_for: new Date().toISOString(),
-      resources: workflow.resources,
+      resources,
       trigger: {
         type: "inbox", item_id: item.item_id, source_file: item.path,
         workflow_id: workflow.workflowId, workflow_version: workflow.workflowVersion,
@@ -111,16 +114,16 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
         item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
         ...(effectiveModel ? { codex_model: effectiveModel } : {}),
         ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
-        ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref } } : {}),
+        ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref, extraction_status: extractionStatus } } : {}),
       },
       concurrency_key: `inbox:${item.item_id}`, concurrency_policy: "forbid",
     });
     let task = result.task;
     if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
-    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
+    const itemState = requiresExtractionAction ? "waiting-for-user" : task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
-      attempts: task.attempt_count, task_id: task.task_id, error: task.last_error?.message ?? null,
-      result: { status: task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated },
+      attempts: task.attempt_count, task_id: task.task_id, error: requiresExtractionAction ? `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
+      result: { status: requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: "OCR or a text-based PDF" } : {}) },
     }));
     return task;
   } finally { repository.close(); }
