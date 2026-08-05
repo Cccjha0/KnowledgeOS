@@ -7,7 +7,7 @@ context_budget:
   max_total_bytes: 500000
   max_file_bytes: 50000
   max_estimated_tokens: 125000
-  overflow_policy: summarize-or-review
+  overflow_policy: truncate-and-review
 steps:
   - id: collect-notes
     uses: core.query-documents

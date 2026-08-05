@@ -62,7 +62,7 @@ test("a declared experience-log workflow executes through the generic Runner wit
       assert.equal(manifest.budget.max_total_bytes, 500000);
       assert.equal(manifest.budget.max_file_bytes, 50000);
       assert.equal(manifest.budget.max_estimated_tokens, 125000);
-      assert.equal(manifest.budget.overflow_policy, "summarize-or-review");
+      assert.equal(manifest.budget.overflow_policy, "truncate-and-review");
       assert.deepEqual({ candidate_files: manifest.budget.candidate_files, included_files: manifest.budget.included_files, excluded_file_count: manifest.budget.excluded_file_count, truncated_file_count: manifest.budget.truncated_file_count, review_required: manifest.budget.review_required }, { candidate_files: 1, included_files: 1, excluded_file_count: 0, truncated_file_count: 0, review_required: false });
       return { output, stderr: "" };
     });

@@ -16,7 +16,7 @@ export interface CodexContextBudget {
   max_total_bytes: number;
   max_file_bytes: number;
   max_estimated_tokens: number;
-  overflow_policy: "summarize-or-review";
+  overflow_policy: "truncate-and-review";
 }
 
 interface ContextInputManifest {
@@ -76,7 +76,7 @@ const DEFAULT_BUDGET: CodexContextBudget = {
   max_total_bytes: 500_000,
   max_file_bytes: 50_000,
   max_estimated_tokens: 125_000,
-  overflow_policy: "summarize-or-review",
+  overflow_policy: "truncate-and-review",
 };
 
 function normalizeBudget(value: Partial<CodexContextBudget> | undefined): CodexContextBudget {
@@ -84,7 +84,7 @@ function normalizeBudget(value: Partial<CodexContextBudget> | undefined): CodexC
   for (const key of ["max_files", "max_total_bytes", "max_file_bytes", "max_estimated_tokens"] as const) {
     if (!Number.isInteger(budget[key]) || budget[key] <= 0) throw new Error(`context_budget.${key} must be a positive integer.`);
   }
-  if (budget.overflow_policy !== "summarize-or-review") throw new Error("context_budget.overflow_policy must be summarize-or-review.");
+  if (budget.overflow_policy !== "truncate-and-review") throw new Error("context_budget.overflow_policy must be truncate-and-review.");
   return budget;
 }
 

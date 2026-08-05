@@ -428,7 +428,7 @@ function contextDocumentContent(document: DocumentInput): string {
 
 function contextBudget(workflow: JsonObject): CodexContextBudget {
   const raw = workflow.context_budget;
-  if (raw === undefined) return { max_files: 50, max_total_bytes: 500_000, max_file_bytes: 50_000, max_estimated_tokens: 125_000, overflow_policy: "summarize-or-review" };
+  if (raw === undefined) return { max_files: 50, max_total_bytes: 500_000, max_file_bytes: 50_000, max_estimated_tokens: 125_000, overflow_policy: "truncate-and-review" };
   const value = object(raw, "CONTEXT_BUDGET_INVALID");
   const budget = {
     max_files: value.max_files,
@@ -440,7 +440,7 @@ function contextBudget(workflow: JsonObject): CodexContextBudget {
   for (const key of ["max_files", "max_total_bytes", "max_file_bytes", "max_estimated_tokens"] as const) {
     if (!Number.isInteger(budget[key]) || Number(budget[key]) <= 0) throw new PkbError("CONTEXT_BUDGET_INVALID", `context_budget.${key} must be a positive integer.`);
   }
-  if (budget.overflow_policy !== "summarize-or-review") throw new PkbError("CONTEXT_BUDGET_INVALID", "context_budget.overflow_policy must be summarize-or-review.");
+  if (budget.overflow_policy !== "truncate-and-review") throw new PkbError("CONTEXT_BUDGET_INVALID", "context_budget.overflow_policy must be truncate-and-review.");
   return budget as CodexContextBudget;
 }
 

@@ -36,7 +36,7 @@ test("Codex context budgets cap copied data and surface overflow for review", as
       { source_path: "Daily/two.md", content: "B".repeat(40) },
     ],
     allowedReadRoots: ["Inbox"], maxReadLevel: 0,
-    budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "summarize-or-review" },
+    budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "truncate-and-review" },
   });
   try {
     assert.equal(context.manifest.version, 3);
