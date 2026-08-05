@@ -87,6 +87,9 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /refresh\(\{ background: true \}\)/);
   assert.match(source, /taskCycleChanged\(response\.data\)/);
   assert.match(source, /shouldAutoRefreshPath/);
+  assert.match(source, /function missingBuiltCliFailure/);
+  assert.match(source, /找不到已编译的 Core CLI/);
+  assert.match(source, /npm run build/);
   assert.match(source, /renderBackgroundStatus\("更新中…"\)/);
   assert.match(source, /invoke\("getSystemCenterSnapshot", \{ section \}\)/);
   assert.match(source, /"api-server"/);

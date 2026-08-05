@@ -58,6 +58,19 @@ function shouldAutoRefreshPath(filePath) {
   return !["90-System/Logs/", "90-System/Cache/", "90-System/Backups/"].some((prefix) => normalized.startsWith(prefix));
 }
 
+function missingBuiltCliFailure(message, cliPath) {
+  const detail = String(message || "");
+  const configuredPath = String(cliPath || "").replaceAll("\\", "/");
+  const looksLikeCli = /(?:^|\/)dist\/cli\.js$/i.test(configuredPath);
+  const notFound = /cannot find module|module not found|enoent/i.test(detail);
+  if (!looksLikeCli || !notFound) return null;
+  return {
+    message: "找不到已编译的 Core CLI（dist/cli.js）。",
+    impact: "当前仓库不提交 dist/；插件尚不能启动 Core，已有 Vault 内容不会被修改。",
+    recovery_actions: ["在 knowledgeos-engine 目录执行 npm ci", "执行 npm run build", "在设置中将 Core CLI 路径指向 dist/cli.js 后重新测试"],
+  };
+}
+
 const STATUS_LABELS = {
   "not-open": "尚未开放",
   open: "开放申请",
@@ -396,6 +409,8 @@ class CoreCommandClient {
   }
 
   failure(message) {
+    const buildFailure = missingBuiltCliFailure(message, this.settings.coreCliPath);
+    if (buildFailure) return { ok: false, state: "failed", error: buildFailure };
     return {
       ok: false,
       state: "failed",
@@ -3162,7 +3177,7 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
       .addText((text) => text.setPlaceholder("E:\\KnowledgeOS\\knowledgeos-vault").setValue(this.plugin.settings.vaultPath).onChange(async (value) => {
         await this.persistSetting("vaultPath", value.trim(), true);
       }));
-    new Setting(connection).setName("Core CLI 路径").setDesc("knowledgeos-engine/dist/cli.js 的绝对路径")
+    new Setting(connection).setName("Core CLI 路径").setDesc("knowledgeos-engine/dist/cli.js 的绝对路径；源码仓库不提交 dist/，首次使用请先运行 npm ci 与 npm run build")
       .addText((text) => text.setPlaceholder("E:\\KnowledgeOS\\knowledgeos-engine\\dist\\cli.js")
         .setValue(this.plugin.settings.coreCliPath).onChange(async (value) => {
           await this.persistSetting("coreCliPath", value.trim(), true);

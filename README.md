@@ -36,7 +36,7 @@ knowledgeos-engine/
 ├── examples/                      测试 Fixture
 ├── docs/                          实现说明与系统规范
 ├── plugins/knowledgeos-obsidian/ Obsidian 交互层
-└── dist/                          已编译 CLI
+└── dist/                          本地编译产物（由 npm run build 生成，不提交 Git）
 ```
 
 Vault 默认位于同级目录：
@@ -53,14 +53,18 @@ Vault 默认位于同级目录：
 - Python 3.11 或以上
 - Git
 
+这是一个**源码仓库**：`dist/` 被 Git 忽略，克隆后必须先安装依赖并编译，才能运行 `node dist/cli.js` 或配置 Obsidian 插件。
+
 ```powershell
+cd knowledgeos-engine
+npm ci
+npm run build
 python -m pip install -r requirements.txt
 ```
 
-`dist/` 已包含当前编译结果。重新编译源码需要：
+之后每次修改 TypeScript 源码时，重新执行：
 
 ```powershell
-npm install
 npm run build
 ```
 
@@ -69,11 +73,12 @@ npm run build
 ```powershell
 git clone <repository-url> knowledgeos-engine
 cd knowledgeos-engine
-npm install
+npm ci
+npm run build
 npm link
 ```
 
-`npm install` 会通过 `prepare` 自动构建 `dist/`；`npm link` 会在本机注册 `pkb` 命令。也可以不执行 `npm link`，继续使用 `node dist/cli.js`。
+`npm ci` 根据锁定文件安装依赖，`npm run build` 生成 `dist/cli.js`；`npm link` 会在本机注册 `pkb` 命令。也可以不执行 `npm link`，继续使用 `node dist/cli.js`。
 
 ## 验证
 
@@ -97,6 +102,7 @@ node dist/cli.js api getTodayItems `
 
 本地插件源码位于 `plugins/knowledgeos-obsidian/`。将该目录复制到目标 Vault 的
 `.obsidian/plugins/knowledgeos/` 后，在 Obsidian 中启用并配置 `dist/cli.js` 与 Vault 的绝对路径。
+插件前，请先在 Engine 目录完成 `npm ci` 和 `npm run build`；如果“测试连接”提示找不到已编译的 CLI，按该顺序构建后，将路径指向 `knowledgeos-engine/dist/cli.js`。
 当前交付完成 Today、Quick Capture、Inbox Center、Review Center 和 System Center。Inbox Center 支持
 执行前预览、显式路由、高置信度批量处理、延后/忽略/移出管理和失败重试；插件不会绕过 Core 直接读写文件。
 System Center 支持模块/实例状态、Recent Runs、用户可读 Run 详情以及经过文件冲突和后续依赖检查的安全撤销。
