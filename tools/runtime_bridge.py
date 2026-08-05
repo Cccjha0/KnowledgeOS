@@ -5,7 +5,7 @@ import json
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -205,6 +205,31 @@ def migrate(connection):
           COMMIT;
         """)
         current = 4
+    if current < 5:
+        if original_version >= 4:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE TABLE IF NOT EXISTS event_deliveries (
+            event_id TEXT NOT NULL REFERENCES runtime_events(event_id), subscription_key TEXT NOT NULL,
+            job_id TEXT NOT NULL, task_id TEXT, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            error_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY(event_id, subscription_key)
+          );
+          CREATE INDEX IF NOT EXISTS idx_event_deliveries_status ON event_deliveries(status, updated_at);
+          UPDATE runtime_metadata SET value='5' WHERE key='schema_version';
+          COMMIT;
+        """)
+        current = 5
 
 
 def decode_json(value, fallback):
@@ -484,14 +509,36 @@ def dispatch(command, connection, payload):
           (payload["event_id"], payload["event_type"], payload["module"], payload.get("instance_id"), payload["occurred_at"], json.dumps(payload.get("payload") or {}), json.dumps([]), payload["fingerprint"], "publishing"))
         connection.commit(); return {"created": True, "event": {**payload, "status": "publishing", "tasks_created": [], "error": None}}
     if command == "complete-event":
-        connection.execute("UPDATE runtime_events SET status='published',tasks_created_json=?,error_json=NULL WHERE event_id=?", (json.dumps(payload.get("tasks_created") or []), payload["event_id"]))
-        connection.commit(); return {"event_id": payload["event_id"], "status": "published"}
+        status = payload.get("status") or "published"
+        connection.execute("UPDATE runtime_events SET status=?,tasks_created_json=?,error_json=? WHERE event_id=?", (status, json.dumps(payload.get("tasks_created") or []), json.dumps(payload.get("error")) if payload.get("error") else None, payload["event_id"]))
+        connection.commit(); return {"event_id": payload["event_id"], "status": status}
     if command == "fail-event":
         connection.execute("UPDATE runtime_events SET status='dead-letter',error_json=? WHERE event_id=?", (json.dumps(payload.get("error") or {}), payload["event_id"]))
         connection.commit(); return {"event_id": payload["event_id"], "status": "dead-letter"}
     if command == "list-events":
         return [{**dict(row), "payload": decode_json(row["payload_json"], {}), "tasks_created": decode_json(row["tasks_created_json"], []), "error": decode_json(row["error_json"], None)}
           for row in connection.execute("SELECT * FROM runtime_events ORDER BY occurred_at DESC LIMIT ?", (int(payload.get("limit", 100)),))]
+    if command == "get-event":
+        row = connection.execute("SELECT * FROM runtime_events WHERE event_id=?", (payload["event_id"],)).fetchone()
+        return ({**dict(row), "payload": decode_json(row["payload_json"], {}), "tasks_created": decode_json(row["tasks_created_json"], []), "error": decode_json(row["error_json"], None)} if row else None)
+    if command == "record-event-delivery":
+        now = now_iso()
+        connection.execute("""INSERT INTO event_deliveries(event_id,subscription_key,job_id,task_id,status,attempts,error_json,created_at,updated_at)
+          VALUES(?,?,?,NULL,'pending',1,NULL,?,?)
+          ON CONFLICT(event_id,subscription_key) DO UPDATE SET job_id=excluded.job_id,status='pending',attempts=event_deliveries.attempts+1,error_json=NULL,updated_at=excluded.updated_at""",
+          (payload["event_id"], payload["subscription_key"], payload["job_id"], now, now))
+        connection.commit()
+        row = connection.execute("SELECT * FROM event_deliveries WHERE event_id=? AND subscription_key=?", (payload["event_id"], payload["subscription_key"])).fetchone()
+        return {**dict(row), "error": decode_json(row["error_json"], None)}
+    if command == "finish-event-delivery":
+        connection.execute("UPDATE event_deliveries SET task_id=?,status=?,error_json=?,updated_at=? WHERE event_id=? AND subscription_key=?",
+          (payload.get("task_id"), payload["status"], json.dumps(payload.get("error")) if payload.get("error") else None, now_iso(), payload["event_id"], payload["subscription_key"]))
+        connection.commit()
+        row = connection.execute("SELECT * FROM event_deliveries WHERE event_id=? AND subscription_key=?", (payload["event_id"], payload["subscription_key"])).fetchone()
+        return {**dict(row), "error": decode_json(row["error_json"], None)}
+    if command == "list-event-deliveries":
+        return [{**dict(row), "error": decode_json(row["error_json"], None)} for row in connection.execute(
+          "SELECT * FROM event_deliveries WHERE event_id=? ORDER BY subscription_key", (payload["event_id"],))]
     if command == "start-codex-invocation":
         connection.execute("""INSERT INTO codex_invocations(invocation_id,task_id,run_id,prompt_id,prompt_version,adapter,model,output_schema,
           started_at,ended_at,status,error_json,token_usage_json,attempt_number) VALUES(?,?,?,?,?,?,?,?,?,NULL,'running',NULL,'{}',?)""",

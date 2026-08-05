@@ -124,9 +124,13 @@ export class RuntimeRepository {
   cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
   setTaskPriority(taskId: string, priority: RuntimeTask["priority"]): RuntimeTask { return this.call("set-priority", { task_id: taskId, priority }); }
   recordEvent(event: JsonObject): { created: boolean; event: JsonObject } { return this.call("record-event", event) as unknown as { created: boolean; event: JsonObject }; }
-  completeEvent(eventId: string, taskIds: string[]): void { this.call("complete-event", { event_id: eventId, tasks_created: taskIds }); }
+  completeEvent(eventId: string, taskIds: string[], status: "published" | "partial" | "dead-letter" = "published", error: JsonObject | null = null): void { this.call("complete-event", { event_id: eventId, tasks_created: taskIds, status, ...(error ? { error } : {}) }); }
   failEvent(eventId: string, error: JsonObject): void { this.call("fail-event", { event_id: eventId, error }); }
   listEvents(limit = 100): JsonObject[] { return this.call("list-events", { limit }); }
+  getEvent(eventId: string): JsonObject | null { return this.call("get-event", { event_id: eventId }); }
+  recordEventDelivery(eventId: string, subscriptionKey: string, jobId: string): JsonObject { return this.call("record-event-delivery", { event_id: eventId, subscription_key: subscriptionKey, job_id: jobId }); }
+  finishEventDelivery(eventId: string, subscriptionKey: string, status: "created" | "deduplicated" | "failed" | "requeued", taskId: string | null, error: JsonObject | null = null): JsonObject { return this.call("finish-event-delivery", { event_id: eventId, subscription_key: subscriptionKey, status, task_id: taskId, ...(error ? { error } : {}) }); }
+  listEventDeliveries(eventId: string): JsonObject[] { return this.call("list-event-deliveries", { event_id: eventId }); }
   startCodexInvocation(invocation: JsonObject): void { this.call("start-codex-invocation", invocation); }
   finishCodexInvocation(invocation: JsonObject): void { this.call("finish-codex-invocation", invocation); }
   listCodexInvocations(taskId: string): JsonObject[] { return this.call("list-codex-invocations", { task_id: taskId }); }

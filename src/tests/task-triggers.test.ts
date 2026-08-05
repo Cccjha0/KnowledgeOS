@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { RuntimeRepository } from "../runtime/repository.js";
-import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent } from "../runtime/triggers.js";
+import { enqueueManualTask, materializeFieldDueJobs, materializeStartupJobs, publishRuntimeEvent, replayRuntimeEvent } from "../runtime/triggers.js";
 import type { JobDefinition, TaskResources } from "../runtime/domain.js";
 import type { JsonObject } from "../core/types.js";
 
@@ -53,6 +53,32 @@ test("Event Store preserves a dead-letter event for a failed dispatch", async ()
     assert.equal(event.status, "dead-letter");
     assert.equal((event.error as JsonObject).code, "EVENT_DISPATCH_FAILED");
     repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Event Delivery Ledger records a failed subscription and replays only that delivery", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-replay-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.registerJob(base("core.replay", { type: "event", event: "capture.replay" }));
+    repository.close();
+    const published = await publishRuntimeEvent(vault, { type: "capture.replay", event_id: "EVT-replay", payload: { capture_id: "CAP-REPLAY" } });
+    const taskId = published.created[0]!;
+    const before = await RuntimeRepository.open(vault);
+    before.transitionTask(taskId, "running"); before.transitionTask(taskId, "failed");
+    before.finishEventDelivery("EVT-replay", "core.replay", "failed", taskId, { code: "FIXTURE", message: "delivery failed after task creation" });
+    before.completeEvent("EVT-replay", [taskId], "dead-letter", { code: "FIXTURE", message: "fixture failure" });
+    before.close();
+
+    const replay = await replayRuntimeEvent(vault, "EVT-replay", ["core.replay"]);
+    assert.deepEqual(replay.requeued, [taskId]);
+    const after = await RuntimeRepository.open(vault);
+    assert.equal(after.getEvent("EVT-replay")?.status, "published");
+    assert.equal(after.getTask(taskId)?.status, "queued");
+    const delivery = after.listEventDeliveries("EVT-replay")[0]!;
+    assert.equal(delivery.status, "requeued");
+    assert.equal(Number(delivery.attempts), 1);
+    after.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

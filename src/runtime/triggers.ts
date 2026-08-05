@@ -95,19 +95,81 @@ export async function publishRuntimeEvent(vaultRoot: string, event: { type: stri
       output.deduplicated = 1;
       return output;
     }
-    for (const job of resolveEventSubscriptions(repository.listJobs(), event.type)) {
-      const result = repository.createTask(taskFor(job, {
-        idempotency: `${job.job_id}:event:${fingerprint}`, trigger: { ...job.trigger, event_id: eventId, event_fingerprint: fingerprint },
-        payload: { event_id: eventId, event_type: event.type, ...(event.payload ?? {}) }, instanceId: event.instance_id,
-        scheduledFor: occurredAt,
-      }));
-      if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
-    }
-    repository.completeEvent(eventId, output.created);
+    const delivered = deliverEventSubscriptions(repository, {
+      eventId, eventType: event.type, eventFingerprint: fingerprint, instanceId: event.instance_id ?? null,
+      occurredAt, payload: event.payload ?? {}, jobs: resolveEventSubscriptions(repository.listJobs(), event.type),
+    });
+    output.created.push(...delivered.created); output.deduplicated += delivered.deduplicated;
+    const status = delivered.failed === 0 ? "published" : delivered.created.length + delivered.deduplicated > 0 ? "partial" : "dead-letter";
+    repository.completeEvent(eventId, output.created, status, delivered.failed ? { code: "EVENT_DELIVERY_FAILED", message: `${delivered.failed} subscription delivery failure(s).` } : null);
     return output;
   } catch (error) {
     repository.failEvent(eventId, { code: "EVENT_DISPATCH_FAILED", message: error instanceof Error ? error.message : String(error) });
     throw new PkbError("EVENT_DISPATCH_FAILED", `Event ${event.type} was persisted to the dead-letter queue.`, { event_id: eventId, fingerprint });
+  } finally { repository.close(); }
+}
+
+function errorRecord(error: unknown): JsonObject {
+  return { code: error instanceof PkbError ? error.code : "EVENT_DELIVERY_FAILED", message: error instanceof Error ? error.message : String(error) };
+}
+
+function deliverEventSubscriptions(repository: RuntimeRepository, options: { eventId: string; eventType: string; eventFingerprint: string; instanceId: string | null; occurredAt: string; payload: JsonObject; jobs: JobDefinition[]; subscriptionKeys?: Set<string> }): { created: string[]; deduplicated: number; failed: number } {
+  const output = { created: [] as string[], deduplicated: 0, failed: 0 };
+  for (const job of options.jobs) {
+    const subscriptionKey = job.job_id;
+    if (options.subscriptionKeys && !options.subscriptionKeys.has(subscriptionKey)) continue;
+    repository.recordEventDelivery(options.eventId, subscriptionKey, job.job_id);
+    try {
+      const result = repository.createTask(taskFor(job, {
+        idempotency: `${job.job_id}:event:${options.eventFingerprint}`, trigger: { ...job.trigger, event_id: options.eventId, event_fingerprint: options.eventFingerprint },
+        payload: { event_id: options.eventId, event_type: options.eventType, ...options.payload }, instanceId: options.instanceId,
+        scheduledFor: options.occurredAt,
+      }));
+      if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
+      repository.finishEventDelivery(options.eventId, subscriptionKey, result.deduplicated ? "deduplicated" : "created", result.task.task_id);
+    } catch (error) {
+      output.failed += 1;
+      repository.finishEventDelivery(options.eventId, subscriptionKey, "failed", null, errorRecord(error));
+    }
+  }
+  return output;
+}
+
+/** Re-deliver only failed Event subscriptions; existing failed Tasks are re-queued instead of duplicated. */
+export async function replayRuntimeEvent(vaultRoot: string, eventId: string, subscriptionKeys?: string[]): Promise<{ event_id: string; created: string[]; requeued: string[]; deduplicated: number; failed: number }> {
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const event = repository.getEvent(eventId);
+    if (!event) throw new PkbError("EVENT_NOT_FOUND", `Event ${eventId} was not found.`);
+    const requested = subscriptionKeys ? new Set(subscriptionKeys) : undefined;
+    const deliveries = repository.listEventDeliveries(eventId).filter((delivery) => delivery.status === "failed" && (!requested || requested.has(String(delivery.subscription_key))));
+    const output = { event_id: eventId, created: [] as string[], requeued: [] as string[], deduplicated: 0, failed: 0 };
+    const jobs = resolveEventSubscriptions(repository.listJobs(), String(event.event_type));
+    const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
+    const pendingJobs: JobDefinition[] = [];
+    for (const delivery of deliveries) {
+      const taskId = typeof delivery.task_id === "string" ? delivery.task_id : null;
+      if (taskId) {
+        const task = repository.getTask(taskId);
+        if (task && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) {
+          repository.retryTask(taskId); repository.finishEventDelivery(eventId, String(delivery.subscription_key), "requeued", taskId); output.requeued.push(taskId);
+          continue;
+        }
+      }
+      const job = jobsById.get(String(delivery.job_id));
+      if (!job) { output.failed += 1; repository.finishEventDelivery(eventId, String(delivery.subscription_key), "failed", null, { code: "EVENT_SUBSCRIPTION_MISSING", message: `Job ${String(delivery.job_id)} is no longer registered.` }); }
+      else pendingJobs.push(job);
+    }
+    const dispatched = deliverEventSubscriptions(repository, {
+      eventId, eventType: String(event.event_type), eventFingerprint: String(event.fingerprint), instanceId: typeof event.instance_id === "string" ? event.instance_id : null,
+      occurredAt: String(event.occurred_at), payload: (event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {}) as JsonObject,
+      jobs: pendingJobs, subscriptionKeys: requested,
+    });
+    output.created.push(...dispatched.created); output.deduplicated += dispatched.deduplicated; output.failed += dispatched.failed;
+    const remainingFailed = repository.listEventDeliveries(eventId).filter((delivery) => delivery.status === "failed").length;
+    const totalDelivered = repository.listEventDeliveries(eventId).filter((delivery) => ["created", "deduplicated", "requeued"].includes(String(delivery.status))).length;
+    repository.completeEvent(eventId, [...(Array.isArray(event.tasks_created) ? event.tasks_created.filter((task): task is string => typeof task === "string") : []), ...output.created], remainingFailed ? totalDelivered ? "partial" : "dead-letter" : "published", remainingFailed ? { code: "EVENT_DELIVERY_FAILED", message: `${remainingFailed} subscription delivery failure(s) remain.` } : null);
+    return output;
   } finally { repository.close(); }
 }
 
