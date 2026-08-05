@@ -9,7 +9,21 @@ import { deepMerge, ensureDir, exists, fromVaultPath, readJson, sha256File, toVa
 import { appendToSection } from "./markdown.js";
 
 const PLAN_SCHEMA = "https://pkb.local/schemas/core/operation-plan.schema.json";
-const SUPPORTED_TYPES = new Set(["create-file", "update-file", "update-frontmatter", "append-section", "move-file", "migrate-frontmatter", "update-instance"]);
+/**
+ * V1's executable Operation Plan contract. Keep this aligned with the public
+ * JSON Schema; reserved future operation names are deliberately not accepted
+ * until an Executor implementation and transaction semantics exist.
+ */
+export const EXECUTABLE_OPERATION_TYPES = [
+  "create-file",
+  "update-file",
+  "append-section",
+  "update-frontmatter",
+  "migrate-frontmatter",
+  "move-file",
+  "update-instance",
+] as const;
+const SUPPORTED_TYPES = new Set<string>(EXECUTABLE_OPERATION_TYPES);
 
 export type TransactionStatus = "not-started" | "in-progress" | "completed" | "partially-failed" | "rolled-back" | "manual-action-required";
 type OperationStatus = "pending" | "in-progress" | "completed" | "skipped" | "failed";
