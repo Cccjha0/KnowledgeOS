@@ -141,7 +141,7 @@ async function validateExecutableFixtureContract(moduleRoot: string, maturity: M
   let scenarios: JsonObject = {};
   try { scenarios = object(parseYaml(moduleRoot, contractPath).scenarios) ?? {}; }
   catch (error) { checks.push(check("behavior", "MODULE_TEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "fixtures/sample-instance/module-test.yaml", true)); return; }
-  const required = ["normal_capture", "ambiguous_capture", "permission_denied", "repeat_execution", "paused_instance", "archived_instance", "prompt_regression"];
+  const required = ["normal_capture", "ambiguous_capture", "permission_denied", "resource_unavailable", "repeat_execution", "paused_instance", "archived_instance", "prompt_regression"];
   if (moduleType === "workflow") required.push("periodic_job", "event_consumption");
   const missing = required.filter((name) => !object(scenarios[name]));
   checks.push(check("behavior", missing.length ? "MODULE_TEST_SCENARIOS_MISSING" : "MODULE_TEST_SCENARIOS_VALID", missing.length ? "fail" : "pass", missing.length ? `Missing executable fixture scenarios: ${missing.join(", ")}.` : "Executable fixture contract declares all required scenarios.", "fixtures/sample-instance/module-test.yaml", missing.length > 0));

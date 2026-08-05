@@ -3,4 +3,5 @@ dist/
 __pycache__/
 *.pyc
 *.tmp-*
+modules/*/module-test-report.json
 .DS_Store

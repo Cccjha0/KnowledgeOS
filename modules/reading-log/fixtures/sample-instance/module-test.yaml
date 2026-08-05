@@ -1,12 +1,30 @@
 contract_version: 1
 scenarios:
   normal_capture: { fixture: fixtures/sample-instance/capture-test.yaml }
-  ambiguous_capture: { fixture: tests/behavior/ambiguous-input.md, expected: rejected }
+  ambiguous_capture: { fixture: tests/behavior/ambiguous-capture.yaml, expected: failed }
   permission_denied: { target: 20-Workspace/Applications/forbidden.md }
+  resource_unavailable: { resource: codex, expected: waiting-for-ai }
   repeat_execution: { enabled: true }
   paused_instance: { enabled: true }
   archived_instance: { enabled: true }
   prompt_regression: { fixture: tests/prompt-regression/facts.yaml }
-  periodic_job: { enabled: true, scheduled_at: "2026-08-09T10:00:00Z" }
-  event_consumption: { enabled: true, event_type: reading-log.fixture-event }
+  periodic_job:
+    enabled: true
+    scheduled_at: "2026-08-09T10:00:00Z"
+    job_id: reading-log.weekly-summary.sample-instance
+    expected_output: 20-Workspace/Reading Log/sample-instance/Weekly/2026-W32.md
+    codex_output:
+      id: READ-WEEK-2026-W32
+      type: reading-weekly-summary
+      schema_id: weekly-summary
+      module_version: 0.1.0
+      instance_id: sample-instance
+      iso_week: 2026-W32
+      note_refs: [20-Workspace/Reading Log/sample-instance/Notes/module-test-capture.md]
+      themes: [Fixture reading]
+      questions: []
+      created: "2026-08-09T18:00:00+08:00"
+      schema_version: 1
+  event_consumption: { enabled: false }
+  event_publication: { enabled: true, event_type: reading-log.record-created }
   migration_apply: { enabled: false, rollback: false }

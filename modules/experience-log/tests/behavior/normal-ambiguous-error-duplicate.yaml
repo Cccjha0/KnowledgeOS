@@ -1,2 +1,12 @@
 evidence: src/tests/experience-module.test.ts
 cases: [normal, ambiguous, invalid, duplicate]
+capture:
+  path: ambiguous-entry.md
+  item_id: module-test-ambiguous
+  content: |
+    # Ambiguous entry
+
+    I may have completed the task, but the note does not say which task or whether it was actually finished.
+  # The fixture adapter deliberately refuses to normalize ambiguous facts into
+  # the daily-log schema. The real workflow must fail before it writes a log.
+  codex_output: {}

@@ -1,1 +1,5 @@
 invariants: [preserve-facts, no-invented-completion, uncertainty-preserved, schema-valid]
+expected_facts:
+  - { path: daily_id, value: DAY-2026-08-04 }
+  - { path: accomplishments.0, value: Completed the module workflow fixture. }
+forbidden_values: ["invented completed work"]

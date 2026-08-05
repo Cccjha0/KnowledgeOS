@@ -1,0 +1,10 @@
+capture:
+  path: ambiguous-reading.md
+  item_id: module-test-ambiguous
+  content: |
+    # Maybe a reading item
+
+    This could be a book, article, or a personal note. The source and title are unknown.
+  # The fixture adapter deliberately produces no structured record for an
+  # ambiguous source. The Workflow must reject it before writing a note.
+  codex_output: {}
