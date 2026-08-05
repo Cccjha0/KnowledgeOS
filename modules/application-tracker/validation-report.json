@@ -3,7 +3,7 @@
   "module_id": "application-tracker",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-05T14:48:11.635Z",
+  "generated_at": "2026-08-05T17:25:51.732Z",
   "checks": [
     {
       "category": "manifest",

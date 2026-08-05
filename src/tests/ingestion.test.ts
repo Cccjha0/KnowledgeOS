@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
+import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionDecision, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
 import { initializeVault } from "../core/vault.js";
 import { runQualityAudit } from "../quality/audit.js";
 import { QualityRepository } from "../quality/repository.js";
@@ -12,6 +12,7 @@ import { createInstance } from "../platform/lifecycleWorkflow.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
+import { invokeCommandApi } from "../platform/commandApi.js";
 
 function makePdf(text: string): Buffer {
   const stream = text ? `BT\n/F1 18 Tf\n72 720 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n` : "";
@@ -70,6 +71,41 @@ test("binary asset Sidecars retain sensitivity and representation policy across 
     const repeated = await ingestAsset(vault, "00-Inbox/private.txt");
     assert.equal(repeated.sensitivity_class, 3);
     assert.equal(repeated.access_policy.max_representation, "sensitive-original");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("attachment access policy changes only through the Core API and mirrors its Companion Note", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-policy-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.writeFile(path.join(vault, "00-Inbox", "private.txt"), "Private attachment text", "utf8");
+    const asset = await ingestAsset(vault, "00-Inbox/private.txt");
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "ASSET-POLICY-001", method: "updateAssetAccessPolicy", params: { capture_path: asset.capture_path, sensitivity_class: 3, max_representation: "metadata" } });
+    assert.equal(response.ok, true);
+    const sidecar = await readCaptureEnvelope(vault, asset.capture_path);
+    assert.equal(sidecar.sensitivity_class, 3);
+    assert.equal(sidecar.access_policy.max_representation, "metadata");
+    const note = await fs.readFile(path.join(vault, ...asset.companion_note_path.split("/")), "utf8");
+    assert.match(note, /sensitivity_class: 3/);
+    assert.match(note, /max_representation: metadata/);
+    const repository = await QualityRepository.open(vault);
+    assert.equal(repository.listChanges(`[[${asset.companion_note_path}]]`).some((change) => change.field === "access_policy"), true);
+    repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("extraction cache lives under Cache, is re-created after eviction, and partial PDFs require the module policy", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-cache-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.writeFile(path.join(vault, "00-Inbox", "official.pdf"), makePdf("Official text"));
+    const asset = await ingestAsset(vault, "00-Inbox/official.pdf");
+    assert.match(asset.extraction_cache_path, /^90-System\/Cache\/Extractions\//);
+    await fs.unlink(path.join(vault, ...asset.extraction_cache_path.split("/")));
+    assert.match((await readExtractionCache(vault, asset)).extracted_text, /Official text/);
+    const partial = { ...asset, metadata: { ...asset.metadata, extraction: { status: "partial", text_available: true } } };
+    assert.equal(pdfExtractionDecision(partial, { accepted_statuses: ["completed"], partial_policy: "review" }).requires_review, true);
+    assert.equal(pdfExtractionDecision(partial, { accepted_statuses: ["completed", "partial"], partial_policy: "allow" }).usable, true);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -186,5 +222,25 @@ test("unreadable PDFs enter waiting-for-user and never reach the Codex workflow"
     const after = await RuntimeRepository.open(vault);
     assert.equal(after.getRuns(task!.task_id).length, 0, "the resource gate must stop before a Codex run starts");
     after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("application-tracker holds partial PDFs for user review instead of sending them to Codex", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-pdf-partial-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "applications-partial-pdf";
+    await createInstance(vault, {
+      module_id: "application-tracker", instance_id: instanceId, display_name: "Applications Partial PDF",
+      fields: { application_type: "masters", region: "Australia", intake: "2027-S1", default_currency: "AUD", "monitoring.enabled": true, "monitoring.default_check_interval_days": 30 },
+    });
+    const source = path.join(vault, "20-Workspace", "Applications", instanceId, "Inbox", "partial-update.pdf");
+    await fs.writeFile(source, makePdf("A".repeat(55_000)));
+    const materialized = await materializeInboxAiTasks(vault);
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.getTask(materialized.created[0]!);
+    assert.equal(task?.resources.user, "required");
+    assert.equal(task?.resources.codex, "not-required");
+    repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

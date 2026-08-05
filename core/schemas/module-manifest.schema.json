@@ -151,6 +151,18 @@
         ]
       }
     },
+    "pdf_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accepted_statuses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["pending", "completed", "partial", "empty", "scanned", "encrypted", "corrupted", "unsupported", "failed"] }
+        },
+        "partial_policy": { "type": "string", "enum": ["allow", "review"] }
+      }
+    },
     "inbox": {
       "type": "object",
       "additionalProperties": false,

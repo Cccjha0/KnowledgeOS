@@ -18,13 +18,25 @@ import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInb
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
-import { formatForExtension, ingestAsset, isAcceptedInput, pdfExtractionIsUsable, pdfExtractionStatus } from "../core/ingestion.js";
+import { formatForExtension, ingestAsset, isAcceptedInput, pdfExtractionDecision, pdfExtractionStatus, type PdfExtractionStatus, type PdfUsePolicy } from "../core/ingestion.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function normalizedOptional(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
   return trimmed ? trimmed : null;
+}
+
+function pdfUsePolicy(module: JsonObject): PdfUsePolicy | null {
+  const raw = module.pdf_policy;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const policy = raw as JsonObject;
+  const statuses = policy.accepted_statuses;
+  const accepted = Array.isArray(statuses)
+    ? statuses.filter((value): value is PdfExtractionStatus => typeof value === "string" && ["completed", "partial", "empty", "scanned", "encrypted", "corrupted", "unsupported", "failed", "pending"].includes(value))
+    : undefined;
+  const partial = policy.partial_policy;
+  return { ...(accepted ? { accepted_statuses: accepted } : {}), ...(partial === "allow" || partial === "review" ? { partial_policy: partial } : {}) };
 }
 
 async function findItem(vaultRoot: string, itemId: string): Promise<InboxItemView> {
@@ -88,7 +100,8 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
   const format = formatForExtension(item.extension);
   if (!format || !isAcceptedInput(workflow.module, format)) return null;
   const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path);
-  const requiresExtractionAction = ingestion?.format === "pdf" && !pdfExtractionIsUsable(ingestion);
+  const extractionDecision = ingestion?.format === "pdf" ? pdfExtractionDecision(ingestion, pdfUsePolicy(workflow.module)) : null;
+  const requiresExtractionAction = extractionDecision !== null && !extractionDecision.usable;
   const extractionStatus = ingestion ? pdfExtractionStatus(ingestion) : null;
   const resources = requiresExtractionAction ? { ...workflow.resources, codex: "not-required" as const, user: "required" as const } : workflow.resources;
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
@@ -122,8 +135,8 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
     if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
     const itemState = requiresExtractionAction ? "waiting-for-user" : task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
-      attempts: task.attempt_count, task_id: task.task_id, error: requiresExtractionAction ? `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
-      result: { status: requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: "OCR or a text-based PDF" } : {}) },
+      attempts: task.attempt_count, task_id: task.task_id, error: requiresExtractionAction ? extractionDecision?.requires_review ? "PDF extraction is partial; this module requires a user review before it may be used." : `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
+      result: { status: requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: extractionDecision?.requires_review ? "Review the partial PDF extraction before processing" : "OCR or a text-based PDF" } : {}) },
     }));
     return task;
   } finally { repository.close(); }
