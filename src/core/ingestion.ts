@@ -88,6 +88,14 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
   const contentHash = await sha256File(source);
   const sidecarPath = `90-System/State/Sidecars/${contentHash}.json`;
   const capturePath = `90-System/State/Captures/${contentHash}.json`;
+  // A Sidecar is the user-editable policy home for binary assets. Preserve a
+  // prior classification when the same content is re-ingested; an explicit
+  // Core/API option is the only thing that intentionally replaces it.
+  let persistedReadLevel: ReadLevel | undefined;
+  try {
+    const existing = JSON.parse(await fs.readFile(fromVaultPath(vaultRoot, sidecarPath), "utf8")) as { read_level?: unknown };
+    if (typeof existing.read_level === "number") persistedReadLevel = assertReadLevel(existing.read_level, "sidecar read_level");
+  } catch { /* First ingestion or an obsolete sidecar: use the safe default below. */ }
   let extractedText = "";
   let structuredData: JsonObject | null = null;
   let metadata: JsonObject = { extension, bytes: stat.size, modified_at: stat.mtime.toISOString() };
@@ -109,7 +117,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
     schema_version: 1, capture_id: `CAP-${contentHash.slice(0, 24).toUpperCase()}`,
     source_path: sourcePath, original_asset_ref: sourcePath, format, content_hash: contentHash,
     sidecar_path: sidecarPath, capture_path: capturePath, extracted_text: extractedText,
-    metadata, structured_data: structuredData, read_level: assertReadLevel(options.readLevel ?? 0, "capture read_level"), created_at: new Date().toISOString(),
+    metadata, structured_data: structuredData, read_level: assertReadLevel(options.readLevel ?? persistedReadLevel ?? 0, "capture read_level"), created_at: new Date().toISOString(),
   };
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, sidecarPath)));
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, capturePath)));

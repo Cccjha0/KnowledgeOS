@@ -56,6 +56,19 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("binary asset Sidecars retain a user-set Read Level across repeat ingestion", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-read-level-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const source = path.join(vault, "00-Inbox", "private.txt");
+    await fs.writeFile(source, "Private attachment text", "utf8");
+    const first = await ingestAsset(vault, "00-Inbox/private.txt", { readLevel: 3 });
+    assert.equal(first.read_level, 3);
+    const repeated = await ingestAsset(vault, "00-Inbox/private.txt");
+    assert.equal(repeated.read_level, 3);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("application-tracker materializes an accepted JSON Inbox asset as a module Workflow Task", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-task-"));
   try {
