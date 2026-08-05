@@ -11,8 +11,10 @@ resources:
 steps:
 - id: validate-capture
   uses: core.validate-capture
+  with: { read_level: 2 }
 - id: parse-capture
   uses: core.parse-structured-document
+  with: { read_level: 2 }
 - id: normalize
   uses: codex.prompt
   with:

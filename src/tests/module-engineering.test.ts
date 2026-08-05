@@ -56,6 +56,9 @@ test("Module SDK allows structured plans but rejects cross-boundary and red oper
   const operation: Operation = { operation_id: "OP-001", type: "create-file", target: "20-Workspace/Reading Log/reading-2026/Notes/a.md", risk: "green", confidence: 1, idempotency_key: "reading:a", payload: { format: "text", text: "A" }, requires_review_id: null };
   const plan = sdk.buildOperationPlan({ planId: "PLAN-001", taskId: "TASK-001", summary: "Create reading note", operations: [operation] });
   assert.equal(plan.source_module, "reading-log");
+  assert.equal(sdk.canRead("20-Workspace/Reading Log/reading-2026/Notes/a.md", 0), true);
+  assert.equal(sdk.canRead("20-Workspace/Reading Log/reading-2026/Notes/a.md", 1), false, "Module read policy must cap non-metadata access");
+  assert.throws(() => sdk.assertReadable("20-Workspace/Reading Log/reading-2026/Notes/a.md", 4), /integer from 0 to 3/);
   assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-002", taskId: "TASK-002", summary: "bad", operations: [{ ...operation, target: "20-Workspace/Applications/secret.md" }] }), /cannot propose a write/);
   assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-003", taskId: "TASK-003", summary: "bad", operations: [{ ...operation, type: "delete-file" }] }), /delete operations/);
 });

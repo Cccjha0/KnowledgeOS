@@ -15,6 +15,7 @@ steps:
     uses: core.query-documents
     with:
       root: "{instance.content_root}/Daily"
+      read_level: 2
       filters:
         instance_id:
           equals: "{instance.instance_id}"

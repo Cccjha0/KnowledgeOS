@@ -6,6 +6,7 @@ import { parseYaml } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { ensureDir, fromVaultPath, sha256File, writeJsonAtomic } from "./files.js";
 import type { JsonObject, JsonValue } from "./types.js";
+import { assertReadLevel, type ReadLevel } from "./readLevels.js";
 
 export type IngestionFormat = "markdown" | "text" | "json" | "yaml" | "pdf" | "image";
 export type PdfExtractionStatus = "pending" | "completed" | "partial" | "empty" | "scanned" | "encrypted" | "corrupted" | "unsupported" | "failed";
@@ -22,6 +23,8 @@ export interface CaptureEnvelope extends JsonObject {
   extracted_text: string;
   metadata: JsonObject;
   structured_data: JsonObject | null;
+  /** User-controlled sensitivity classification, independent from the adapter format. */
+  read_level: ReadLevel;
   created_at: string;
 }
 
@@ -76,7 +79,7 @@ export function pdfExtractionStatus(envelope: CaptureEnvelope): PdfExtractionSta
 }
 
 /** Core-owned ingestion: modules consume the resulting Envelope/Sidecar, never mutate the original asset. */
-export async function ingestAsset(vaultRoot: string, sourcePath: string): Promise<CaptureEnvelope> {
+export async function ingestAsset(vaultRoot: string, sourcePath: string, options: { readLevel?: number } = {}): Promise<CaptureEnvelope> {
   const source = fromVaultPath(vaultRoot, sourcePath);
   const extension = path.extname(source).toLowerCase();
   const format = formatForExtension(extension);
@@ -106,7 +109,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string): Promis
     schema_version: 1, capture_id: `CAP-${contentHash.slice(0, 24).toUpperCase()}`,
     source_path: sourcePath, original_asset_ref: sourcePath, format, content_hash: contentHash,
     sidecar_path: sidecarPath, capture_path: capturePath, extracted_text: extractedText,
-    metadata, structured_data: structuredData, created_at: new Date().toISOString(),
+    metadata, structured_data: structuredData, read_level: assertReadLevel(options.readLevel ?? 0, "capture read_level"), created_at: new Date().toISOString(),
   };
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, sidecarPath)));
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, capturePath)));
@@ -118,6 +121,9 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string): Promis
 export async function readCaptureEnvelope(vaultRoot: string, capturePath: string): Promise<CaptureEnvelope> {
   const parsed = JSON.parse(await fs.readFile(fromVaultPath(vaultRoot, capturePath), "utf8")) as CaptureEnvelope;
   if (parsed.schema_version !== 1 || typeof parsed.extracted_text !== "string" || typeof parsed.source_path !== "string") throw new PkbError("CAPTURE_ENVELOPE_INVALID", `Invalid Capture Envelope ${capturePath}.`);
+  // Schema v1 envelopes written before read levels are safely public metadata by
+  // default; we persist the explicit field for all newly ingested assets.
+  parsed.read_level = assertReadLevel(parsed.read_level ?? 0, "capture read_level");
   return parsed;
 }
 

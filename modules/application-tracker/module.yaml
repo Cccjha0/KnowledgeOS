@@ -113,7 +113,7 @@ dependencies:
 scheduled_jobs: []
 
 permissions:
-  max_read_level: 0
+  max_read_level: 2
   network: false
   codex: optional
   delete: false

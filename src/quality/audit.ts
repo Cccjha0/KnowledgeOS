@@ -237,6 +237,26 @@ async function promptQualityIssues(modulePolicies: Map<string, ModuleQuality>, m
   return output;
 }
 
+/** A denied Read Level is a healthy enforcement outcome, but it still needs a
+ * visible Quality Issue so the user can classify the file or adjust the module
+ * policy rather than leave a Workflow silently waiting forever. */
+function readAccessIssues(metrics: JsonObject): CandidateIssue[] {
+  const output: CandidateIssue[] = [];
+  for (const group of (metrics.groups as JsonObject[] | undefined) ?? []) {
+    const events = object(group.events) ?? {};
+    const denied = Number(events["read.denied"] ?? 0);
+    if (!Number.isFinite(denied) || denied <= 0) continue;
+    output.push({
+      issue_type: "read-level-denied", dimension: "reviewability", severity: "medium",
+      module: String(group.module ?? "core"), instance_id: typeof group.instance_id === "string" ? group.instance_id : null,
+      target: { workflow_id: group.workflow_id ?? null, workflow_version: group.workflow_version ?? null },
+      evidence: { denied_reads: denied, period: "last-24-hours" },
+      recommended_action: { type: "review-file-read-level-or-module-permission" }, detector: "read-level-auditor",
+    });
+  }
+  return output;
+}
+
 function evidenceQualityIssues(records: ReturnType<QualityRepository["listEvidence"]>): CandidateIssue[] {
   const output: CandidateIssue[] = [];
   for (const evidence of records) {
@@ -311,7 +331,8 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
     const previous = await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-audit-checkpoint.json"), {}); const previousHashes = object(previous.file_hashes) ?? {};
     const fullSchemaScan = frequency !== "daily" || previous.schema_version !== 2; const changedPaths = new Set(Object.entries(currentHashes).filter(([relative, hash]) => fullSchemaScan || previousHashes[relative] !== hash).map(([relative]) => relative));
     const modulePolicies = await policies(vaultRoot); const openRequestTargets = await openResearchRequestTargets(vaultRoot);
-    const candidates = [...await auditDocuments(vaultRoot, frequency, modulePolicies, auditId, now, changedPaths), ...await auditReviewDebt(vaultRoot, now), ...await auditInstanceTasks(vaultRoot), ...evidenceQualityIssues(repository.listEvidence(5000))];
+    const recentMetrics = repository.aggregateMetrics(new Date(Date.parse(now) - 24 * 86_400_000).toISOString());
+    const candidates = [...await auditDocuments(vaultRoot, frequency, modulePolicies, auditId, now, changedPaths), ...await auditReviewDebt(vaultRoot, now), ...await auditInstanceTasks(vaultRoot), ...evidenceQualityIssues(repository.listEvidence(5000)), ...readAccessIssues(recentMetrics)];
     if (frequency !== "daily") candidates.push(...await promptQualityIssues(modulePolicies, repository.aggregateMetrics(new Date(Date.parse(now) - 7 * 86_400_000).toISOString())));
     for (const candidate of candidates) {
       const targetPath = typeof candidate.target.path === "string" ? candidate.target.path.replaceAll("\\", "/").toLowerCase() : "";
@@ -338,7 +359,7 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
       }
     } finally { followups.close(); }
     let resolved = 0;
-    const executedDetectors = new Set(["broken-link-auditor", "schema-version-auditor", "missing-provenance-auditor", "stale-field-auditor", "ownership-auditor", "review-debt-auditor", "instance-task-auditor", "evidence-status-auditor"]);
+    const executedDetectors = new Set(["broken-link-auditor", "schema-version-auditor", "missing-provenance-auditor", "stale-field-auditor", "ownership-auditor", "review-debt-auditor", "instance-task-auditor", "evidence-status-auditor", "read-level-auditor"]);
     if (fullSchemaScan) executedDetectors.add("entity-schema-auditor");
     if (frequency !== "daily") { executedDetectors.add("orphan-file-auditor"); executedDetectors.add("prompt-quality-auditor"); }
     if (frequency === "monthly") executedDetectors.add("duplicate-content-auditor");

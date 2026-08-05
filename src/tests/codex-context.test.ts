@@ -16,8 +16,10 @@ test("Codex context workspace copies only approved inputs and is removed after t
   try {
     assert.match(await fs.readFile(`${context.root}/primary-input.md`, "utf8"), /Approved input/);
     assert.match(await fs.readFile(`${context.root}/related/001-record.md`, "utf8"), /Approved related record/);
-    const manifest = JSON.parse(await fs.readFile(`${context.root}/context-manifest.json`, "utf8")) as { primary_input: { source_path: string }; related_inputs: unknown[]; };
+    const manifest = JSON.parse(await fs.readFile(`${context.root}/context-manifest.json`, "utf8")) as { primary_input: { source_path: string; read_level: number; content_mode: string }; related_inputs: unknown[]; };
     assert.equal(manifest.primary_input.source_path, "20-Workspace/Demo/Inbox/input.md");
+    assert.equal(manifest.primary_input.read_level, 0);
+    assert.equal(manifest.primary_input.content_mode, "metadata");
     assert.equal(manifest.related_inputs.length, 1);
   } finally {
     await context.cleanup();
@@ -37,7 +39,7 @@ test("Codex context budgets cap copied data and surface overflow for review", as
     budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "summarize-or-review" },
   });
   try {
-    assert.equal(context.manifest.version, 2);
+    assert.equal(context.manifest.version, 3);
     assert.equal(context.manifest.budget.candidate_files, 3);
     assert.equal(context.manifest.budget.included_files, 2);
     assert.equal(context.manifest.budget.excluded_file_count, 1);

@@ -7,6 +7,8 @@ import type { JsonObject } from "../core/types.js";
 export interface CodexContextDocument {
   source_path: string;
   content: string;
+  read_level?: number;
+  content_mode?: "metadata" | "summary" | "full" | "sensitive";
 }
 
 export interface CodexContextBudget {
@@ -24,6 +26,8 @@ interface ContextInputManifest {
   bytes: number;
   original_bytes: number;
   truncated: boolean;
+  read_level: number;
+  content_mode: "metadata" | "summary" | "full" | "sensitive";
 }
 
 interface ContextBudgetManifest extends CodexContextBudget {
@@ -39,7 +43,7 @@ interface ContextBudgetManifest extends CodexContextBudget {
 }
 
 export interface CodexContextManifest {
-  version: 2;
+  version: 3;
   primary_input: ContextInputManifest;
   related_inputs: ContextInputManifest[];
   allowed_read_roots: string[];
@@ -55,6 +59,11 @@ export interface CodexContextWorkspace {
 
 function digest(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function inputReadLevel(document: CodexContextDocument): number { return document.read_level ?? 0; }
+function inputContentMode(document: CodexContextDocument): "metadata" | "summary" | "full" | "sensitive" {
+  return document.content_mode ?? (inputReadLevel(document) === 0 ? "metadata" : inputReadLevel(document) === 1 ? "summary" : inputReadLevel(document) === 2 ? "full" : "sensitive");
 }
 
 function safeName(value: string, index: number): string {
@@ -179,13 +188,15 @@ export async function createCodexContextWorkspace(input: {
         bytes: Buffer.byteLength(item.content, "utf8"),
         original_bytes: item.originalBytes,
         truncated: item.truncated,
+        read_level: inputReadLevel(item.document),
+        content_mode: inputContentMode(item.document),
       });
     }
     const truncatedFiles = [primary, ...included].flatMap((item) => item.truncated && item.reason
       ? [{ source_path: item.document.source_path, original_bytes: item.originalBytes, included_bytes: Buffer.byteLength(item.content, "utf8"), reason: item.reason }]
       : []);
     const manifest: CodexContextManifest = {
-      version: 2,
+      version: 3,
       primary_input: {
         source_path: primary.document.source_path,
         context_path: primaryPath,
@@ -193,6 +204,8 @@ export async function createCodexContextWorkspace(input: {
         bytes: Buffer.byteLength(primary.content, "utf8"),
         original_bytes: primary.originalBytes,
         truncated: primary.truncated,
+        read_level: inputReadLevel(primary.document),
+        content_mode: inputContentMode(primary.document),
       },
       related_inputs: relatedManifest,
       allowed_read_roots: [...input.allowedReadRoots],

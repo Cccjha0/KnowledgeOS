@@ -257,3 +257,16 @@ test("prompt quality audit attributes review-rate regressions to an exact prompt
     assert.equal(issues.some((item) => item.issue_type === "prompt-quality-regression" && item.target.prompt_id === "normalize-daily-log" && item.target.prompt_version === "1.0.0"), true);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
+
+test("quality audit turns enforced Read Level denials into a visible remediation issue", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-read-level-audit-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const runtime = await RuntimeRepository.open(vault);
+    runtime.recordMetricEvent({ idempotency_key: "read-denied-1", event_type: "read.denied", module: "experience-log", instance_id: "internship-2026", workflow_id: "build-daily-log", workflow_version: "1.0.0", prompt_id: null, prompt_version: null, run_id: "RUN-READ-001", occurred_at: "2026-07-28T00:30:00Z", dimensions: { reason: "read-level-denied" }, values: {} });
+    runtime.close();
+    await runQualityAudit(vault, "daily", { now: "2026-07-28T01:00:00Z" });
+    const quality = await QualityRepository.open(vault); const issues = quality.listIssues(); quality.close();
+    assert.equal(issues.some((item) => item.issue_type === "read-level-denied" && item.module === "experience-log" && item.instance_id === "internship-2026"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});

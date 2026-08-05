@@ -625,8 +625,8 @@ def dispatch(command, connection, payload):
         totals={}; grouped={}
         for row in rows:
             totals[row["event_type"]]=totals.get(row["event_type"],0)+1
-            key="|".join(str(row[name] or "unknown") for name in ["module","workflow_id","prompt_id","prompt_version"])
-            entry=grouped.setdefault(key,{"module":row["module"],"workflow_id":row["workflow_id"],"prompt_id":row["prompt_id"],"prompt_version":row["prompt_version"],"events":{}})
+            key="|".join(str(row[name] or "unknown") for name in ["module","instance_id","workflow_id","prompt_id","prompt_version"])
+            entry=grouped.setdefault(key,{"module":row["module"],"instance_id":row["instance_id"],"workflow_id":row["workflow_id"],"prompt_id":row["prompt_id"],"prompt_version":row["prompt_version"],"events":{}})
             entry["events"][row["event_type"]]=entry["events"].get(row["event_type"],0)+1
             values=decode_json(row["values_json"],{})
             for name,value in values.items():

@@ -55,7 +55,9 @@ test("a declared experience-log workflow executes through the generic Runner wit
       assert.notEqual(contextRoot, vault, "Codex must not run with the real Vault as its working directory");
       assert.match(await fs.readFile(path.join(contextRoot, "primary-input.md"), "utf8"), /Implemented the workflow runner/);
       assert.match(await fs.readFile(path.join(contextRoot, "module-prompt.md"), "utf8"), /weekly-summary/);
-      const manifest = JSON.parse(await fs.readFile(path.join(contextRoot, "context-manifest.json"), "utf8")) as { budget: { max_files: number; max_total_bytes: number; max_file_bytes: number; max_estimated_tokens: number; overflow_policy: string; candidate_files: number; included_files: number; excluded_file_count: number; truncated_file_count: number; review_required: boolean } };
+      const manifest = JSON.parse(await fs.readFile(path.join(contextRoot, "context-manifest.json"), "utf8")) as { primary_input: { read_level: number; content_mode: string }; budget: { max_files: number; max_total_bytes: number; max_file_bytes: number; max_estimated_tokens: number; overflow_policy: string; candidate_files: number; included_files: number; excluded_file_count: number; truncated_file_count: number; review_required: boolean } };
+      assert.equal(manifest.primary_input.read_level, 2, "Workflow declaration must be preserved in the Context manifest");
+      assert.equal(manifest.primary_input.content_mode, "full");
       assert.equal(manifest.budget.max_files, 50);
       assert.equal(manifest.budget.max_total_bytes, 500000);
       assert.equal(manifest.budget.max_file_bytes, 50000);
@@ -140,6 +142,28 @@ test("a configuration module uses the same generic Runner for an Inbox capture",
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("a sensitive document stops at waiting-for-user before Codex receives it", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-read-level-gate-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "reading-sensitive-2026";
+    await createInstance(vault, { module_id: "reading-log", instance_id: instanceId, display_name: "Sensitive Reading", fields: { timezone: "Asia/Shanghai" } });
+    const source = path.join(vault, "20-Workspace", "Reading Log", instanceId, "Inbox", "private.md");
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(source, "---\nread_level: 3\n---\n\n# Private source\n\nSensitive original text.\n", "utf8");
+    const materialized = await materializeInboxAiTasks(vault);
+    const repository = await RuntimeRepository.open(vault);
+    repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
+    repository.close();
+    let codexCalled = false;
+    await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => { codexCalled = true; return { output: {}, stderr: "" }; }) });
+    assert.equal(codexCalled, false);
+    const checked = await RuntimeRepository.open(vault); const task = checked.getTask(materialized.created[0]!); checked.close();
+    assert.equal(task?.status, "waiting-for-user");
+    assert.equal(task?.last_error?.code, "MODULE_READ_DENIED");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("application due-research work runs as a declared module workflow without a Platform Handler", async () => {

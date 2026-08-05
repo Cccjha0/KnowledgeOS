@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CreateTaskInput, TaskResources } from "../runtime/domain.js";
 import type { DashboardItem, JsonObject, JsonValue, Operation, OperationPlan, ReviewItem } from "../core/types.js";
 import { PkbError } from "../core/errors.js";
+import { assertReadLevel, type ReadLevel } from "../core/readLevels.js";
 
 export interface ModuleContext {
   vaultRoot: string;
@@ -11,8 +12,11 @@ export interface ModuleContext {
   instanceId: string | null;
   allowedReadRoots: string[];
   ownedWriteRoots: string[];
-  maxReadLevel: number;
+  /** 0 = metadata, 1 = summary, 2 = full, 3 = sensitive original. */
+  maxReadLevel: ReadLevel;
 }
+
+export type { ReadLevel } from "../core/readLevels.js";
 
 export interface ModuleAdapter {
   match(input: JsonObject): Promise<JsonObject>;
@@ -39,16 +43,19 @@ function within(target: string, roots: string[]): boolean { return roots.some((r
 export class ModuleSdk {
   constructor(readonly context: ModuleContext) {}
 
-  canRead(relativePath: string, readLevel = 0): boolean {
+  canRead(relativePath: string, readLevel: number = 0): boolean {
     try {
       const target = normalize(relativePath);
-      return readLevel <= this.context.maxReadLevel && within(target, this.context.allowedReadRoots);
+      return assertReadLevel(readLevel) <= this.context.maxReadLevel && within(target, this.context.allowedReadRoots);
     } catch { return false; }
   }
 
-  assertReadable(relativePath: string, readLevel = 0): string {
+  assertReadable(relativePath: string, readLevel: number = 0): string {
     const target = normalize(relativePath);
-    if (!this.canRead(target, readLevel)) throw new PkbError("MODULE_READ_DENIED", `Module ${this.context.moduleId} cannot read ${target}.`);
+    const requested = assertReadLevel(readLevel);
+    if (!this.canRead(target, requested)) throw new PkbError("MODULE_READ_DENIED", `Module ${this.context.moduleId} cannot read ${target} at level ${requested}.`, {
+      source_path: target, requested_read_level: requested, module_max_read_level: this.context.maxReadLevel,
+    });
     return target;
   }
 

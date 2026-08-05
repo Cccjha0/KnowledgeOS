@@ -7,9 +7,11 @@ resources: { filesystem: required, network: not-required, codex: required, user:
 steps:
   - id: validate-capture
     uses: core.validate-capture
+    with: { read_level: 2 }
   - id: parse-entry
     uses: core.parse-structured-document
     with:
+      read_level: 2
       time_anchor:
         field: occurred_at
         unit: day
@@ -18,6 +20,7 @@ steps:
     uses: core.query-documents
     with:
       root: "{instance.content_root}/Inbox"
+      read_level: 2
       filters:
         instance_id:
           equals: "{instance.instance_id}"
