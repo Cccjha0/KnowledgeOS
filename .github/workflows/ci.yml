@@ -50,7 +50,7 @@ jobs:
         run: python tools/validate.py
 
       - name: Run Engine tests, including the PDF adapter
-        run: node --test dist/tests/*.test.js
+        run: npm run test:engine
 
       - name: Run plugin Command API smoke test
         run: npm run test:plugin-smoke
