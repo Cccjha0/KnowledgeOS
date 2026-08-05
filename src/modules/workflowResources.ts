@@ -81,15 +81,34 @@ function workflowPath(module: DiscoveredDocument, workflowId: string | null, ent
  * own resource copies.
  */
 export function resolveWorkflowResourceRequirements(module: DiscoveredDocument, workflowId: string | null = null, entrypoint: string | null = null): TaskResources {
+  return resolveWorkflowResourceContract(module, workflowId, entrypoint).resources;
+}
+
+export interface WorkflowResourceContract {
+  workflow_id: string;
+  workflow_version: string;
+  resources: TaskResources;
+}
+
+export function resolveWorkflowResourceContract(module: DiscoveredDocument, workflowId: string | null = null, entrypoint: string | null = null): WorkflowResourceContract {
   const file = workflowPath(module, workflowId, entrypoint);
   const workflow = parseYaml(path.dirname(module.path), file);
+  const resolvedId = typeof workflow.workflow_id === "string" ? workflow.workflow_id : typeof workflow.id === "string" ? workflow.id : workflowId;
+  const version = workflow.workflow_version ?? workflow.version;
+  if (!resolvedId || (typeof version !== "string" && typeof version !== "number")) {
+    throw new PkbError("MODULE_WORKFLOW_METADATA_MISSING", `Workflow ${workflowId ?? entrypoint ?? file} must declare workflow_id and workflow_version.`);
+  }
   const defaults = moduleDefaults(module.data);
   const inferred = inferredStepResources(workflow);
   const declared = resourcePatch(workflow.resources, "workflow.resources");
   return {
-    filesystem: declared.filesystem ?? inferred.filesystem ?? defaults.filesystem ?? DEFAULT_RESOURCES.filesystem,
-    network: declared.network ?? inferred.network ?? defaults.network ?? DEFAULT_RESOURCES.network,
-    codex: declared.codex ?? inferred.codex ?? defaults.codex ?? DEFAULT_RESOURCES.codex,
-    user: declared.user ?? inferred.user ?? defaults.user ?? DEFAULT_RESOURCES.user,
+    workflow_id: resolvedId,
+    workflow_version: String(version),
+    resources: {
+      filesystem: declared.filesystem ?? inferred.filesystem ?? defaults.filesystem ?? DEFAULT_RESOURCES.filesystem,
+      network: declared.network ?? inferred.network ?? defaults.network ?? DEFAULT_RESOURCES.network,
+      codex: declared.codex ?? inferred.codex ?? defaults.codex ?? DEFAULT_RESOURCES.codex,
+      user: declared.user ?? inferred.user ?? defaults.user ?? DEFAULT_RESOURCES.user,
+    },
   };
 }

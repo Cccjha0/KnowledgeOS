@@ -17,6 +17,8 @@ export async function dispatchOnce(options: {
   vaultRoot: string;
   limit?: number;
   workerId?: string;
+  /** Restrict a manual/direct dispatch to its newly created Task. */
+  taskIds?: string[];
   handlers?: Record<string, RuntimeHandler>;
   /** Test seam; production uses the Core Module Workflow Runner. */
   moduleWorkflowHandler?: RuntimeHandler;
@@ -27,6 +29,7 @@ export async function dispatchOnce(options: {
     const now = Date.now();
     const allTasks = new Map(repository.listTasks().map((task) => [task.task_id, task]));
     const candidates = repository.listTasks(["queued"])
+      .filter((task) => !options.taskIds || options.taskIds.includes(task.task_id))
       .filter((task) => Date.parse(task.available_after) <= now && (!task.next_retry_at || Date.parse(task.next_retry_at) <= now))
       .filter((task) => {
         if (!task.dependency_task_ids.length) return true;
