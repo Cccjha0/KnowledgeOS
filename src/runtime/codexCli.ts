@@ -20,6 +20,14 @@ export interface CodexModelOption {
   is_default: boolean;
 }
 
+/**
+ * Optional raw Codex event stream for diagnostic integration tests. This is
+ * deliberately opt-in so routine KnowledgeOS runs do not retain tool output.
+ */
+export interface CodexExecutionAudit {
+  events: unknown[];
+}
+
 const CODEX_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 
 export function resolveCodexModel(model?: string): string {
@@ -159,6 +167,7 @@ export async function executeCodexJson(options: {
   model?: string;
   reasoningEffort?: string;
   timeoutMs?: number;
+  audit?: CodexExecutionAudit;
 }): Promise<{ output: unknown; stderr: string }> {
   const launch = resolveCodexLaunch(options.executable ?? "codex");
   const model = resolveCodexModel(options.model);
@@ -167,27 +176,45 @@ export async function executeCodexJson(options: {
   const args = [
     ...launch.argsPrefix,
     "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check",
-    "--color", "never", "-m", model,
+    "--color", "never", ...(options.audit ? ["--json"] : []), "-m", model,
     "-c", "plugins={}", "-c", `model_reasoning_effort="${reasoningEffort}"`,
     "-C", options.contextRoot, "-o", outputPath, "-",
   ];
   let stderr = "";
+  let stdout = "";
+  const recordAuditLines = (flush = false) => {
+    const lines = stdout.split(/\r?\n/);
+    stdout = flush ? "" : lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { options.audit?.events.push(JSON.parse(line)); }
+      catch { options.audit?.events.push({ type: "unparsed-output", text: line }); }
+    }
+  };
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(launch.command, args, { windowsHide: true, stdio: ["pipe", "ignore", "pipe"] });
+      const child = spawn(launch.command, args, { windowsHide: true, stdio: ["pipe", options.audit ? "pipe" : "ignore", "pipe"] });
       const timer = setTimeout(() => {
         child.kill();
         reject(new PkbError("CODEX_CONNECTION_FAILED", "Codex processing timed out."));
       }, options.timeoutMs ?? 10 * 60_000);
-      child.stderr.setEncoding("utf8");
-      child.stderr.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-16_384); });
+      child.stderr!.setEncoding("utf8");
+      child.stderr!.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-16_384); });
+      if (options.audit && child.stdout) {
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          stdout += chunk;
+          recordAuditLines();
+        });
+      }
       child.on("error", (error) => { clearTimeout(timer); reject(error); });
       child.on("close", (code) => {
         clearTimeout(timer);
+        if (options.audit) recordAuditLines(true);
         if (code === 0) resolve();
         else reject(codexFailure(stderr || `Codex exited with status ${code}.`));
       });
-      child.stdin.end(options.prompt, "utf8");
+      child.stdin!.end(options.prompt, "utf8");
     });
     const raw = (await fs.readFile(outputPath, "utf8")).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     return { output: JSON.parse(raw), stderr };
