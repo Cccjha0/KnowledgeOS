@@ -6,7 +6,7 @@ content_root: 20-Workspace/Applications/sample-applications
 inbox_path: 20-Workspace/Applications/sample-applications/Inbox
 application_type: masters
 region: Australia
-intake: 2027
+intake: 2027-S1
 default_currency: AUD
 monitoring: { enabled: true, default_check_interval_days: 30 }
 created: "2026-01-01T00:00:00Z"

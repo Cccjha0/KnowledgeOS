@@ -1,0 +1,12 @@
+contract_version: 1
+scenarios:
+  normal_capture: { fixture: fixtures/sample-instance/capture-test.yaml }
+  ambiguous_capture: { fixture: tests/behavior/ambiguous-input.md, expected: rejected }
+  permission_denied: { target: 20-Workspace/Applications/forbidden.md }
+  repeat_execution: { enabled: true }
+  paused_instance: { enabled: true }
+  archived_instance: { enabled: true }
+  prompt_regression: { fixture: tests/prompt-regression/facts.yaml }
+  periodic_job: { enabled: true, scheduled_at: "2026-08-09T10:00:00Z" }
+  event_consumption: { enabled: true, event_type: reading-log.fixture-event }
+  migration_apply: { enabled: false, rollback: false }

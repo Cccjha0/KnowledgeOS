@@ -1,0 +1,12 @@
+contract_version: 1
+scenarios:
+  normal_capture: { fixture: fixtures/sample-instance/capture-test.yaml }
+  ambiguous_capture: { fixture: tests/behavior/normal-ambiguous-error-duplicate.yaml, expected: review }
+  permission_denied: { target: 20-Workspace/Experience Log/forbidden.md }
+  repeat_execution: { enabled: true }
+  paused_instance: { enabled: true }
+  archived_instance: { enabled: true }
+  prompt_regression: { fixture: tests/prompt-regression/facts.yaml }
+  periodic_job: { enabled: false }
+  event_consumption: { enabled: true, event_type: application-tracker.fixture-event }
+  migration_apply: { enabled: true, rollback: true }

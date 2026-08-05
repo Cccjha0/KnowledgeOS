@@ -27,7 +27,7 @@ export interface ModuleValidationReport extends JsonObject {
 }
 
 export interface ModuleTestCheck extends JsonObject {
-  category: "capture" | "idempotency" | "lifecycle" | "periodic" | "migration";
+  category: "capture" | "ambiguous" | "idempotency" | "permission" | "lifecycle" | "periodic" | "event" | "resource" | "prompt-regression" | "migration";
   status: "pass" | "fail" | "not-applicable";
   message: string;
   details: JsonObject | null;

@@ -1,2 +1,1 @@
-# facts.yaml
-expected: pass
+invariants: [preserve-facts, no-invented-values, uncertainty-preserved, schema-valid]

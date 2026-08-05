@@ -20,7 +20,7 @@ capture:
         program_name: Fixture Programme
         program_code: C6007
         country: AU
-        intake: "2027"
+        intake: "2027-S1"
         application_status: watching
         monitoring:
           active: true
@@ -38,7 +38,7 @@ capture:
     institution: Fixture University
     program_name: Fixture Programme
     program_code: C6007
-    intake: "2027"
+    intake: "2027-S1"
     checked_at: "2026-08-04T10:00:00+08:00"
     material_change: false
     confidence: 0.95
