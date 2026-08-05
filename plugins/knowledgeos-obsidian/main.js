@@ -14,11 +14,6 @@ const { createSettingsViews } = require("./views/settings-tab");
 const moduleUiMetadata = new ModuleUiMetadataStore();
 const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
 
-function applyModuleUiMetadata(method, response) {
-  if (method === "getModules" && response?.ok && Array.isArray(response.data)) moduleUiMetadata.update(response.data);
-  return response;
-}
-
 const LIST_PAGE_SIZE = 50;
 const FALLBACK_CODEX_MODELS = [
   { id: "gpt-5.6-terra", model: "gpt-5.6-terra", display_name: "GPT-5.6 Terra", description: "KnowledgeOS 默认模型", supported_reasoning_efforts: ["low", "medium", "high", "xhigh"], default_reasoning_effort: "medium", is_default: true },
