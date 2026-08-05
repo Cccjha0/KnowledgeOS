@@ -6,6 +6,7 @@ import { parseMarkdown } from "../core/bridge.js";
 import { discoverRoutingContext, type DiscoveredDocument, type RoutingDiscoveryContext } from "../core/discovery.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
+import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -184,7 +185,12 @@ async function inspectItem(
   const processor: InboxItemView["processor"] = applicationReport
     ? "application-research-report"
     : root.scope === "global" && suggestedModule ? "routing-only" : "module-workflow";
-  const requiresAi = !emptySource && (processor === "module-workflow" || (extension !== ".md" && processor !== "routing-only"));
+  const workflowModule = modules.find((entry) => String(entry.data.id) === suggestedModule);
+  let workflowResources = null;
+  if (!emptySource && processor !== "routing-only" && workflowModule) {
+    workflowResources = resolveWorkflowResourceRequirements(workflowModule, null, "capture");
+  }
+  const requiresAi = workflowResources?.codex === "required";
   const stored = await readJson<InboxStateRecord | null>(inboxStatePath(vaultRoot, id), null);
   let state: InboxItemState = emptySource ? "empty" : stored?.state ?? (!suggestedModule ? "waiting-for-user" : requiresAi ? "waiting-for-ai" : "pending");
   const storedResult = object(stored?.result);

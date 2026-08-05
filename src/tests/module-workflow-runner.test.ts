@@ -92,6 +92,7 @@ test("a workflow module Inbox item materializes a generic capture Task", async (
     const task = repository.getTask(materialized.created[0]!);
     assert.equal(task?.workflow, "module:experience-log:capture");
     assert.equal(task?.trigger.entrypoint, "capture");
+    assert.equal(task?.resources.codex, "required", "Inbox task resources must come from the capture Workflow");
     repository.close();
   } finally {
     await fs.rm(vault, { recursive: true, force: true });

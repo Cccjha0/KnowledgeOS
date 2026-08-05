@@ -6,6 +6,7 @@ import { exists } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import type { JobDefinition, TaskPriority, TaskResources } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
+import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const local: TaskResources = { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" };
@@ -25,7 +26,7 @@ function coreJobs(now: string): JobDefinition[] {
   ];
 }
 
-function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | null, moduleEnabled: boolean, now: string): JobDefinition {
+function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | null, module: Awaited<ReturnType<typeof discoverModulesForVault>>[number], moduleEnabled: boolean, now: string): JobDefinition {
   const id = String(raw.id);
   const instanceId = instance ? String(instance.instance_id) : null;
   const trigger = structuredClone(raw.trigger as JsonObject);
@@ -39,7 +40,7 @@ function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | nul
     job_id: instanceId ? `${moduleId}.${id}.${instanceId}` : `${moduleId}.${id}`, source: "module", module: moduleId,
     scope: instanceId ? "instance" : "module", enabled: moduleEnabled && raw.enabled !== false && (!instance || instance.status === "active"),
     task_type: String(raw.task_type ?? "workflow") as JobDefinition["task_type"], workflow: String(raw.workflow), trigger,
-    resources: raw.resources as TaskResources, catch_up: (raw.catch_up ?? { policy: "none" }) as JsonObject,
+    resources: resolveWorkflowResourceRequirements(module, typeof raw.workflow_id === "string" ? raw.workflow_id : String(raw.workflow), null), catch_up: (raw.catch_up ?? { policy: "none" }) as JsonObject,
     retry: (raw.retry ?? { max_attempts: 3 }) as JsonObject, concurrency, idempotency: (raw.idempotency ?? {}) as JsonObject,
     priority: String(raw.priority ?? "normal") as TaskPriority, updated_at: now,
   };
@@ -59,8 +60,8 @@ export async function registerDeclaredJobs(vaultRoot: string): Promise<JobDefini
       const document = parseYaml(ENGINE_ROOT, file);
       for (const raw of (document.jobs as JsonObject[] | undefined) ?? []) {
         if (raw.scope === "instance") {
-          for (const instance of instances.filter((entry) => entry.data.module_id === moduleId)) definitions.push(normalize(moduleId, raw, instance.data, module.data.status === "enabled", now));
-        } else definitions.push(normalize(moduleId, raw, null, module.data.status === "enabled", now));
+          for (const instance of instances.filter((entry) => entry.data.module_id === moduleId)) definitions.push(normalize(moduleId, raw, instance.data, module, module.data.status === "enabled", now));
+        } else definitions.push(normalize(moduleId, raw, null, module, module.data.status === "enabled", now));
       }
     }
     for (const definition of definitions) repository.registerJob(definition);
@@ -82,9 +83,11 @@ export async function reconcileLifecycleTasks(vaultRoot: string, filter: { modul
     }
     let finalTaskId: string | null = null;
     if (filter.createFinalSummary && filter.instanceId && filter.moduleId === "experience-log") {
+      const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === "experience-log" && entry.data.status === "enabled");
+      if (!module) throw new Error("experience-log must be enabled before creating its final summary task.");
       const result = repository.createTask({
         job_id: `experience-log.final-summary.${filter.instanceId}`, module: "experience-log", instance_id: filter.instanceId,
-        task_type: "workflow", workflow: "experience-log:weekly-summary", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
+        task_type: "workflow", workflow: "experience-log:weekly-summary", priority: "high", resources: resolveWorkflowResourceRequirements(module, "build-weekly-summary"),
         trigger: { type: "event", source: "instance.completed", workflow_id: "build-weekly-summary", workflow_version: "1.0.0" }, catch_up_policy: "none",
         idempotency_key: `experience-log:${filter.instanceId}:final-summary`, concurrency_key: `experience-log:${filter.instanceId}:summary`,
       });

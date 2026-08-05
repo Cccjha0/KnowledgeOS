@@ -26,6 +26,7 @@ test("Core and modules register standard Jobs without direct scheduler access", 
     assert.equal(jobs.some((job) => job.job_id === "application-tracker.due-research-check"), true);
     const weekly = jobs.find((job) => job.job_id === "experience-log.weekly-summary.job-intern")!;
     assert.equal(weekly.resources.codex, "required");
+    assert.equal(weekly.resources.network, "not-required");
     assert.equal(weekly.trigger.timezone, "Asia/Shanghai");
 
     let repository = await RuntimeRepository.open(vault);

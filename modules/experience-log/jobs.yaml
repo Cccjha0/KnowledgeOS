@@ -7,7 +7,6 @@ jobs:
     workflow_id: build-weekly-summary
     workflow_version: 1.0.0
     trigger: { type: weekly, weekday: Fri, at: "18:00", timezone: instance }
-    resources: { filesystem: required, network: not-required, codex: required, user: not-required }
     catch_up: { policy: aggregate, max_age_days: 21 }
     retry: { max_attempts: 3, strategy: exponential }
     concurrency: { policy: forbid, key: "experience-log:{instance}:weekly-summary" }

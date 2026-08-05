@@ -3,6 +3,7 @@ version: 1
 workflow_id: build-weekly-summary
 workflow_version: 1.0.0
 inputs: [instance, schedule]
+resources: { filesystem: required, network: not-required, codex: required, user: not-required }
 steps:
   - id: collect-week
     uses: core.query-documents

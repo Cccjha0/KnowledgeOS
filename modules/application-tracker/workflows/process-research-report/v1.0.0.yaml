@@ -7,6 +7,12 @@ inputs:
   - capture
   - instance
 
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+
 steps:
   - id: validate-capture
     uses: core.validate-capture

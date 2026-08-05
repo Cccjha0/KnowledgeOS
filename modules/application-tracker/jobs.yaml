@@ -11,7 +11,6 @@ jobs:
       source_root: 20-Workspace/Applications
       field: monitoring.next_check
       id_field: instance_id
-    resources: { filesystem: required, network: not-required, codex: not-required, user: not-required }
     catch_up: { policy: latest, max_age_days: 14 }
     retry: { max_attempts: 3, strategy: exponential }
     concurrency: { policy: forbid, key: application-tracker:due-research }

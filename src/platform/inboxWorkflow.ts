@@ -17,6 +17,7 @@ import { rebuildTodayDashboard } from "./dashboard.js";
 import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
+import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -69,12 +70,15 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   };
 }
 
-async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string } | null> {
+async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"] } | null> {
   const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
   if (!module) return null;
   const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
   if (typeof entryWorkflows?.capture !== "string") return null;
-  return { workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture" };
+  return {
+    workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture",
+    resources: resolveWorkflowResourceRequirements(module, null, "capture"),
+  };
 }
 
 async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
@@ -86,13 +90,13 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
     const previousTask = item.task_id ? repository.getTask(item.task_id) : null;
     const effectiveModel = codexModel?.trim() || (typeof previousTask?.payload.codex_model === "string" ? previousTask.payload.codex_model : undefined);
     const effectiveReasoningEffort = codexReasoningEffort?.trim() || (typeof previousTask?.payload.codex_reasoning_effort === "string" ? previousTask.payload.codex_reasoning_effort : undefined);
-    const executionProfile = item.requires_ai
+    const executionProfile = workflow.resources.codex === "required"
       ? `:${effectiveModel || "default"}:${effectiveReasoningEffort || "default"}`
       : ":deterministic";
     const result = repository.createTask({
       job_id: `${moduleId}.inbox-processing`, module: moduleId, instance_id: instanceId,
       task_type: "workflow", workflow: workflow.workflow, priority: "normal", scheduled_for: new Date().toISOString(),
-      resources: { filesystem: "required", network: "not-required", codex: item.requires_ai ? "required" : "not-required", user: "not-required" },
+      resources: workflow.resources,
       trigger: {
         type: "inbox", item_id: item.item_id, source_file: item.path,
         workflow_id: workflow.workflowId, workflow_version: workflow.workflowVersion,
@@ -108,7 +112,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
     });
     let task = result.task;
     if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
-    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : item.requires_ai ? "waiting-for-ai" : "pending";
+    const itemState = task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
       attempts: task.attempt_count, task_id: task.task_id, error: task.last_error?.message ?? null,
       result: { status: task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated },
@@ -284,7 +288,16 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
       params.codex_model,
       params.codex_reasoning_effort,
     );
-    if (task) return { status: task.status, ui_state: task.status === "queued" ? "waiting-for-ai" : task.status, item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id, reason: task.status === "queued" ? "AI Task is queued and will run when Codex is available." : "AI Task is waiting for Codex." };
+    if (task) {
+      const requiresCodex = task.resources.codex === "required";
+      return {
+        status: task.status, ui_state: task.status === "queued" && requiresCodex ? "waiting-for-ai" : task.status,
+        item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, task_id: task.task_id,
+        reason: requiresCodex
+          ? task.status === "queued" ? "AI Task is queued and will run when Codex is available." : "AI Task is waiting for Codex."
+          : "Module workflow task is queued and will run without Codex.",
+      };
+    }
     const waiting = { status: "waiting-for-ai", ui_state: "waiting-for-ai", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId, reason: "This module workflow requires a Codex handoff, but no managed AI handler is available for this module." };
     await writeInboxState(vaultRoot, stateFor(item, "waiting-for-ai", { attempts: 1, result: waiting }));
     return waiting;
