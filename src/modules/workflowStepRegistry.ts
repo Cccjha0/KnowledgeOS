@@ -6,7 +6,7 @@ import { PkbError } from "../core/errors.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { RuntimeTask, TaskResources } from "../runtime/domain.js";
 import { allocateId } from "../core/ids.js";
-import { eventFingerprint, publishRuntimeEvent } from "../runtime/triggers.js";
+import { eventFingerprint, minimizeEventPayload, publishRuntimeEvent } from "../runtime/triggers.js";
 
 type StepResources = Partial<TaskResources>;
 
@@ -43,6 +43,19 @@ function object(value: JsonValue | undefined, code: string): JsonObject {
 function string(value: JsonValue | undefined, code: string): string {
   if (typeof value !== "string" || !value.trim()) throw new PkbError(code, "Workflow step input must be a non-empty string.");
   return value;
+}
+
+function selectValue(source: JsonValue, dottedPath: string): JsonValue | undefined {
+  let current: JsonValue | undefined = source;
+  for (const part of dottedPath.split(".")) {
+    if (Array.isArray(current)) {
+      const index = Number(part);
+      if (!Number.isInteger(index) || index < 0) return undefined;
+      current = current[index];
+    } else if (current && typeof current === "object") current = current[part];
+    else return undefined;
+  }
+  return current;
 }
 
 const DEFINITIONS: readonly WorkflowStepDefinition[] = [
@@ -114,16 +127,25 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
     execute: async (context) => {
       const eventType = string(context.with.event_type, "EVENT_TYPE_REQUIRED");
       const source = typeof context.with.payload_from === "string" ? context.getValue(context.with.payload_from) : undefined;
-      const payload = source === undefined ? (context.with.payload && typeof context.with.payload === "object" && !Array.isArray(context.with.payload)
+      let payload = source === undefined ? (context.with.payload && typeof context.with.payload === "object" && !Array.isArray(context.with.payload)
         ? context.with.payload as JsonObject : {}) : object(source, "EVENT_PAYLOAD_INVALID");
+      if (context.with.payload_fields && typeof context.with.payload_fields === "object" && !Array.isArray(context.with.payload_fields)) {
+        const selected: JsonObject = {};
+        for (const [field, selector] of Object.entries(context.with.payload_fields as JsonObject)) {
+          if (typeof selector !== "string") continue;
+          const value = selectValue(payload, selector);
+          if (typeof value === "string") selected[field] = value;
+        }
+        payload = selected;
+      }
       if (typeof context.with.only_if_created_from === "string") {
         const candidate = object(context.getValue(context.with.only_if_created_from), "EVENT_CONDITION_INVALID");
         if (!Array.isArray(candidate.created) || candidate.created.length === 0) return { skipped: true, reason: "no-created-items" };
       }
-      const stablePayload = payload;
+      const stablePayload = minimizeEventPayload(payload);
       return await publishRuntimeEvent(context.vaultRoot, {
         type: eventType, module: context.moduleId, instance_id: context.task.instance_id, payload: {
-          ...stablePayload, workflow_id: context.task.trigger.workflow_id ?? context.task.workflow, workflow_version: context.task.trigger.workflow_version ?? null, run_id: context.runId,
+          ...stablePayload, run_id: context.runId,
         },
         fingerprint: eventFingerprint({ type: eventType, module: context.moduleId, instance_id: context.task.instance_id, payload: stablePayload }),
       }) as unknown as JsonValue;

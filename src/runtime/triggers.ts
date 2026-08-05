@@ -35,9 +35,29 @@ function canonicalJson(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+const EVENT_PAYLOAD_FIELDS = new Set(["entity_id", "file_ref", "field_name", "change_type", "run_id", "evidence_id"]);
+const EVENT_PAYLOAD_ALIASES: Record<string, string> = {
+  capture_id: "entity_id", review_id: "entity_id", request_id: "entity_id", report_id: "entity_id", summary_id: "entity_id", daily_id: "entity_id", source_item_id: "entity_id", id: "entity_id", period: "entity_id",
+  path: "file_ref", source_path: "file_ref", source_file: "file_ref", file_path: "file_ref",
+  status: "change_type", action: "change_type",
+};
+
+export type EventPayload = JsonObject;
+
+/** Event Store payloads are identifiers only; document bodies never cross this boundary. */
+export function minimizeEventPayload(input: JsonObject = {}): EventPayload {
+  const output: EventPayload = {};
+  for (const [rawKey, rawValue] of Object.entries(input)) {
+    const key = EVENT_PAYLOAD_FIELDS.has(rawKey) ? rawKey : EVENT_PAYLOAD_ALIASES[rawKey];
+    if (!key || output[key] !== undefined || typeof rawValue !== "string" || !rawValue.trim()) continue;
+    output[key] = rawValue.trim().slice(0, 512);
+  }
+  return output;
+}
+
 export function eventFingerprint(event: { type: string; module?: string; instance_id?: string | null; payload?: JsonObject }): string {
   return createHash("sha256").update(canonicalJson({
-    event_type: event.type, source_module: event.module ?? "core", instance_id: event.instance_id ?? null, payload: event.payload ?? {},
+    event_type: event.type, source_module: event.module ?? "core", instance_id: event.instance_id ?? null, payload: minimizeEventPayload(event.payload ?? {}),
   }), "utf8").digest("hex");
 }
 
@@ -85,10 +105,11 @@ export async function publishRuntimeEvent(vaultRoot: string, event: { type: stri
   const repository = await RuntimeRepository.open(vaultRoot);
   const eventId = event.event_id ?? `EVT-${randomUUID()}`;
   const occurredAt = event.occurred_at ?? new Date().toISOString();
-  const fingerprint = event.fingerprint ?? eventFingerprint(event);
+  const payload = minimizeEventPayload(event.payload ?? {});
+  const fingerprint = event.fingerprint ?? eventFingerprint({ ...event, payload });
   const output = { event_id: eventId, created: [] as string[], deduplicated: 0, event_deduplicated: false };
   try {
-    const stored = repository.recordEvent({ event_id: eventId, event_type: event.type, module: event.module ?? "core", instance_id: event.instance_id ?? null, occurred_at: occurredAt, payload: event.payload ?? {}, fingerprint });
+    const stored = repository.recordEvent({ event_id: eventId, event_type: event.type, module: event.module ?? "core", instance_id: event.instance_id ?? null, occurred_at: occurredAt, payload, fingerprint });
     if (!stored.created) {
       output.event_deduplicated = true;
       output.event_id = String(stored.event.event_id);
@@ -97,7 +118,7 @@ export async function publishRuntimeEvent(vaultRoot: string, event: { type: stri
     }
     const delivered = deliverEventSubscriptions(repository, {
       eventId, eventType: event.type, eventFingerprint: fingerprint, instanceId: event.instance_id ?? null,
-      occurredAt, payload: event.payload ?? {}, jobs: resolveEventSubscriptions(repository.listJobs(), event.type),
+      occurredAt, payload, jobs: resolveEventSubscriptions(repository.listJobs(), event.type),
     });
     output.created.push(...delivered.created); output.deduplicated += delivered.deduplicated;
     const status = delivered.failed === 0 ? "published" : delivered.created.length + delivered.deduplicated > 0 ? "partial" : "dead-letter";
@@ -135,14 +156,15 @@ function deliverEventSubscriptions(repository: RuntimeRepository, options: { eve
   return output;
 }
 
-/** Re-deliver only failed Event subscriptions; existing failed Tasks are re-queued instead of duplicated. */
+/** Re-deliver failed subscriptions, or rebuild the Delivery Ledger when dispatch failed before any ledger row existed. */
 export async function replayRuntimeEvent(vaultRoot: string, eventId: string, subscriptionKeys?: string[]): Promise<{ event_id: string; created: string[]; requeued: string[]; deduplicated: number; failed: number }> {
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
     const event = repository.getEvent(eventId);
     if (!event) throw new PkbError("EVENT_NOT_FOUND", `Event ${eventId} was not found.`);
     const requested = subscriptionKeys ? new Set(subscriptionKeys) : undefined;
-    const deliveries = repository.listEventDeliveries(eventId).filter((delivery) => delivery.status === "failed" && (!requested || requested.has(String(delivery.subscription_key))));
+    const allDeliveries = repository.listEventDeliveries(eventId);
+    const deliveries = allDeliveries.filter((delivery) => delivery.status === "failed" && (!requested || requested.has(String(delivery.subscription_key))));
     const output = { event_id: eventId, created: [] as string[], requeued: [] as string[], deduplicated: 0, failed: 0 };
     const jobs = resolveEventSubscriptions(repository.listJobs(), String(event.event_type));
     const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
@@ -159,6 +181,14 @@ export async function replayRuntimeEvent(vaultRoot: string, eventId: string, sub
       const job = jobsById.get(String(delivery.job_id));
       if (!job) { output.failed += 1; repository.finishEventDelivery(eventId, String(delivery.subscription_key), "failed", null, { code: "EVENT_SUBSCRIPTION_MISSING", message: `Job ${String(delivery.job_id)} is no longer registered.` }); }
       else pendingJobs.push(job);
+    }
+    // An event can reach dead-letter between Event Store persistence and the
+    // first delivery record. Re-resolve today's subscriptions and seed fresh
+    // ledger rows instead of leaving that event unrecoverable.
+    const deliveredKeys = new Set(allDeliveries.map((delivery) => String(delivery.subscription_key)));
+    for (const job of jobs) {
+      if (requested && !requested.has(job.job_id)) continue;
+      if (!deliveredKeys.has(job.job_id)) pendingJobs.push(job);
     }
     const dispatched = deliverEventSubscriptions(repository, {
       eventId, eventType: String(event.event_type), eventFingerprint: String(event.fingerprint), instanceId: typeof event.instance_id === "string" ? event.instance_id : null,

@@ -224,7 +224,8 @@ test("application due-research work runs as a declared module workflow without a
     const events = await RuntimeRepository.open(vault);
     const event = events.listEvents().find((candidate) => candidate.event_type === "research.required");
     assert.equal(event?.status, "published");
-    assert.equal((event?.payload as JsonObject).created instanceof Array, true);
+    assert.equal(typeof (event?.payload as JsonObject).entity_id, "string");
+    assert.equal("created" in (event?.payload as JsonObject), false);
     events.close();
   } finally {
     await fs.rm(vault, { recursive: true, force: true });

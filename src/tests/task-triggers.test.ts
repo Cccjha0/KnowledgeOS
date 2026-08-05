@@ -56,6 +56,46 @@ test("Event Store preserves a dead-letter event for a failed dispatch", async ()
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Event payloads retain only minimal identifiers in the Event Store and downstream Task", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-privacy-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.registerJob(base("core.private-event", { type: "event", event: "capture.private" }));
+    repository.close();
+    await publishRuntimeEvent(vault, {
+      type: "capture.private", event_id: "EVT-private", payload: {
+        capture_id: "CAP-private", path: "20-Workspace/private.md", run_id: "RUN-private",
+        journal_body: "private journal body", extracted_text: "private attachment text", api_token: "secret-token", nested: { email_body: "also private" },
+      },
+    });
+    const after = await RuntimeRepository.open(vault);
+    const stored = after.getEvent("EVT-private")!;
+    assert.deepEqual(stored.payload, { entity_id: "CAP-private", file_ref: "20-Workspace/private.md", run_id: "RUN-private" });
+    const task = after.listTasks().find((item) => item.job_id === "core.private-event")!;
+    assert.equal(JSON.stringify(task.payload).includes("private journal body"), false);
+    assert.equal(JSON.stringify(task.payload).includes("secret-token"), false);
+    after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("dead-letter replay rebuilds the Delivery Ledger when failure occurred before any delivery row", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-ledger-recovery-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.recordEvent({ event_id: "EVT-no-delivery", event_type: "capture.recover", module: "core", instance_id: null, occurred_at: new Date().toISOString(), fingerprint: "no-delivery", payload: { entity_id: "CAP-recover" } });
+    repository.failEvent("EVT-no-delivery", { code: "EVENT_DISPATCH_FAILED", message: "failed before delivery ledger" });
+    repository.registerJob(base("core.recover-event", { type: "event", event: "capture.recover" }));
+    repository.close();
+    const replay = await replayRuntimeEvent(vault, "EVT-no-delivery");
+    assert.equal(replay.created.length, 1);
+    const after = await RuntimeRepository.open(vault);
+    assert.equal(after.getEvent("EVT-no-delivery")?.status, "published");
+    assert.equal(after.listEventDeliveries("EVT-no-delivery").length, 1);
+    assert.equal(after.listEventDeliveries("EVT-no-delivery")[0]?.status, "created");
+    after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Event Delivery Ledger records a failed subscription and replays only that delivery", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-replay-"));
   try {
