@@ -12,6 +12,7 @@ import { invokeCommandApi } from "../platform/commandApi.js";
 import { installModulePackage, packModule, rollbackModulePackage } from "../modules/packageManager.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
+import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
@@ -22,12 +23,56 @@ async function temporaryEngine(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-engine-"));
   await fs.mkdir(path.join(root, "core", "schemas"), { recursive: true });
   await fs.cp(path.join(SOURCE_ROOT, "core", "schemas", "module-manifest.schema.json"), path.join(root, "core", "schemas", "module-manifest.schema.json"));
+  await fs.mkdir(path.join(root, "core", "module-builder"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "core", "module-builder", "capability-packs.yaml"), path.join(root, "core", "module-builder", "capability-packs.yaml"));
   await fs.cp(path.join(SOURCE_ROOT, "components"), path.join(root, "components"), { recursive: true });
   await fs.mkdir(path.join(root, "tools"), { recursive: true });
   await fs.cp(path.join(SOURCE_ROOT, "tools", "module_bridge.py"), path.join(root, "tools", "module_bridge.py"));
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.9.0-beta" }), "utf8");
   return root;
 }
+
+test("Module Blueprint resolves templates, Capability Packs, Adapters, and Components", async () => {
+  const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+  const { report, scaffoldTemplate } = await validateModuleBlueprint(SOURCE_ROOT, blueprint);
+  assert.equal(report.overall, "PASS");
+  assert.equal(scaffoldTemplate, "workflow");
+  assert.equal(report.resolved_capability_packs.includes("capture-processing"), true, "transitive Pack dependencies should resolve");
+  assert.equal(report.resolved_capabilities.includes("periodic-summary"), true);
+  assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
+  assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
+});
+
+test("Module Blueprint rejects inputs without an installed Adapter", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-invalid-"));
+  try {
+    const source = path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml");
+    const blueprint = parseYaml(SOURCE_ROOT, source);
+    blueprint.inputs = ["markdown", "docx"];
+    const target = path.join(root, "invalid.blueprint.yaml");
+    writeYaml(root, target, blueprint);
+    const { report } = await validateModuleBlueprint(SOURCE_ROOT, target);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_UNAVAILABLE" && item.status === "fail"), true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("Blueprint scaffolding deterministically creates a runtime-valid module", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    assert.equal(await fs.stat(path.join(moduleRoot, "module.blueprint.yaml")).then(() => true), true);
+    assert.equal(await fs.stat(path.join(moduleRoot, "docs", "blueprint-boundary.md")).then(() => true), true);
+    const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
+    assert.deepEqual(manifest.accepted_inputs, ["markdown", "pdf", "pptx"]);
+    assert.equal((manifest.inbox as JsonObject).asset_access_policy !== undefined, true);
+    const validation = await validateModule(engine, moduleRoot);
+    assert.notEqual(validation.overall, "FAIL", validation.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+    await assert.rejects(() => scaffoldModuleFromBlueprint(engine, blueprint), /already exists/);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
 
 test("all scaffold templates generate manifests that satisfy the base contract", async () => {
   const engine = await temporaryEngine();

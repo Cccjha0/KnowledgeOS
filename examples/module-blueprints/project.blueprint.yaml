@@ -1,0 +1,17 @@
+blueprint_version: 1
+base_template: standard-workflow
+capability_packs: [structured-entity, timeline, deadline-tracking, event-publishing, periodic-summary]
+module: { id: project, display_name: 项目管理, description: 管理项目记录、里程碑、截止日期和周期总结, intended_users: [project-owner] }
+module_class: { type: workflow, complexity: standard }
+use_cases: { primary: [记录项目进展, 跟踪里程碑, 生成周度总结], excluded: [自动对外发布, 自动删除项目文件] }
+entities: [{ id: project, ownership: module }, { id: milestone, ownership: instance }, { id: project-update, ownership: instance }]
+inputs: [markdown, text]
+outputs: [project-update, project-timeline, weekly-summary]
+inbox: { module_level: true, instance_level: true, global_routing: true }
+privacy: { default_sensitivity_class: 1, default_max_representation: full, network_allowed: false, user_original_content_mutable: false }
+workflows: [{ id: normalize-update, trigger: capture, requires_ai: true }, { id: weekly-summary, trigger: schedule, requires_ai: true }]
+review_policy: { critical_fields: [milestone.deadline, milestone.status], ambiguous_input: review, destructive_operations: forbidden }
+jobs: [{ id: weekly-summary, schedule: weekly, catch_up: latest }]
+events: { publishes: [project.milestone-created], subscribes: [] }
+dashboard: { sections: [milestones, timeline, waiting-reviews] }
+testing: { normal_input: required, ambiguous_input: required, repeat_execution: required, permission_denied: required, paused_instance: required, archived_instance: required, prompt_regression: required, periodic_job: required, event_publication: required, event_consumption: not-applicable, migration: not-applicable, attachment_policy: not-applicable }
