@@ -304,5 +304,18 @@ test("application-tracker holds partial PDFs for user review instead of sending 
     assert.equal(task?.payload.pdf_policy_source, "module-manifest");
     assert.deepEqual(task?.payload.pdf_extraction_decision, { usable: false, requires_review: true, status: "partial" });
     repository.close();
+
+    const approved = await invokeCommandApi({
+      vaultRoot: vault,
+      requestId: "PDF-PARTIAL-REVIEW-001",
+      method: "reviewPartialInboxExtraction",
+      params: { item_id: String(task?.payload.item_id), decision: "approve-extracted-text" },
+    });
+    assert.equal(approved.ok, true, JSON.stringify(approved.error));
+    const repositoryAfterReview = await RuntimeRepository.open(vault);
+    const resumed = repositoryAfterReview.getTask(task!.task_id);
+    assert.equal(resumed?.status, "queued");
+    assert.equal((resumed?.payload.pdf_user_review as { decision?: string }).decision, "approve-extracted-text");
+    repositoryAfterReview.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

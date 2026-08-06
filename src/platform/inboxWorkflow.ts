@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ClassifyInboxAttachmentParams, ProcessInboxBatchParams, ProcessInboxItemParams } from "../api/types.js";
+import type { ClassifyInboxAttachmentParams, ProcessInboxBatchParams, ProcessInboxItemParams, ReviewPartialInboxExtractionParams } from "../api/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { ensureDir, exists, fromVaultPath, sha256File, writeJsonAtomic } from "../core/files.js";
@@ -292,6 +292,61 @@ export async function classifyInboxAttachment(vaultRoot: string, params: Classif
       companion_note_path: updated.companion_note_path,
       resumed: resumed.status !== "waiting-for-user",
     };
+  } finally { repository.close(); }
+}
+
+/**
+ * Records an explicit user inspection of partial PDF text before requeueing
+ * the same task. The module policy still gates this path: only a policy that
+ * says `partial_policy: review` can be acknowledged here.
+ */
+export async function reviewPartialInboxExtraction(vaultRoot: string, params: ReviewPartialInboxExtractionParams): Promise<JsonObject> {
+  if (!params.item_id?.trim()) throw new PkbError("INVALID_REQUEST", "item_id is required.");
+  if (params.decision !== "approve-extracted-text" && params.decision !== "keep-waiting") throw new PkbError("INVALID_REQUEST", "A partial PDF review decision is required.");
+  const item = await findItem(vaultRoot, params.item_id);
+  if (params.decision === "keep-waiting") return { status: "waiting-for-user", item_id: item.item_id, kept_waiting: true };
+  if (!item.task_id || !item.suggested_module_id) throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This Inbox item has no managed partial-PDF task to review.");
+  const workflow = await inboxAiWorkflow(vaultRoot, item.suggested_module_id);
+  if (!workflow) throw new PkbError("INBOX_WORKFLOW_NOT_FOUND", `The ${item.suggested_module_id} Inbox workflow is not available.`);
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const task = repository.getTask(item.task_id);
+    const decision = task?.payload.pdf_extraction_decision;
+    const ingestion = task?.payload.ingestion;
+    if (!task || !decision || typeof decision !== "object" || Array.isArray(decision) || (decision as JsonObject).status !== "partial" || (decision as JsonObject).requires_review !== true) {
+      throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This task is not waiting for a partial PDF extraction review.");
+    }
+    if (!ingestion || typeof ingestion !== "object" || Array.isArray(ingestion) || typeof (ingestion as JsonObject).capture_path !== "string") {
+      throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This partial PDF has no managed Capture Envelope.");
+    }
+    const capturePath = String((ingestion as JsonObject).capture_path);
+    const envelope = await readCaptureEnvelope(vaultRoot, capturePath);
+    const approvedAt = new Date().toISOString();
+    const userReview: JsonObject = { decision: "approve-extracted-text", reviewed_by: "user", reviewed_at: approvedAt, capture_path: capturePath };
+    const payload: JsonObject = {
+      ...task.payload,
+      pdf_user_review: userReview,
+    };
+    let refreshed = repository.refreshWaitingTask(task.task_id, workflow.resources, payload);
+    refreshed = repository.retryTask(refreshed.task_id);
+    const itemState = refreshed.resources.codex === "required" ? "waiting-for-ai" : "pending";
+    await writeInboxState(vaultRoot, stateFor(item, itemState, {
+      attempts: refreshed.attempt_count,
+      task_id: refreshed.task_id,
+      error: null,
+      result: { status: refreshed.status, task_id: refreshed.task_id, workflow: refreshed.workflow, pdf_extraction_review: userReview },
+    }));
+    const quality = await QualityRepository.open(vaultRoot);
+    try {
+      quality.recordChange({
+        entity_ref: `[[${envelope.companion_note_path}]]`, field: "pdf_extraction_review",
+        old_value: null, new_value: userReview,
+        reason: "User reviewed a partial PDF extraction and approved the extracted text for this managed workflow.", evidence_refs: [], generation: null,
+        review: { status: "user-direct", reviewed_by: "user", reviewed_at: approvedAt }, changed_at: approvedAt,
+      });
+    } finally { quality.close(); }
+    await rebuildTodayDashboard(vaultRoot);
+    return { status: refreshed.status, ui_state: refreshed.resources.codex === "required" ? "waiting-for-ai" : refreshed.status, item_id: item.item_id, task_id: refreshed.task_id, resumed: true };
   } finally { repository.close(); }
 }
 

@@ -45,6 +45,7 @@ export type CommandApiMethod =
   | "getFieldProvenance"
   | "updateAssetAccessPolicy"
   | "classifyInboxAttachment"
+  | "reviewPartialInboxExtraction"
   | "backfillQualityMetadata";
 
 export interface CommandApiRequest extends JsonObject {
@@ -122,6 +123,12 @@ export interface ClassifyInboxAttachmentParams {
   item_id: string;
   sensitivity_class: 0 | 1 | 2 | 3;
   max_representation: "metadata" | "summary" | "full" | "sensitive-original";
+}
+
+/** Explicit user acknowledgement before a module may use a partial PDF extraction. */
+export interface ReviewPartialInboxExtractionParams {
+  item_id: string;
+  decision: "approve-extracted-text" | "keep-waiting";
 }
 
 export interface GetRunDetailsParams {

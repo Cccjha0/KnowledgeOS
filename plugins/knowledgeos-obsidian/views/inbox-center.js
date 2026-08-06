@@ -334,7 +334,10 @@ class InboxCenterView extends ItemView {
       routeFieldset.createDiv({ cls: "knowledgeos-inbox-attachment-copy", text: `这份 PDF 的本地文本提取状态为 ${status}。当前模块要求先由你查看原文件，系统不会自动将不完整内容交给 Codex。` });
       const openPdf = routeFieldset.createEl("button", { text: "打开原始附件" });
       openPdf.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
-      primary.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+      const approvePartial = routeFieldset.createEl("button", { cls: "mod-cta knowledgeos-inbox-route-process", text: "我已检查，使用已提取文本" });
+      approvePartial.disabled = pending || this.partialWarnings.length > 0;
+      approvePartial.onclick = () => this.openPartialExtractionReview(item);
+      primary.onclick = () => this.openPartialExtractionReview(item);
       moduleSelect.disabled = true;
       instanceSelect.disabled = true;
     } else if (item.required_user_action === "resolve-review") {
@@ -454,6 +457,30 @@ class InboxCenterView extends ItemView {
       : response.data.task_id
         ? "附件分类已保存，受管任务已重新入队；满足资源条件后会自动继续。"
         : "附件分类已保存。";
+    await this.refresh(item.item_id);
+    return true;
+  }
+
+  openPartialExtractionReview(item) {
+    const data = item.attachment_classification || {};
+    new PartialExtractionReviewModal(this.app, this.plugin, item, data, async () => this.approvePartialExtraction(item)).open();
+  }
+
+  async approvePartialExtraction(item) {
+    if (this.pendingItemIds.has(item.item_id)) return false;
+    this.pendingItemIds.add(item.item_id);
+    this.itemActionErrors.delete(item.item_id);
+    const response = await this.plugin.client.invoke("reviewPartialInboxExtraction", { item_id: item.item_id, decision: "approve-extracted-text" });
+    this.pendingItemIds.delete(item.item_id);
+    if (!response.ok) {
+      const message = response.error?.message || "无法确认 PDF 提取复核";
+      this.itemActionErrors.set(item.item_id, message);
+      this.expandedItems.add(item.item_id);
+      this.plugin.notify(message, { error: true });
+      this.render(item.item_id);
+      return false;
+    }
+    this.resultMessage = "已记录你对部分 PDF 提取的确认；同一条受管任务已重新入队。";
     await this.refresh(item.item_id);
     return true;
   }
@@ -627,6 +654,47 @@ class AttachmentClassificationModal extends Modal {
     if (completed === false) {
       this.status.addClass("is-error");
       this.status.setText("未能保存分类。附件和原任务均未被删除；请根据提示调整后重试。");
+      return;
+    }
+    this.close();
+  }
+}
+
+class PartialExtractionReviewModal extends Modal {
+  constructor(app, plugin, item, data, onComplete) {
+    super(app);
+    this.plugin = plugin;
+    this.item = item;
+    this.data = data;
+    this.onComplete = onComplete;
+  }
+
+  onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-attachment-classification-modal");
+    root.createEl("h2", { text: "确认使用部分 PDF 提取" });
+    root.createDiv({ cls: "knowledgeos-modal-intro", text: "请先检查原始 PDF，确认已提取的内容足以支持本次工作流。此确认只适用于当前受管任务，不会把 PDF 标记为完整，也不会修改原始附件。" });
+    const status = this.data.pdf_extraction_status || "partial";
+    root.createDiv({ cls: "knowledgeos-attachment-classification-preview", text: `当前提取状态：${status}。确认后，Core 会保留该确认记录，并只让隔离 Context Workspace 使用本地已提取的文本。` });
+    this.status = markLiveRegion(root.createDiv({ cls: "knowledgeos-modal-submit-state" }));
+    const actions = root.createDiv({ cls: "knowledgeos-modal-actions" });
+    this.confirm = actions.createEl("button", { cls: "mod-cta", text: "我已检查，继续处理" });
+    this.confirm.onclick = () => this.submit();
+    const keepWaiting = actions.createEl("button", { text: "暂不处理" });
+    keepWaiting.onclick = () => this.close();
+  }
+
+  async submit() {
+    this.confirm.disabled = true;
+    this.contentEl.setAttr("aria-busy", "true");
+    this.status.setText("正在记录 PDF 提取复核并恢复任务…");
+    const completed = await this.onComplete();
+    this.confirm.disabled = false;
+    this.contentEl.removeAttribute("aria-busy");
+    if (completed === false) {
+      this.status.addClass("is-error");
+      this.status.setText("未能恢复任务。原文件和等待状态均保持不变。请根据提示重试。");
       return;
     }
     this.close();

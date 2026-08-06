@@ -308,12 +308,16 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
     assertDocumentReadable(state, normalized, requested, policy);
     const pdfPolicy = effectivePdfUsePolicy(task.payload.pdf_policy ?? state.resolved.manifest.pdf_policy);
     const pdfDecision = pdfExtractionDecision(envelope, pdfPolicy);
+    const partialApprovedByUser = Boolean(pdfDecision.status === "partial" && pdfDecision.requires_review
+      && task.payload.pdf_user_review && typeof task.payload.pdf_user_review === "object" && !Array.isArray(task.payload.pdf_user_review)
+      && (task.payload.pdf_user_review as JsonObject).decision === "approve-extracted-text"
+      && (task.payload.pdf_user_review as JsonObject).capture_path === envelope.capture_path);
     if (envelope.format === "pdf") state.pdfDecisions.set(envelope.source_path, {
       source_path: envelope.source_path, capture_path: envelope.capture_path, extraction_status: pdfDecision.status,
-      usable: pdfDecision.usable, requires_review: pdfDecision.requires_review, policy: pdfPolicy,
+      usable: pdfDecision.usable || partialApprovedByUser, requires_review: pdfDecision.requires_review, user_approved: partialApprovedByUser, policy: pdfPolicy,
       policy_source: task.payload.pdf_policy ? String(task.payload.pdf_policy_source ?? "task-payload") : "workflow-resolution",
     });
-    if (!pdfDecision.usable) {
+    if (!pdfDecision.usable && !partialApprovedByUser) {
       throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfDecision.status}; this Workflow policy does not permit it without user action.`, {
         source_path: envelope.source_path,
         extraction_status: pdfDecision.status,
