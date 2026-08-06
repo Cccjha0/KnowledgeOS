@@ -51,6 +51,9 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
     const yaml = await ingestAsset(vault, "00-Inbox/notes.yaml");
     const image = await ingestAsset(vault, "00-Inbox/photo.png");
     assert.equal(json.format, "json");
+    assert.equal(json.sensitivity_class, "unknown", "A newly ingested attachment must not inherit the public-document default.");
+    assert.equal(json.classification_state, "unclassified");
+    assert.equal(json.access_policy.max_representation, "metadata");
     assert.equal((await readExtractionCache(vault, json)).structured_data?.deadline, "2027-05-01");
     assert.equal((await readCaptureEnvelope(vault, json.capture_path)).content_hash, json.content_hash);
     assert.equal((await readExtractionCache(vault, yaml)).structured_data?.open, true);
@@ -84,6 +87,7 @@ test("attachment access policy changes only through the Core API and mirrors its
     assert.equal(response.ok, true);
     const sidecar = await readCaptureEnvelope(vault, asset.capture_path);
     assert.equal(sidecar.sensitivity_class, 3);
+    assert.equal(sidecar.classification_state, "classified");
     assert.equal(sidecar.access_policy.max_representation, "metadata");
     const note = await fs.readFile(path.join(vault, ...asset.companion_note_path.split("/")), "utf8");
     assert.match(note, /sensitivity_class: 3/);
@@ -159,7 +163,36 @@ test("application-tracker materializes an accepted JSON Inbox asset as a module 
     assert.equal(typeof ingestion.capture_path, "string");
     assert.equal(typeof ingestion.sidecar_path, "string");
     repository.close();
-    assert.equal((await readCaptureEnvelope(vault, ingestion.capture_path!)).source_path.endsWith("official-update.json"), true);
+    const envelope = await readCaptureEnvelope(vault, ingestion.capture_path!);
+    assert.equal(envelope.source_path.endsWith("official-update.json"), true);
+    assert.equal(envelope.sensitivity_class, 2, "The Application Inbox declares its own explicit attachment policy.");
+    assert.equal(envelope.classification_state, "inherited");
+    assert.equal(envelope.access_policy.max_representation, "full");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("unclassified non-Markdown Inbox attachments wait for user classification before a Codex task can run", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-unclassified-waiting-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "internship-private-attachment";
+    await createInstance(vault, {
+      module_id: "experience-log", instance_id: instanceId, display_name: "Private attachment test",
+      fields: { organization: "Example", role: "Intern", start_date: "2026-01-01", end_date: null, timezone: "Asia/Shanghai" },
+    });
+    const source = path.join(vault, "20-Workspace", "Experience Log", instanceId, "Inbox", "private-export.txt");
+    await fs.writeFile(source, "Private chat export that must not be sent to Codex before classification.", "utf8");
+    const materialized = await materializeInboxAiTasks(vault);
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.getTask(materialized.created[0]!);
+    const ingestion = task?.payload.ingestion as { capture_path?: string };
+    assert.equal(task?.status, "waiting-for-user");
+    assert.equal(task?.resources.user, "required");
+    assert.equal(task?.resources.codex, "not-required");
+    const envelope = await readCaptureEnvelope(vault, ingestion.capture_path!);
+    assert.equal(envelope.classification_state, "unclassified");
+    assert.equal(envelope.access_policy.max_representation, "metadata");
+    repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -216,9 +249,10 @@ test("unreadable PDFs enter waiting-for-user and never reach the Codex workflow"
     const task = repository.getTask(materialized.created[0]!);
     assert.equal(task?.resources.user, "required");
     assert.equal(task?.resources.codex, "not-required");
+    assert.equal(task?.status, "waiting-for-user");
     repository.close();
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1 });
-    assert.equal(dispatched.tasks[0]?.status, "waiting-for-user");
+    assert.equal(dispatched.tasks.length, 0, "A pre-gated attachment must never enter a Worker run.");
     const after = await RuntimeRepository.open(vault);
     assert.equal(after.getRuns(task!.task_id).length, 0, "the resource gate must stop before a Codex run starts");
     after.close();

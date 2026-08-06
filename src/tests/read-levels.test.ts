@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { representationPermits, requireSafeSummary, resolveDocumentAccessPolicy } from "../core/readLevels.js";
+import { representationPermits, requireSafeSummary, resolveDocumentAccessPolicy, unclassifiedDocumentAccessPolicy } from "../core/readLevels.js";
+
+test("unclassified attachments are not treated as public documents", () => {
+  const policy = unclassifiedDocumentAccessPolicy();
+  assert.equal(policy.sensitivity_class, "unknown");
+  assert.equal(policy.classification_state, "unclassified");
+  assert.equal(policy.max_representation, "metadata");
+  assert.equal(representationPermits(policy.max_representation, "full"), false);
+});
 
 test("explicit document policy separates sensitivity authorization from content representation", () => {
   const policy = resolveDocumentAccessPolicy({ sensitivity_class: 0, access_policy: { max_representation: "metadata" } });

@@ -6,7 +6,7 @@ import { parseMarkdown, parseYaml, writeMarkdown } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { ensureDir, exists, fromVaultPath, listFilesRecursive, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import type { JsonObject, JsonValue } from "./types.js";
-import { assertRepresentationLevel, assertSensitivityClass, defaultMaxRepresentation, resolveDocumentAccessPolicy, type DocumentAccessPolicy, type LegacyReadLevel, type RepresentationLevel, type SensitivityClass } from "./readLevels.js";
+import { assertRepresentationLevel, assertSensitivityClass, defaultMaxRepresentation, resolveDocumentAccessPolicy, unclassifiedDocumentAccessPolicy, type AttachmentSensitivityClass, type ClassificationState, type DocumentAccessPolicy, type LegacyReadLevel, type RepresentationLevel, type SensitivityClass } from "./readLevels.js";
 
 export type IngestionFormat = "markdown" | "text" | "json" | "yaml" | "pdf" | "image";
 export type PdfExtractionStatus = "pending" | "completed" | "partial" | "empty" | "scanned" | "encrypted" | "corrupted" | "unsupported" | "failed";
@@ -26,7 +26,9 @@ export interface CaptureEnvelope extends JsonObject {
   companion_note_path: string;
   metadata: JsonObject;
   /** User-controlled privacy class, independent from the requested representation. */
-  sensitivity_class: SensitivityClass;
+  sensitivity_class: AttachmentSensitivityClass;
+  /** Unclassified attachments may expose metadata only, never extracted text. */
+  classification_state: ClassificationState;
   /** File-level cap on what any Workflow may receive. */
   access_policy: { max_representation: RepresentationLevel };
   policy_source: DocumentAccessPolicy["policy_source"];
@@ -143,7 +145,7 @@ export function pdfExtractionStatus(envelope: CaptureEnvelope): PdfExtractionSta
 }
 
 /** Core-owned ingestion: modules consume the resulting Envelope/Sidecar, never mutate the original asset. */
-export async function ingestAsset(vaultRoot: string, sourcePath: string, options: { sensitivityClass?: number; maxRepresentation?: RepresentationLevel; /** @deprecated maps to sensitivityClass for legacy callers. */ readLevel?: number } = {}): Promise<CaptureEnvelope> {
+export async function ingestAsset(vaultRoot: string, sourcePath: string, options: { sensitivityClass?: number; maxRepresentation?: RepresentationLevel; classificationState?: Exclude<ClassificationState, "unclassified">; /** @deprecated maps to sensitivityClass for legacy callers. */ readLevel?: number } = {}): Promise<CaptureEnvelope> {
   const source = fromVaultPath(vaultRoot, sourcePath);
   const extension = path.extname(source).toLowerCase();
   const format = formatForExtension(extension);
@@ -183,21 +185,24 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
     extracted_text: extractedText, structured_data: structuredData, page_text: extractionPages(metadata), created_at: new Date().toISOString(), last_accessed_at: new Date().toISOString(), reference_count: 0,
   };
   const requestedSensitivity = options.sensitivityClass ?? options.readLevel;
-  const sensitivityClass = assertSensitivityClass(requestedSensitivity ?? persistedPolicy?.sensitivity_class ?? 0, "capture sensitivity_class");
-  const maxRepresentation = options.maxRepresentation
-    ?? (requestedSensitivity === undefined ? persistedPolicy?.max_representation : undefined)
-    ?? defaultMaxRepresentation(sensitivityClass);
-  const policySource: DocumentAccessPolicy["policy_source"] = options.sensitivityClass !== undefined || options.maxRepresentation !== undefined
-    ? "explicit" : requestedSensitivity !== undefined || persistedPolicy?.policy_source === "legacy" ? "legacy"
-      : persistedPolicy?.policy_source ?? "default";
+  const explicitSensitivity = requestedSensitivity ?? (typeof persistedPolicy?.sensitivity_class === "number" ? persistedPolicy.sensitivity_class : 0);
+  const hasExplicitPolicy = options.sensitivityClass !== undefined || options.maxRepresentation !== undefined || options.classificationState !== undefined;
+  const policy: DocumentAccessPolicy = hasExplicitPolicy
+    ? {
+        sensitivity_class: assertSensitivityClass(explicitSensitivity, "capture sensitivity_class"),
+        max_representation: assertRepresentationLevel(options.maxRepresentation ?? defaultMaxRepresentation(assertSensitivityClass(explicitSensitivity, "capture sensitivity_class")), "capture access_policy.max_representation"),
+        classification_state: options.classificationState ?? "classified",
+        policy_source: options.classificationState === "inherited" ? "inherited" as const : "explicit" as const,
+      }
+    : persistedPolicy ?? unclassifiedDocumentAccessPolicy();
   const envelope: CaptureEnvelope = {
     schema_version: 3, asset_id: assetId(contentHash), capture_id: `CAP-${contentHash.slice(0, 24).toUpperCase()}`,
     source_path: sourcePath, original_asset_ref: sourcePath, format, content_hash: contentHash,
     sidecar_path: sidecarPath, capture_path: capturePath, extraction_cache_path: cachePath, companion_note_path: notePath,
-    metadata: extractionSummary(metadata, extractedText), sensitivity_class: sensitivityClass,
-    access_policy: { max_representation: assertRepresentationLevel(maxRepresentation, "capture access_policy.max_representation") }, policy_source: policySource,
+    metadata: extractionSummary(metadata, extractedText), sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state,
+    access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
     legacy_read_level: options.readLevel === undefined && persistedPolicy?.legacy_read_level === undefined
-      ? null : assertSensitivityClass(options.readLevel ?? persistedPolicy?.legacy_read_level ?? sensitivityClass, "legacy read_level"),
+      ? null : assertSensitivityClass(options.readLevel ?? persistedPolicy?.legacy_read_level ?? (typeof policy.sensitivity_class === "number" ? policy.sensitivity_class : 0), "legacy read_level"),
     created_at: new Date().toISOString(),
   };
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, sidecarPath)));
@@ -209,7 +214,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
     writeMarkdown(vaultRoot, fromVaultPath(vaultRoot, notePath), {
       data: {
         type: "attachment-note", asset_id: envelope.asset_id, asset_ref: `[[${sourcePath}]]`, source_path: sourcePath,
-        content_hash: contentHash, format, sensitivity_class: envelope.sensitivity_class, access_policy: envelope.access_policy, policy_source: envelope.policy_source,
+        content_hash: contentHash, format, sensitivity_class: envelope.sensitivity_class, classification_state: envelope.classification_state, access_policy: envelope.access_policy, policy_source: envelope.policy_source,
         access_policy_source_of_truth: "sidecar-core-api",
         extraction_status: pdfExtractionStatus(envelope) ?? "completed",
         extraction_cache_path: cachePath, created_at: envelope.created_at,
@@ -230,7 +235,7 @@ export async function updateAssetAccessPolicy(vaultRoot: string, capturePath: st
   const updatedAt = new Date().toISOString();
   const updated: CaptureEnvelope = {
     ...envelope,
-    sensitivity_class: assertSensitivityClass(input.sensitivity_class, "sensitivity_class"),
+    sensitivity_class: assertSensitivityClass(input.sensitivity_class, "sensitivity_class"), classification_state: "classified",
     access_policy: { max_representation: assertRepresentationLevel(input.max_representation, "max_representation") },
     policy_source: "explicit",
     legacy_read_level: null,
@@ -241,7 +246,7 @@ export async function updateAssetAccessPolicy(vaultRoot: string, capturePath: st
   if (await exists(noteFile)) {
     const note = parseMarkdown(vaultRoot, noteFile);
     writeMarkdown(vaultRoot, noteFile, {
-      data: { ...note.data, sensitivity_class: updated.sensitivity_class, access_policy: updated.access_policy, policy_source: updated.policy_source, access_policy_source_of_truth: "sidecar-core-api", policy_updated_at: updatedAt },
+      data: { ...note.data, sensitivity_class: updated.sensitivity_class, classification_state: updated.classification_state, access_policy: updated.access_policy, policy_source: updated.policy_source, access_policy_source_of_truth: "sidecar-core-api", policy_updated_at: updatedAt },
       content: note.content,
     });
   }
@@ -259,21 +264,21 @@ export async function readCaptureEnvelope(vaultRoot: string, capturePath: string
       format: parsed.format as IngestionFormat, content_hash: hash, sidecar_path: String(parsed.sidecar_path ?? capturePath), capture_path: capturePath,
       extraction_cache_path: String(parsed.capture_path ?? capturePath), companion_note_path: companionNotePath(hash, parsed.source_path),
       metadata: extractionSummary((parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata : {}) as JsonObject, parsed.extracted_text),
-      sensitivity_class: assertSensitivityClass(typeof parsed.read_level === "number" ? parsed.read_level : 0, "legacy capture read_level"), access_policy: { max_representation: "sensitive-original" }, policy_source: "legacy",
+      sensitivity_class: assertSensitivityClass(typeof parsed.read_level === "number" ? parsed.read_level : 0, "legacy capture read_level"), classification_state: "inherited", access_policy: { max_representation: "sensitive-original" }, policy_source: "legacy",
       legacy_read_level: typeof parsed.read_level === "number" ? assertSensitivityClass(parsed.read_level, "legacy capture read_level") : null, created_at: String(parsed.created_at ?? new Date().toISOString()),
     };
   }
   if (parsed.schema_version === 2 && typeof parsed.extraction_cache_path === "string") {
     const policy = resolveDocumentAccessPolicy(parsed);
     return {
-      ...parsed, schema_version: 3, sensitivity_class: policy.sensitivity_class, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
+      ...parsed, schema_version: 3, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
       legacy_read_level: policy.legacy_read_level ?? null,
     } as unknown as CaptureEnvelope;
   }
   if (parsed.schema_version !== 3 || typeof parsed.extraction_cache_path !== "string") throw new PkbError("CAPTURE_ENVELOPE_INVALID", `Invalid Asset Metadata Sidecar ${capturePath}.`);
   const policy = resolveDocumentAccessPolicy(parsed);
   return {
-    ...parsed, sensitivity_class: policy.sensitivity_class, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
+    ...parsed, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
     legacy_read_level: policy.legacy_read_level ?? null,
   } as unknown as CaptureEnvelope;
 }
@@ -305,7 +310,8 @@ export async function readExtractionCache(vaultRoot: string, envelope: CaptureEn
     return resolved;
   } catch { /* Try the next compatible cache location. */ }
   if (await exists(fromVaultPath(vaultRoot, envelope.source_path))) {
-    const refreshed = await ingestAsset(vaultRoot, envelope.source_path, { sensitivityClass: envelope.sensitivity_class, maxRepresentation: envelope.access_policy.max_representation });
+    const refreshed = await ingestAsset(vaultRoot, envelope.source_path, envelope.sensitivity_class === "unknown"
+      ? {} : { sensitivityClass: envelope.sensitivity_class, maxRepresentation: envelope.access_policy.max_representation, classificationState: envelope.classification_state === "inherited" ? "inherited" : "classified" });
     if (refreshed.content_hash === envelope.content_hash) return readExtractionCache(vaultRoot, refreshed);
   }
   throw new PkbError("EXTRACTION_CACHE_UNAVAILABLE", `The extraction cache for ${envelope.source_path} is unavailable and the original asset cannot be re-ingested.`, { source_path: envelope.source_path, extraction_cache_path: envelope.extraction_cache_path });

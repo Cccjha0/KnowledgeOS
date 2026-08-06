@@ -260,7 +260,13 @@ function requestedRepresentation(settings: JsonObject | undefined, label: string
   return "metadata";
 }
 
-function assertDocumentReadable(state: WorkflowState, sourcePath: string, requested: RepresentationLevel, policy: DocumentAccessPolicy): void {
+function assertDocumentReadable(state: WorkflowState, sourcePath: string, requested: RepresentationLevel, policy: DocumentAccessPolicy): asserts policy is DocumentAccessPolicy & { sensitivity_class: SensitivityClass } {
+  if (policy.sensitivity_class === "unknown" || policy.classification_state === "unclassified") {
+    throw new PkbError("DOCUMENT_CLASSIFICATION_REQUIRED", `Workflow cannot read ${sourcePath} until its attachment privacy classification is confirmed.`, {
+      source_path: sourcePath, requested_representation: requested, classification_state: policy.classification_state,
+      document_max_representation: policy.max_representation,
+    });
+  }
   state.sdk.assertReadable(sourcePath, policy.sensitivity_class);
   if (!representationPermits(policy.max_representation, requested)) {
     throw new PkbError("DOCUMENT_REPRESENTATION_DENIED", `Workflow requested ${requested} for ${sourcePath}, but its policy allows at most ${policy.max_representation}.`, {
@@ -273,7 +279,7 @@ function assertDocumentReadable(state: WorkflowState, sourcePath: string, reques
   }
 }
 
-function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: RepresentationLevel; policy: DocumentAccessPolicy }): DocumentInput {
+function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: RepresentationLevel; policy: DocumentAccessPolicy & { sensitivity_class: SensitivityClass } }): DocumentInput {
   return {
     path: input.path,
     data: input.data,
@@ -297,7 +303,7 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
   if (ingestion && typeof ingestion === "object" && !Array.isArray(ingestion) && typeof (ingestion as JsonObject).capture_path === "string") {
     const envelope = await readCaptureEnvelope(vaultRoot, relative(String((ingestion as JsonObject).capture_path), "ingestion.capture_path"));
     if (envelope.source_path !== normalized) throw new PkbError("CAPTURE_ENVELOPE_SOURCE_MISMATCH", "Capture Envelope does not belong to this Inbox source.");
-    const policy: DocumentAccessPolicy = { sensitivity_class: envelope.sensitivity_class, max_representation: envelope.access_policy.max_representation, policy_source: envelope.policy_source, ...(envelope.legacy_read_level === null ? {} : { legacy_read_level: envelope.legacy_read_level }) };
+    const policy: DocumentAccessPolicy = { sensitivity_class: envelope.sensitivity_class, classification_state: envelope.classification_state, max_representation: envelope.access_policy.max_representation, policy_source: envelope.policy_source, ...(envelope.legacy_read_level === null ? {} : { legacy_read_level: envelope.legacy_read_level }) };
     assertDocumentReadable(state, normalized, requested, policy);
     if (!pdfExtractionIsUsable(envelope)) {
       throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfExtractionStatus(envelope)}. OCR or a text-based PDF is required before this workflow can run.`, {

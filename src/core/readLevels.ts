@@ -3,6 +3,9 @@ import type { JsonObject } from "./types.js";
 
 /** A document's privacy sensitivity. Higher values require stronger module permission. */
 export type SensitivityClass = 0 | 1 | 2 | 3;
+/** Attachments remain unreadable until their privacy classification is known. */
+export type AttachmentSensitivityClass = SensitivityClass | "unknown";
+export type ClassificationState = "unclassified" | "classified" | "inherited";
 
 /** The representation a Workflow may receive after sensitivity authorization succeeds. */
 export type RepresentationLevel = "metadata" | "summary" | "full" | "sensitive-original";
@@ -14,9 +17,10 @@ export type RepresentationLevel = "metadata" | "summary" | "full" | "sensitive-o
 export type LegacyReadLevel = 0 | 1 | 2 | 3;
 
 export interface DocumentAccessPolicy {
-  sensitivity_class: SensitivityClass;
+  sensitivity_class: AttachmentSensitivityClass;
   max_representation: RepresentationLevel;
-  policy_source: "explicit" | "legacy" | "default";
+  classification_state: ClassificationState;
+  policy_source: "explicit" | "legacy" | "default" | "inherited";
   legacy_read_level?: LegacyReadLevel;
 }
 
@@ -50,8 +54,13 @@ export function defaultMaxRepresentation(sensitivityClass: SensitivityClass): Re
   return sensitivityClass === 3 ? "metadata" : sensitivityClass === 2 ? "summary" : "full";
 }
 
+export function unclassifiedDocumentAccessPolicy(): DocumentAccessPolicy {
+  return { sensitivity_class: "unknown", max_representation: "metadata", classification_state: "unclassified", policy_source: "default" };
+}
+
 /** Resolves explicit policy first, then legacy data, then a safe default. */
 export function resolveDocumentAccessPolicy(data: JsonObject, fallbackSensitivityClass: SensitivityClass = 0): DocumentAccessPolicy {
+  if (data.classification_state === "unclassified" || data.sensitivity_class === "unknown") return unclassifiedDocumentAccessPolicy();
   if (typeof data.sensitivity_class === "number") {
     const sensitivityClass = assertSensitivityClass(data.sensitivity_class);
     const rawPolicy = data.access_policy;
@@ -61,7 +70,8 @@ export function resolveDocumentAccessPolicy(data: JsonObject, fallbackSensitivit
       max_representation: policy.max_representation === undefined
         ? defaultMaxRepresentation(sensitivityClass)
         : assertRepresentationLevel(policy.max_representation, "access_policy.max_representation"),
-      policy_source: "explicit",
+      classification_state: data.classification_state === "inherited" ? "inherited" : "classified",
+      policy_source: data.policy_source === "inherited" ? "inherited" : "explicit",
     };
   }
   if (typeof data.read_level === "number") {
@@ -69,9 +79,9 @@ export function resolveDocumentAccessPolicy(data: JsonObject, fallbackSensitivit
     // The old field was implemented as a sensitivity gate in practice. Keep
     // its existing readable behavior until the document receives an explicit
     // policy, while preserving the legacy origin in every audit record.
-    return { sensitivity_class: legacy, max_representation: "sensitive-original", policy_source: "legacy", legacy_read_level: legacy };
+    return { sensitivity_class: legacy, max_representation: "sensitive-original", classification_state: "inherited", policy_source: "legacy", legacy_read_level: legacy };
   }
-  return { sensitivity_class: fallbackSensitivityClass, max_representation: defaultMaxRepresentation(fallbackSensitivityClass), policy_source: "default" };
+  return { sensitivity_class: fallbackSensitivityClass, max_representation: defaultMaxRepresentation(fallbackSensitivityClass), classification_state: "inherited", policy_source: "default" };
 }
 
 export function representationFromLegacyReadLevel(value: number, label = "legacy read_level"): RepresentationLevel {

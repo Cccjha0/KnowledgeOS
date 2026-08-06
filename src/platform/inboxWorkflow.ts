@@ -19,6 +19,7 @@ import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
 import { formatForExtension, ingestAsset, isAcceptedInput, pdfExtractionDecision, pdfExtractionStatus, type PdfExtractionStatus, type PdfUsePolicy } from "../core/ingestion.js";
+import type { RepresentationLevel } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -37,6 +38,24 @@ function pdfUsePolicy(module: JsonObject): PdfUsePolicy | null {
     : undefined;
   const partial = policy.partial_policy;
   return { ...(accepted ? { accepted_statuses: accepted } : {}), ...(partial === "allow" || partial === "review" ? { partial_policy: partial } : {}) };
+}
+
+function assetAccessPolicy(value: unknown): { sensitivityClass: number; maxRepresentation: RepresentationLevel; classificationState: "inherited" } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const policy = value as JsonObject;
+  const sensitivity = policy.sensitivity_class;
+  const representation = policy.max_representation;
+  if (!Number.isInteger(sensitivity) || Number(sensitivity) < 0 || Number(sensitivity) > 3) return null;
+  if (representation !== "metadata" && representation !== "summary" && representation !== "full" && representation !== "sensitive-original") return null;
+  return { sensitivityClass: Number(sensitivity), maxRepresentation: representation, classificationState: "inherited" };
+}
+
+async function inboxAssetPolicy(vaultRoot: string, module: JsonObject, instanceId: string): Promise<{ sensitivityClass: number; maxRepresentation: RepresentationLevel; classificationState: "inherited" } | null> {
+  const instance = (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === instanceId);
+  const instancePolicy = assetAccessPolicy(instance?.data.inbox_asset_policy ?? instance?.data.asset_access_policy);
+  if (instancePolicy) return instancePolicy;
+  const inbox = module.inbox;
+  return assetAccessPolicy(inbox && typeof inbox === "object" && !Array.isArray(inbox) ? (inbox as JsonObject).asset_access_policy : null);
 }
 
 async function findItem(vaultRoot: string, itemId: string): Promise<InboxItemView> {
@@ -99,15 +118,20 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
   if (!workflow || !instanceId) return null;
   const format = formatForExtension(item.extension);
   if (!format || !isAcceptedInput(workflow.module, format)) return null;
-  const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path);
+  const assetPolicy = await inboxAssetPolicy(vaultRoot, workflow.module, instanceId);
+  const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path, assetPolicy ?? {});
   const extractionDecision = ingestion?.format === "pdf" ? pdfExtractionDecision(ingestion, pdfUsePolicy(workflow.module)) : null;
+  const requiresClassification = ingestion?.classification_state === "unclassified";
   const requiresExtractionAction = extractionDecision !== null && !extractionDecision.usable;
   const extractionStatus = ingestion ? pdfExtractionStatus(ingestion) : null;
-  const resources = requiresExtractionAction ? { ...workflow.resources, codex: "not-required" as const, user: "required" as const } : workflow.resources;
+  const resources = requiresClassification || requiresExtractionAction ? { ...workflow.resources, codex: "not-required" as const, user: "required" as const } : workflow.resources;
   const sourceHash = await sha256File(fromVaultPath(vaultRoot, item.path));
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
     const previousTask = item.task_id ? repository.getTask(item.task_id) : null;
+    const previousIngestion = previousTask?.payload.ingestion;
+    const previousWasUnclassified = previousIngestion !== null && typeof previousIngestion === "object" && !Array.isArray(previousIngestion)
+      && (previousIngestion as JsonObject).classification_state === "unclassified";
     const effectiveModel = codexModel?.trim() || (typeof previousTask?.payload.codex_model === "string" ? previousTask.payload.codex_model : undefined);
     const effectiveReasoningEffort = codexReasoningEffort?.trim() || (typeof previousTask?.payload.codex_reasoning_effort === "string" ? previousTask.payload.codex_reasoning_effort : undefined);
     const executionProfile = workflow.resources.codex === "required"
@@ -127,16 +151,20 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
         item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
         ...(effectiveModel ? { codex_model: effectiveModel } : {}),
         ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
-        ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref, extraction_status: extractionStatus } } : {}),
+        ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref, extraction_status: extractionStatus, classification_state: ingestion.classification_state } } : {}),
       },
       concurrency_key: `inbox:${item.item_id}`, concurrency_policy: "forbid",
     });
     let task = result.task;
-    if (wake && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) task = repository.retryTask(task.task_id);
-    const itemState = requiresExtractionAction ? "waiting-for-user" : task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
+    if (requiresClassification || requiresExtractionAction) {
+      if (task.status === "queued") task = repository.transitionTask(task.task_id, "waiting-for-user", { completionReason: null });
+    } else if ((wake || previousWasUnclassified) && ["failed", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"].includes(task.status)) {
+      task = repository.retryTask(task.task_id);
+    }
+    const itemState = requiresClassification || requiresExtractionAction ? "waiting-for-user" : task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
-      attempts: task.attempt_count, task_id: task.task_id, error: requiresExtractionAction ? extractionDecision?.requires_review ? "PDF extraction is partial; this module requires a user review before it may be used." : `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
-      result: { status: requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: extractionDecision?.requires_review ? "Review the partial PDF extraction before processing" : "OCR or a text-based PDF" } : {}) },
+      attempts: task.attempt_count, task_id: task.task_id, error: requiresClassification ? "附件尚未分类；请先确认其隐私等级和允许的读取范围，系统不会将正文交给 AI。" : requiresExtractionAction ? extractionDecision?.requires_review ? "PDF extraction is partial; this module requires a user review before it may be used." : `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
+      result: { status: requiresClassification || requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(requiresClassification ? { classification_state: "unclassified", action_required: "Confirm attachment privacy classification" } : {}), ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: extractionDecision?.requires_review ? "Review the partial PDF extraction before processing" : "OCR or a text-based PDF" } : {}) },
     }));
     return task;
   } finally { repository.close(); }
