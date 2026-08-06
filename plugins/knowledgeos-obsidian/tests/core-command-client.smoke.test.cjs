@@ -13,6 +13,7 @@ const { createInboxCenterViews } = require("../views/inbox-center");
 const { createSystemCenterViews } = require("../views/system-center");
 const { createTodayViews } = require("../views/today");
 const { createSettingsViews } = require("../views/settings-tab");
+const { createModuleBuilderViews } = require("../views/module-builder-modal");
 
 function createMockBridge(onRequest) {
   const child = new EventEmitter();
@@ -189,6 +190,7 @@ test("view factories expose the existing view and settings constructors", () => 
     ...createSystemCenterViews(dependencies),
     ...createTodayViews(dependencies),
     ...createSettingsViews(dependencies),
+    ...createModuleBuilderViews(dependencies),
   };
 
   assert.equal(typeof constructors.ReviewCenterView, "function");
@@ -196,6 +198,7 @@ test("view factories expose the existing view and settings constructors", () => 
   assert.equal(typeof constructors.SystemCenterView, "function");
   assert.equal(typeof constructors.TodayView, "function");
   assert.equal(typeof constructors.KnowledgeOSSettingTab, "function");
+  assert.equal(typeof constructors.ModuleBuilderModal, "function");
   assert.equal(new constructors.TodayView({}, {}).getViewType(), "knowledgeos-today");
   assert.equal(new constructors.InboxCenterView({}, {}).getViewType(), "knowledgeos-inbox");
   assert.equal(new constructors.ReviewCenterView({}, {}).getViewType(), "knowledgeos-review");

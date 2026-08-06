@@ -1,7 +1,8 @@
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -38,9 +39,19 @@ import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsi
 import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
+import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
+
+async function withTemporaryBlueprint<T>(vaultRoot: string, requestId: string, blueprint: JsonObject, action: (file: string) => Promise<T>): Promise<T> {
+  const root = path.join(vaultRoot, "90-System", "Cache", "Module Builder");
+  await fs.mkdir(root, { recursive: true });
+  const file = path.join(root, `${requestId.replace(/[^A-Za-z0-9_-]/g, "-")}.blueprint.yaml`);
+  writeYaml(vaultRoot, file, blueprint);
+  try { return await action(file); }
+  finally { await fs.rm(file, { force: true }); }
+}
 
 interface CommandContext {
   vaultRoot: string;
@@ -267,6 +278,18 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
   const obsidianOpenPaths = Array.isArray(params.obsidian_open_paths) ? params.obsidian_open_paths : null;
   if (obsidianOpenPaths !== null) await syncObsidianOpenFiles(vaultRoot, obsidianOpenPaths);
+  if (method === "previewModuleBlueprint") {
+    const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
+    if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    const result = await withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
+    return { report: result.report, scaffold_template: result.scaffoldTemplate } as unknown as JsonValue;
+  }
+  if (method === "createModuleFromBlueprint") {
+    if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
+    const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
+    if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => scaffoldModuleFromBlueprint(ENGINE_ROOT, file)) as Promise<JsonValue>;
+  }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";
     if (!["full", "overview", "tasks", "quality", "modules", "history"].includes(section)) {

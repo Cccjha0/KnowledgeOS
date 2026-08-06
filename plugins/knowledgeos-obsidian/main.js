@@ -10,6 +10,7 @@ const { createInboxCenterViews } = require("./views/inbox-center");
 const { createSystemCenterViews } = require("./views/system-center");
 const { createTodayViews } = require("./views/today");
 const { createSettingsViews } = require("./views/settings-tab");
+const { createModuleBuilderViews } = require("./views/module-builder-modal");
 
 const moduleUiMetadata = new ModuleUiMetadataStore();
 const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
@@ -542,6 +543,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       ...createSystemCenterViews(viewDependencies),
       ...createTodayViews(viewDependencies),
       ...createSettingsViews(viewDependencies),
+      ...createModuleBuilderViews(viewDependencies),
     };
     const savedSettings = await this.loadData() || {};
     this.settings = Object.assign({}, settingsDefaults.DEFAULT_SETTINGS, savedSettings);
@@ -571,6 +573,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.addCommand({ id: "open-reviews", name: "Open Review Center", callback: () => this.activateReviews() });
     this.addCommand({ id: "open-inbox", name: "Open Inbox Center", callback: () => this.activateInbox() });
     this.addCommand({ id: "open-system", name: "Open System Center", callback: () => this.activateSystem() });
+    this.addCommand({ id: "module-builder", name: "Create KnowledgeOS module", callback: () => this.openModuleBuilder() });
     this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
       menu.addItem((item) => item.setTitle("Quick Capture 到此上下文").setIcon("plus-circle")
         .onClick(() => this.openCapture(file.path)));
@@ -612,6 +615,8 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);
   }
+
+  openModuleBuilder() { new this.viewConstructors.ModuleBuilderModal(this.app, this).open(); }
 
   getOpenMarkdownPaths() {
     return [...new Set(this.app.workspace.getLeavesOfType("markdown")

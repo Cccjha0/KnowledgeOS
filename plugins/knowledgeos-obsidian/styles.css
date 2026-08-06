@@ -662,3 +662,25 @@
   .knowledgeos-card, .knowledgeos-link, .knowledgeos-card-arrow { scroll-behavior: auto; transition: none; }
   .knowledgeos-skeleton { animation: none; }
 }
+
+.knowledgeos-module-builder-modal { container-name: knowledgeos-builder; container-type: inline-size; max-width: 46rem; }
+.knowledgeos-module-builder-modal > h2 { margin-bottom: var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-intro { color: var(--text-muted); line-height: 1.5; margin: 0 0 var(--size-4-4); max-width: 62ch; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-form { border-top: 1px solid var(--background-modifier-border); }
+.knowledgeos-module-builder-modal .setting-item { align-items: flex-start; }
+.knowledgeos-module-builder-modal textarea { min-height: 5rem; resize: vertical; width: min(26rem, 100%); }
+.knowledgeos-module-builder-modal input[type="text"] { width: min(26rem, 100%); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-state { color: var(--text-muted); font-size: var(--font-ui-small); min-height: var(--size-4-4); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview { border-left: 3px solid var(--interactive-accent); margin: var(--size-4-3) 0; padding: var(--size-4-2) var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview h3 { font-size: var(--font-ui-medium); margin: 0 0 var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview p { color: var(--text-muted); font-size: var(--font-ui-small); margin: var(--size-4-1) 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-actions { border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-4); padding-top: var(--size-4-3); }
+.knowledgeos-module-builder-modal :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+@container knowledgeos-builder (max-width: 30rem) {
+  .knowledgeos-module-builder-modal .setting-item { flex-direction: column; gap: var(--size-4-2); }
+  .knowledgeos-module-builder-modal .setting-item-control { justify-content: flex-start; width: 100%; }
+  .knowledgeos-module-builder-modal input[type="text"], .knowledgeos-module-builder-modal textarea, .knowledgeos-module-builder-modal select { width: 100%; }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-actions { align-items: stretch; flex-direction: column; }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-actions button { width: 100%; }
+}

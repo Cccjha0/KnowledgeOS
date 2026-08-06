@@ -58,6 +58,19 @@ test("Module Blueprint rejects inputs without an installed Adapter", async () =>
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 
+test("Command API previews a Module Blueprint without creating source files", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-preview-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-PREVIEW", method: "previewModuleBlueprint", params: { blueprint } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).scaffold_template, "minimal-config");
+    assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Blueprint scaffolding deterministically creates a runtime-valid module", async () => {
   const engine = await temporaryEngine();
   try {

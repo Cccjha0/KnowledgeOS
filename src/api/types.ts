@@ -47,7 +47,9 @@ export type CommandApiMethod =
   | "classifyInboxAttachment"
   | "reviewPartialInboxExtraction"
   | "migrateLegacyAccessPolicies"
-  | "backfillQualityMetadata";
+  | "backfillQualityMetadata"
+  | "previewModuleBlueprint"
+  | "createModuleFromBlueprint";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;
