@@ -5,15 +5,21 @@ prompts:
     versions:
       1.0.0: classify/v1.0.0.md
     status: active
-  normalize-record:
+  normalize-lecture:
     active_version: 1.0.0
-    path: normalize/v1.0.0.md
+    path: generated/normalize-lecture/v1.0.0.md
     versions:
-      1.0.0: normalize/v1.0.0.md
+      1.0.0: generated/normalize-lecture/v1.0.0.md
     status: active
-  weekly-summary:
+  normalize-assignment:
     active_version: 1.0.0
-    path: summarize/v1.0.0.md
+    path: generated/normalize-assignment/v1.0.0.md
     versions:
-      1.0.0: summarize/v1.0.0.md
+      1.0.0: generated/normalize-assignment/v1.0.0.md
+    status: active
+  generate-weekly-summary:
+    active_version: 1.0.0
+    path: generated/generate-weekly-summary/v1.0.0.md
+    versions:
+      1.0.0: generated/generate-weekly-summary/v1.0.0.md
     status: active

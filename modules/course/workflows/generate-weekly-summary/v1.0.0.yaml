@@ -12,16 +12,28 @@ steps:
 - id: summarize
   uses: codex.prompt
   with:
-    prompt_id: weekly-summary
-    output_schema: https://pkb.local/schemas/course/record.schema.json
+    prompt_id: generate-weekly-summary
+    output_schema: https://pkb.local/schemas/course/weekly-summary.schema.json
 - id: plan
   uses: core.build-operation-plan
   with:
     output: summarize
-    output_schema: record
+    output_schema: weekly-summary
     target: '{instance.content_root}/Summaries/{schedule.iso_week}.md'
-    template: templates/record.md
+    template: templates/weekly-summary.md
     idempotency_key: course:{instance.instance_id}:generate-weekly-summary:{schedule.iso_week}
     summary: Create generate-weekly-summary
 outputs:
 - operation_plan
+blueprint_contract:
+  trigger: schedule
+  input_entities: [lecture, assignment]
+  input_roles: []
+  output_entity: weekly-summary
+  read: { representation: summary }
+  prompt_id: generate-weekly-summary
+  operation:
+    type: create-record
+    target: '{instance.content_root}/Summaries/{schedule.iso_week}.md'
+    template: templates/weekly-summary.md
+  publishes: []

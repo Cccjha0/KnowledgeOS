@@ -1,6 +1,9 @@
 green:
 - create-new-record
 - add-source-ref
+critical_fields:
+- assignment.deadline
+- assignment.status
 yellow:
 - replace-user-field
 - ambiguous-match

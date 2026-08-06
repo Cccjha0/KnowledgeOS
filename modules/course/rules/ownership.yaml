@@ -1,0 +1,9 @@
+user_original_content_mutable: false
+generated_entities:
+- course
+- lecture
+- assignment
+- weekly-summary
+forbidden_operations:
+- update-user-original
+- overwrite-source
