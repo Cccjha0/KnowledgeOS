@@ -85,6 +85,24 @@ test("Context budget overflow waits for a user decision instead of silently runn
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("a missing explicit safe summary waits for user action instead of exposing document prose", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-safe-summary-wait-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({ job_id: "test.safe-summary", module: "test", task_type: "workflow", workflow: "test:safe-summary", resources: resources(), trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: "safe-summary:one" }).task;
+    repository.close();
+    const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, handlers: {
+      "test:safe-summary": async () => { throw new PkbError("SAFE_SUMMARY_REQUIRED", "A safe_summary is required."); },
+    } });
+    assert.equal(dispatched.tasks[0]?.status, "waiting-for-user");
+    const after = await RuntimeRepository.open(vault);
+    assert.equal(after.getTask(task.task_id)?.last_error?.code, "SAFE_SUMMARY_REQUIRED");
+    assert.equal(after.getTask(task.task_id)?.completion_reason, "safe-summary-required");
+    after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Today rebuild records an unchanged run without rewriting the file", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-today-unchanged-"));
   try {

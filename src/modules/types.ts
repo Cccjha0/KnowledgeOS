@@ -39,6 +39,15 @@ export interface ModuleTestReport extends JsonObject {
   module_version: string;
   generated_at: string;
   static_validation: ModuleValidationReport;
+  environment: {
+    git_commit: string | null;
+    engine_version: string;
+    module_checksum: string;
+    fixture_checksum: string;
+    os: string;
+    node: string;
+    python: string | null;
+  };
   checks: ModuleTestCheck[];
   overall: "PASS" | "FAIL";
   beta_eligible: boolean;

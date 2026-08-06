@@ -28,7 +28,8 @@ steps:
     uses: codex.prompt
     with:
       prompt: prompts/match.md
-      max_read_level: 0
+      read:
+        representation: metadata
 
 outputs:
   schema: ../../../core/schemas/match-result.schema.json

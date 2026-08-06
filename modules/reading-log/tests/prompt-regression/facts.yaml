@@ -1,1 +1,5 @@
 invariants: [preserve-facts, no-invented-values, uncertainty-preserved, schema-valid]
+expected_facts:
+  - { path: id, value: READ-TEST-000001 }
+  - { path: title, value: Fixture reading }
+forbidden_values: ["invented author"]

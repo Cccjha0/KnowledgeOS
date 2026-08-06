@@ -5,6 +5,7 @@ import type { DiscoveredDocument } from "../core/discovery.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ResourceRequirement, TaskResources } from "../runtime/domain.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
+import { assertRepresentationLevel, representationFromLegacyReadLevel, type RepresentationLevel } from "../core/readLevels.js";
 
 const DEFAULT_RESOURCES: TaskResources = {
   filesystem: "required",
@@ -54,6 +55,24 @@ function inferredStepResources(workflow: JsonObject): PartialResources {
   return inferred;
 }
 
+function workflowReadRepresentation(workflow: JsonObject): RepresentationLevel {
+  const rank: Record<RepresentationLevel, number> = { metadata: 0, summary: 1, full: 2, "sensitive-original": 3 };
+  let maximum: RepresentationLevel = "metadata";
+  for (const rawStep of Array.isArray(workflow.steps) ? workflow.steps : []) {
+    const step = object(rawStep as JsonValue);
+    const settings = object(step?.with);
+    if (!settings) continue;
+    const read = object(settings.read);
+    const requested = read?.representation !== undefined
+      ? assertRepresentationLevel(read.representation, `workflow step ${String(step?.id ?? "read")}.with.read.representation`)
+      : settings.read_level !== undefined
+        ? representationFromLegacyReadLevel(Number(settings.read_level), `workflow step ${String(step?.id ?? "read")}.with.read_level`)
+        : null;
+    if (requested && rank[requested] > rank[maximum]) maximum = requested;
+  }
+  return maximum;
+}
+
 function workflowPath(module: DiscoveredDocument, workflowId: string | null, entrypoint: string | null): string {
   const moduleRoot = path.dirname(module.path);
   if (workflowId) {
@@ -88,6 +107,8 @@ export interface WorkflowResourceContract {
   workflow_id: string;
   workflow_version: string;
   resources: TaskResources;
+  /** Maximum content representation requested by any declared workflow step. */
+  read_representation: RepresentationLevel;
 }
 
 export function resolveWorkflowResourceContract(module: DiscoveredDocument, workflowId: string | null = null, entrypoint: string | null = null): WorkflowResourceContract {
@@ -110,5 +131,6 @@ export function resolveWorkflowResourceContract(module: DiscoveredDocument, work
       codex: declared.codex ?? inferred.codex ?? defaults.codex ?? DEFAULT_RESOURCES.codex,
       user: declared.user ?? inferred.user ?? defaults.user ?? DEFAULT_RESOURCES.user,
     },
+    read_representation: workflowReadRepresentation(workflow),
   };
 }

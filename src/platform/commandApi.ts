@@ -35,6 +35,8 @@ import { getFieldProvenance, getQualityDashboard, getQualityDashboardFromRuntime
 import { QualityRepository } from "../quality/repository.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsidianCoordination.js";
+import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
+import type { RepresentationLevel } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -328,6 +330,23 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
   if (method === "getFieldProvenance") return getFieldProvenance(vaultRoot, stringParam(params, "target"), stringParam(params, "field"));
+  if (method === "updateAssetAccessPolicy") {
+    const capturePath = stringParam(params, "capture_path");
+    if (typeof params.sensitivity_class !== "number" || typeof params.max_representation !== "string") throw new PkbError("INVALID_REQUEST", "sensitivity_class and max_representation are required.");
+    const before = await readCaptureEnvelope(vaultRoot, capturePath);
+    const updated = await updateAssetAccessPolicy(vaultRoot, capturePath, { sensitivity_class: params.sensitivity_class, max_representation: params.max_representation as RepresentationLevel });
+    const quality = await QualityRepository.open(vaultRoot);
+    try {
+      quality.recordChange({
+        entity_ref: `[[${updated.companion_note_path}]]`, field: "access_policy",
+        old_value: { sensitivity_class: before.sensitivity_class, max_representation: before.access_policy.max_representation },
+        new_value: { sensitivity_class: updated.sensitivity_class, max_representation: updated.access_policy.max_representation },
+        reason: "User updated attachment access policy through the Core API.", evidence_refs: [], generation: null,
+        review: { status: "user-direct", reviewed_by: "user", reviewed_at: new Date().toISOString() }, changed_at: new Date().toISOString(),
+      });
+    } finally { quality.close(); }
+    return { status: "updated", source_of_truth: "sidecar", sidecar_path: updated.sidecar_path, companion_note_path: updated.companion_note_path, sensitivity_class: updated.sensitivity_class, access_policy: updated.access_policy } as unknown as JsonValue;
+  }
   if (method === "backfillQualityMetadata") {
     if (params.confirm === true) return applyQualityBackfill(vaultRoot);
     return previewQualityBackfill(vaultRoot);

@@ -214,7 +214,7 @@ export async function getRunView(vaultRoot: string, runId: string, developerMode
     review_id: located.log.review_id,
     git_snapshot: located.log.git_snapshot,
     input_summary: plan?.summary ?? firstSummaryLine(located.content),
-    execution_context: { read_level: runtimeRun?.metrics?.read_level ?? null, input_files: runtimeRun?.input_files ?? [], ai_usage: codexInvocations.length ? "recorded" : "none", codex_invocations: codexInvocations.map((entry) => ({ prompt_id: entry.prompt_id ?? null, prompt_version: entry.prompt_version ?? null, adapter: entry.adapter ?? null, model: entry.model ?? "unknown", status: entry.status ?? null })) },
+    execution_context: { max_sensitivity_class: runtimeRun?.metrics?.max_sensitivity_class ?? null, input_files: runtimeRun?.input_files ?? [], ai_usage: codexInvocations.length ? "recorded" : "none", codex_invocations: codexInvocations.map((entry) => ({ prompt_id: entry.prompt_id ?? null, prompt_version: entry.prompt_version ?? null, adapter: entry.adapter ?? null, model: entry.model ?? "unknown", status: entry.status ?? null })) },
     affected_files: transaction?.snapshots.map((snapshot) => ({
       path: snapshot.vault_path,
       existed_before: snapshot.existed,

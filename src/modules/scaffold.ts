@@ -33,7 +33,7 @@ function manifest(id: string, name: string, template: ModuleTemplate): JsonObjec
     dashboard: { provider: "dashboard/provider.yaml" }, jobs: { registry: "jobs/jobs.yaml" },
     ...(publishedEvents.length ? { events: { publishes: publishedEvents } } : {}),
     dependencies: { components: workflow ? { "periodic-rollup": "^1.0.0" } : {} }, scheduled_jobs: [],
-    permissions: { max_read_level: integration ? 1 : 0, network: integration, codex: "optional", delete: false, cross_module_write: false, max_default_read_level: integration ? 1 : 0, allow_external_network: integration, allow_delete: false, allow_bulk_move: false },
+    permissions: { max_sensitivity_class: integration ? 1 : 2, network: integration, codex: "optional", delete: false, cross_module_write: false, allow_external_network: integration, allow_delete: false, allow_bulk_move: false },
     instance_form: { content_root_pattern: `20-Workspace/${name}/{instance_id}`, inbox_path_pattern: "{content_root}/Inbox", fields: [{ key: "timezone", label: "Timezone", type: "timezone", required: true, default: "Asia/Shanghai" }] },
   };
 }
@@ -104,6 +104,7 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
       normal_capture: { fixture: "fixtures/sample-instance/capture-test.yaml" },
       ambiguous_capture: { fixture: "tests/behavior/ambiguous-input.md", expected: "review" },
       permission_denied: { target: `20-Workspace/${displayName}/forbidden.md` },
+      resource_unavailable: { resource: "codex", expected: "waiting-for-ai" },
       repeat_execution: { enabled: true },
       paused_instance: { enabled: true },
       archived_instance: { enabled: true },

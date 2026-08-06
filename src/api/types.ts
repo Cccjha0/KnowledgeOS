@@ -43,6 +43,7 @@ export type CommandApiMethod =
   | "manageQualityIssue"
   | "runQualityAudit"
   | "getFieldProvenance"
+  | "updateAssetAccessPolicy"
   | "backfillQualityMetadata";
 
 export interface CommandApiRequest extends JsonObject {

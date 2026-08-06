@@ -7,6 +7,9 @@ class CoreCommandClient {
     this.missingBuiltCliFailure = options.missingBuiltCliFailure || (() => null);
     this.execFile = options.execFile || execFile;
     this.spawn = options.spawn || spawn;
+    this.requestTimeoutMs = Number.isFinite(options.requestTimeoutMs)
+      ? Math.max(1, options.requestTimeoutMs)
+      : 20_000;
     this.server = null;
     this.serverKey = null;
     this.stdoutBuffer = "";
@@ -21,16 +24,17 @@ class CoreCommandClient {
     requestId = requestId || `PLUGIN-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     if (this.ensureServer()) {
       return new Promise((resolve) => {
-        this.pending.set(requestId, resolve);
+        const timeout = setTimeout(() => {
+          this.resolvePending(requestId, this.failure("Core API request timed out."));
+        }, this.requestTimeoutMs);
+        this.pending.set(requestId, { resolve, timeout });
         try {
           this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params })}\n`, (error) => {
             if (!error) return;
-            this.pending.delete(requestId);
-            resolve(this.failure(error.message));
+            this.resolvePending(requestId, this.failure(error.message));
           });
         } catch (error) {
-          this.pending.delete(requestId);
-          resolve(this.failure(error instanceof Error ? error.message : String(error)));
+          this.resolvePending(requestId, this.failure(error instanceof Error ? error.message : String(error)));
         }
       });
     }
@@ -64,7 +68,7 @@ class CoreCommandClient {
       this.stdoutBuffer = "";
       this.stderrBuffer = "";
       const server = this.server;
-      server.stdout.on("data", (chunk) => this.handleServerOutput(String(chunk)));
+      server.stdout.on("data", (chunk) => this.handleServerOutput(server, String(chunk)));
       server.stderr.on("data", (chunk) => { this.stderrBuffer = `${this.stderrBuffer}${String(chunk)}`.slice(-4096); });
       server.on("error", (error) => this.handleServerExit(server, error));
       server.on("exit", (code) => this.handleServerExit(server, new Error(this.stderrBuffer || `Core API server exited with status ${code}.`)));
@@ -76,7 +80,8 @@ class CoreCommandClient {
     }
   }
 
-  handleServerOutput(chunk) {
+  handleServerOutput(server, chunk) {
+    if (this.server !== server) return;
     this.stdoutBuffer += chunk;
     while (this.stdoutBuffer.includes("\n")) {
       const newline = this.stdoutBuffer.indexOf("\n");
@@ -85,20 +90,37 @@ class CoreCommandClient {
       if (!line) continue;
       try {
         const response = JSON.parse(line);
-        const resolve = this.pending.get(response.request_id);
-        if (!resolve) continue;
-        this.pending.delete(response.request_id);
-        resolve(this.resolveResponse(response));
-      } catch { /* Wait for the next valid response; process exit reports malformed output. */ }
+        this.resolvePending(response.request_id, this.resolveResponse(response));
+      } catch {
+        this.handleServerExit(server, new Error("Core API server returned malformed JSON."));
+        if (!server.killed) server.stdin.end();
+        return;
+      }
     }
+  }
+
+  resolvePending(requestId, response) {
+    const pending = this.pending.get(requestId);
+    if (!pending) return false;
+    this.pending.delete(requestId);
+    clearTimeout(pending.timeout);
+    pending.resolve(response);
+    return true;
+  }
+
+  resolveAllPending(response) {
+    for (const { resolve, timeout } of this.pending.values()) {
+      clearTimeout(timeout);
+      resolve(response);
+    }
+    this.pending.clear();
   }
 
   handleServerExit(server, error) {
     if (this.server !== server) return;
     this.server = null;
     this.serverKey = null;
-    for (const resolve of this.pending.values()) resolve(this.failure(error.message));
-    this.pending.clear();
+    this.resolveAllPending(this.failure(error.message));
   }
 
   failure(message) {
@@ -111,8 +133,7 @@ class CoreCommandClient {
     const server = this.server;
     this.server = null;
     this.serverKey = null;
-    for (const resolve of this.pending.values()) resolve(this.failure("Core API server is restarting."));
-    this.pending.clear();
+    this.resolveAllPending(this.failure("Core API server is restarting."));
     if (server && !server.killed) server.stdin.end();
   }
 }

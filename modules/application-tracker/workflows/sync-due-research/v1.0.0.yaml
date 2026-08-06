@@ -14,5 +14,7 @@ steps:
     with:
       event_type: research.required
       payload_from: prepare-due-requests
+      payload_fields:
+        entity_id: created.0
       only_if_created_from: prepare-due-requests
 outputs: [operation_plan, events]

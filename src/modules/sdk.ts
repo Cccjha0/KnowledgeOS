@@ -3,7 +3,7 @@ import path from "node:path";
 import type { CreateTaskInput, TaskResources } from "../runtime/domain.js";
 import type { DashboardItem, JsonObject, JsonValue, Operation, OperationPlan, ReviewItem } from "../core/types.js";
 import { PkbError } from "../core/errors.js";
-import { assertReadLevel, type ReadLevel } from "../core/readLevels.js";
+import { assertSensitivityClass, type SensitivityClass } from "../core/readLevels.js";
 
 export interface ModuleContext {
   vaultRoot: string;
@@ -12,11 +12,11 @@ export interface ModuleContext {
   instanceId: string | null;
   allowedReadRoots: string[];
   ownedWriteRoots: string[];
-  /** 0 = metadata, 1 = summary, 2 = full, 3 = sensitive original. */
-  maxReadLevel: ReadLevel;
+  /** Highest document sensitivity this module may receive. */
+  maxSensitivityClass: SensitivityClass;
 }
 
-export type { ReadLevel } from "../core/readLevels.js";
+export type { SensitivityClass } from "../core/readLevels.js";
 
 export interface ModuleAdapter {
   match(input: JsonObject): Promise<JsonObject>;
@@ -43,24 +43,24 @@ function within(target: string, roots: string[]): boolean { return roots.some((r
 export class ModuleSdk {
   constructor(readonly context: ModuleContext) {}
 
-  canRead(relativePath: string, readLevel: number = 0): boolean {
+  canRead(relativePath: string, sensitivityClass: number = 0): boolean {
     try {
       const target = normalize(relativePath);
-      return assertReadLevel(readLevel) <= this.context.maxReadLevel && within(target, this.context.allowedReadRoots);
+      return assertSensitivityClass(sensitivityClass) <= this.context.maxSensitivityClass && within(target, this.context.allowedReadRoots);
     } catch { return false; }
   }
 
-  assertReadable(relativePath: string, readLevel: number = 0): string {
+  assertReadable(relativePath: string, sensitivityClass: number = 0): string {
     const target = normalize(relativePath);
-    const requested = assertReadLevel(readLevel);
+    const requested = assertSensitivityClass(sensitivityClass);
     if (!this.canRead(target, requested)) throw new PkbError("MODULE_READ_DENIED", `Module ${this.context.moduleId} cannot read ${target} at level ${requested}.`, {
-      source_path: target, requested_read_level: requested, module_max_read_level: this.context.maxReadLevel,
+      source_path: target, source_sensitivity_class: requested, module_max_sensitivity_class: this.context.maxSensitivityClass,
     });
     return target;
   }
 
-  async readText(relativePath: string, readLevel: number): Promise<string> {
-    const target = this.assertReadable(relativePath, readLevel);
+  async readText(relativePath: string, sensitivityClass: number): Promise<string> {
+    const target = this.assertReadable(relativePath, sensitivityClass);
     return fs.readFile(path.join(this.context.vaultRoot, ...target.split("/")), "utf8");
   }
 

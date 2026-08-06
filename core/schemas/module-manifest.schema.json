@@ -151,6 +151,18 @@
         ]
       }
     },
+    "pdf_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accepted_statuses": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["pending", "completed", "partial", "empty", "scanned", "encrypted", "corrupted", "unsupported", "failed"] }
+        },
+        "partial_policy": { "type": "string", "enum": ["allow", "review"] }
+      }
+    },
     "inbox": {
       "type": "object",
       "additionalProperties": false,
@@ -318,13 +330,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "max_read_level",
         "network",
         "codex",
         "delete",
         "cross_module_write"
       ],
       "properties": {
+        "max_sensitivity_class": {
+          "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+        },
         "max_read_level": {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
         },
@@ -344,7 +358,11 @@
         "allow_bulk_move": {
           "type": "boolean"
         }
-      }
+      },
+      "anyOf": [
+        { "required": ["max_sensitivity_class"] },
+        { "required": ["max_read_level"] }
+      ]
     },
     "instance_form": {
       "type": "object",

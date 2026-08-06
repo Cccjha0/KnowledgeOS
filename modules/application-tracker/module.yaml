@@ -48,6 +48,13 @@ accepted_inputs:
   - yaml
   - pdf
 
+# Application facts can be critical. A truncated PDF must be explicitly
+# reviewed instead of silently becoming AI input.
+pdf_policy:
+  accepted_statuses:
+    - completed
+  partial_policy: review
+
 inbox:
   module_level:
     enabled: true
@@ -113,12 +120,11 @@ dependencies:
 scheduled_jobs: []
 
 permissions:
-  max_read_level: 2
+  max_sensitivity_class: 2
   network: false
   codex: optional
   delete: false
   cross_module_write: false
-  max_default_read_level: 0
   allow_external_network: false
   allow_delete: false
   allow_bulk_move: false

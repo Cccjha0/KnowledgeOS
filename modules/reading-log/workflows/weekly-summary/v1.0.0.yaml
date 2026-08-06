@@ -13,7 +13,8 @@ steps:
     uses: core.query-documents
     with:
       root: "{instance.content_root}/Notes"
-      read_level: 2
+      read:
+        representation: full
       filters:
         instance_id:
           equals: "{instance.instance_id}"
