@@ -192,6 +192,46 @@
             }
           }
         },
+        "default_asset_role": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "asset_roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["inbox_subpath", "asset_access_policy"],
+            "properties": {
+              "inbox_subpath": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9 _.-]*$"
+              },
+              "asset_access_policy": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["sensitivity_class", "max_representation"],
+                "properties": {
+                  "sensitivity_class": {
+                    "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+                  },
+                  "max_representation": {
+                    "type": "string",
+                    "enum": ["metadata", "summary", "full", "sensitive-original"]
+                  }
+                }
+              },
+              "entrypoint": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+              },
+              "required_user_action": {
+                "type": "string",
+                "enum": ["resolve-review"]
+              }
+            }
+          }
+        },
         "allow_global_routing": {
           "type": "boolean"
         }

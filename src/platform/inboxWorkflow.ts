@@ -4,7 +4,7 @@ import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ClassifyInboxAttachmentParams, ProcessInboxBatchParams, ProcessInboxItemParams, ReviewPartialInboxExtractionParams } from "../api/types.js";
-import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { ensureDir, exists, fromVaultPath, sha256File, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
@@ -33,7 +33,19 @@ interface AssetPolicySuggestion {
   sensitivityClass: number;
   maxRepresentation: RepresentationLevel;
   classificationState: "inherited";
-  source: "instance-policy" | "module-policy";
+  source: "instance-policy" | "module-policy" | "asset-role";
+}
+
+interface InboxAssetRole {
+  id: string;
+  inboxSubpath: string;
+  policy: AssetPolicySuggestion;
+  entrypoint: string | null;
+  requiredUserAction: "resolve-review";
+}
+
+function object(value: unknown): JsonObject | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
 }
 
 function assetAccessPolicy(value: unknown, source: AssetPolicySuggestion["source"]): AssetPolicySuggestion | null {
@@ -52,6 +64,40 @@ async function inboxAssetPolicy(vaultRoot: string, module: JsonObject, instanceI
   if (instancePolicy) return instancePolicy;
   const inbox = module.inbox;
   return assetAccessPolicy(inbox && typeof inbox === "object" && !Array.isArray(inbox) ? (inbox as JsonObject).asset_access_policy : null, "module-policy");
+}
+
+function inboxRole(value: unknown, id: string): InboxAssetRole | null {
+  const role = object(value);
+  if (!role || typeof role.inbox_subpath !== "string" || !role.inbox_subpath.trim()) return null;
+  const policy = assetAccessPolicy(role.asset_access_policy, "asset-role");
+  if (!policy) return null;
+  return {
+    id,
+    inboxSubpath: role.inbox_subpath.trim(),
+    policy,
+    entrypoint: typeof role.entrypoint === "string" && role.entrypoint.trim() ? role.entrypoint.trim() : null,
+    requiredUserAction: "resolve-review",
+  };
+}
+
+async function inboxAssetRole(vaultRoot: string, module: JsonObject, instanceId: string, item: InboxItemView): Promise<InboxAssetRole | null> {
+  const inbox = object(module.inbox);
+  const roles = object(inbox?.asset_roles);
+  if (!roles) return null;
+  const instance = (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === instanceId);
+  const inboxPath = typeof instance?.data.inbox_path === "string" ? instance.data.inbox_path.replace(/\\/g, "/").replace(/\/+$/, "") : null;
+  const relative = inboxPath && item.path.startsWith(`${inboxPath}/`) ? item.path.slice(inboxPath.length + 1) : "";
+  const firstSegment = relative.split("/")[0]?.toLocaleLowerCase();
+  for (const [id, raw] of Object.entries(roles)) {
+    const role = inboxRole(raw, id);
+    if (role && firstSegment === role.inboxSubpath.toLocaleLowerCase()) return role;
+  }
+  const defaultRoleId = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
+  return defaultRoleId ? inboxRole(roles[defaultRoleId], defaultRoleId) : null;
+}
+
+async function enabledInboxModule(vaultRoot: string, moduleId: string): Promise<DiscoveredDocument | null> {
+  return (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled") ?? null;
 }
 
 function moduleMaxSensitivity(module: JsonObject): number {
@@ -127,23 +173,48 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   };
 }
 
-async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"]; module: JsonObject } | null> {
-  const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
+async function inboxAiWorkflow(vaultRoot: string, moduleId: string, entrypoint = "capture"): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"]; module: JsonObject } | null> {
+  const module = await enabledInboxModule(vaultRoot, moduleId);
   if (!module) return null;
   const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
-  if (typeof entryWorkflows?.capture !== "string") return null;
+  if (typeof entryWorkflows?.[entrypoint] !== "string") return null;
   return {
-    workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture",
-    resources: resolveWorkflowResourceRequirements(module, null, "capture"), module: module.data,
+    workflow: `module:${moduleId}:${entrypoint}`, workflowId: entrypoint, workflowVersion: "active", entrypoint,
+    resources: resolveWorkflowResourceRequirements(module, null, entrypoint), module: module.data,
   };
 }
 
+async function holdRoleBoundInboxItem(vaultRoot: string, item: InboxItemView, module: JsonObject, instanceId: string, role: InboxAssetRole): Promise<JsonObject> {
+  const format = formatForExtension(item.extension);
+  if (!format || !isAcceptedInput(module, format)) return { status: "unsupported", item_id: item.item_id };
+  const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path, role.policy);
+  const extractionStatus = ingestion ? pdfExtractionStatus(ingestion) : null;
+  const result: JsonObject = {
+    status: "waiting-for-user",
+    required_user_action: role.requiredUserAction,
+    asset_role: role.id,
+    asset_role_message: `This ${role.id} file is protected by a metadata-only policy and has no enabled automatic workflow.`,
+    ...(ingestion ? { attachment_classification: attachmentClassificationDetails(item, item.task_id ?? "", ingestion, role.policy, module, extractionStatus) } : {}),
+  };
+  await writeInboxState(vaultRoot, stateFor(item, "waiting-for-user", {
+    error: `The ${role.id} Inbox role does not permit generic AI processing. Review or route the document explicitly.`,
+    result,
+  }));
+  return result;
+}
+
 async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
-  const workflow = await inboxAiWorkflow(vaultRoot, moduleId);
-  if (!workflow || !instanceId) return null;
+  if (!instanceId) return null;
+  const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+  if (!moduleDocument) return null;
+  const module = moduleDocument.data;
+  const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
+  if (role && !role.entrypoint) return null;
+  const workflow = await inboxAiWorkflow(vaultRoot, moduleId, role?.entrypoint ?? "capture");
+  if (!workflow) return null;
   const format = formatForExtension(item.extension);
   if (!format || !isAcceptedInput(workflow.module, format)) return null;
-  const assetPolicy = await inboxAssetPolicy(vaultRoot, workflow.module, instanceId);
+  const assetPolicy = role?.policy ?? await inboxAssetPolicy(vaultRoot, workflow.module, instanceId);
   const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path, assetPolicy ?? {});
   const declaredPdfPolicy = parsePdfUsePolicy(workflow.module.pdf_policy);
   const effectivePdfPolicy = effectivePdfUsePolicy(declaredPdfPolicy);
@@ -166,6 +237,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
       : ":deterministic";
     const taskPayload: JsonObject = {
       item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
+      ...(role ? { asset_role: role.id } : {}),
       ...(effectiveModel ? { codex_model: effectiveModel } : {}),
       ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
       ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref, extraction_status: extractionStatus, classification_state: ingestion.classification_state } } : {}),
@@ -220,8 +292,17 @@ export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: st
   for (const item of await discoverInboxItems(vaultRoot)) {
     if (item.scope !== "instance" || item.state === "empty" || item.blocked_by_open_editor || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
     const moduleId = item.suggested_module_id; const instanceId = item.suggested_instance_id;
-    if (!moduleId || !instanceId || !(await inboxAiWorkflow(vaultRoot, moduleId))) continue;
+    if (!moduleId || !instanceId) continue;
+    const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+    if (!moduleDocument) continue;
+    const module = moduleDocument.data;
     output.checked += 1;
+    const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
+    if (role && !role.entrypoint) {
+      await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
+      continue;
+    }
+    if (!(await inboxAiWorkflow(vaultRoot, moduleId, role?.entrypoint ?? "capture"))) continue;
     const previousTaskId = item.task_id;
     const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, false, codexModel, codexReasoningEffort);
     if (!task) continue;
@@ -492,6 +573,16 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
     await writeInboxState(vaultRoot, stateFor(item, "processing", { attempts: action === "retry" ? 2 : 1 }));
     if (item.scope === "global" || action === "route" || moduleId !== item.source_module || instanceId !== item.instance_id) {
       return await executeRoute(vaultRoot, item, moduleId, instanceId);
+    }
+    if (instanceId) {
+      const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+      const module = moduleDocument?.data ?? null;
+      const role = module ? await inboxAssetRole(vaultRoot, module, instanceId, item) : null;
+      if (module && role && !role.entrypoint) {
+        const waiting = await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
+        await rebuildTodayDashboard(vaultRoot);
+        return { ...waiting, ui_state: "waiting-for-user", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId };
+      }
     }
     const task = await enqueueInboxAiTask(
       vaultRoot,

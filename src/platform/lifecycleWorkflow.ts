@@ -243,7 +243,14 @@ export async function createInstance(vaultRoot: string, params: CreateInstancePa
   const taskId = await allocateId(vaultRoot, "TASK");
   const planId = await allocateId(vaultRoot, "PLAN");
   const operations: Operation[] = [];
-  const markerTargets = [`${contentRoot}/.gitkeep`, `${inboxPath}/.gitkeep`];
+  const inbox = module.data.inbox && typeof module.data.inbox === "object" && !Array.isArray(module.data.inbox)
+    ? module.data.inbox as JsonObject : null;
+  const roles = inbox?.asset_roles && typeof inbox.asset_roles === "object" && !Array.isArray(inbox.asset_roles)
+    ? inbox.asset_roles as JsonObject : {};
+  const roleFolders = Object.values(roles)
+    .map((role) => role && typeof role === "object" && !Array.isArray(role) ? (role as JsonObject).inbox_subpath : null)
+    .filter((folder): folder is string => typeof folder === "string" && /^[A-Za-z0-9][A-Za-z0-9 _.-]*$/.test(folder));
+  const markerTargets = [`${contentRoot}/.gitkeep`, `${inboxPath}/.gitkeep`, ...roleFolders.map((folder) => `${inboxPath}/${folder}/.gitkeep`)];
   for (const target of [...new Set(markerTargets)]) if (!(await exists(path.join(vaultRoot, ...target.split("/"))))) operations.push({
     operation_id: `OP-${String(operations.length + 1).padStart(3, "0")}`, type: "create-file", target, risk: "green", confidence: 1,
     idempotency_key: `instance-create:${instanceId}:${target}`, payload: { format: "text", text: "" }, requires_review_id: null,

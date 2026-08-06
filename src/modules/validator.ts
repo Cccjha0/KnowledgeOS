@@ -177,6 +177,26 @@ async function validateEventContracts(moduleRoot: string, manifest: JsonObject, 
   checks.push(check("events", "EVENT_CONTRACTS_VALID", "pass", "Event declarations, publish steps, and Event Jobs were checked.", "module.yaml"));
 }
 
+function validateInboxRoleContracts(manifest: JsonObject, checks: ModuleValidationCheck[]): void {
+  const inbox = object(manifest.inbox);
+  const roles = object(inbox?.asset_roles);
+  if (!roles) return;
+  const entrypoints = object(manifest.entry_workflows) ?? {};
+  const defaultRole = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
+  if (defaultRole && !roles[defaultRole]) checks.push(check("contracts", "INBOX_DEFAULT_ROLE_MISSING", "fail", `inbox.default_asset_role ${defaultRole} is not declared in inbox.asset_roles.`, "module.yaml", true));
+  const folders = new Set<string>();
+  for (const [id, raw] of Object.entries(roles)) {
+    const role = object(raw);
+    const folder = typeof role?.inbox_subpath === "string" ? role.inbox_subpath.toLocaleLowerCase() : "";
+    if (folder && folders.has(folder)) checks.push(check("contracts", "INBOX_ROLE_FOLDER_DUPLICATE", "fail", `Inbox role ${id} reuses the subfolder ${role?.inbox_subpath}.`, "module.yaml", true));
+    if (folder) folders.add(folder);
+    const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : null;
+    if (entrypoint && typeof entrypoints[entrypoint] !== "string") checks.push(check("contracts", "INBOX_ROLE_ENTRYPOINT_MISSING", "fail", `Inbox role ${id} references undeclared entrypoint ${entrypoint}.`, "module.yaml", true));
+    if (!entrypoint && role?.required_user_action !== "resolve-review") checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare required_user_action: resolve-review.`, "module.yaml", true));
+  }
+  checks.push(check("contracts", "INBOX_ROLE_CONTRACTS_VALID", "pass", "Inbox asset roles and their entrypoints were checked.", "module.yaml"));
+}
+
 async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, moduleType: string, checks: ModuleValidationCheck[]): Promise<void> {
   if (maturity !== "beta" && maturity !== "stable") return;
   const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
@@ -218,6 +238,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   const id = typeof manifest.id === "string" ? manifest.id : path.basename(moduleRoot);
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
   const maturity = (["experimental", "beta", "stable", "deprecated"].includes(String(manifest.maturity)) ? manifest.maturity : "experimental") as ModuleMaturity;
+  validateInboxRoleContracts(manifest, checks);
   if (maturity === "beta" || maturity === "stable") {
     const legacy = legacyReadFields(object(manifest.permissions) ?? {});
     if (legacy.length) checks.push(check("permissions", "LEGACY_READ_CONTRACT_FORBIDDEN", "fail", `Beta/Stable modules cannot declare deprecated read-level fields: ${legacy.join(", ")}. Use max_sensitivity_class.`, "module.yaml", true));

@@ -10,6 +10,7 @@ import { runQualityAudit } from "../quality/audit.js";
 import { QualityRepository } from "../quality/repository.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
+import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
@@ -168,6 +169,34 @@ test("application-tracker materializes an accepted JSON Inbox asset as a module 
     assert.equal(envelope.sensitivity_class, 2, "The Application Inbox declares its own explicit attachment policy.");
     assert.equal(envelope.classification_state, "inherited");
     assert.equal(envelope.access_policy.max_representation, "full");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("application Inbox roles keep Documents metadata-only and outside the generic research workflow", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-application-roles-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "applications-role-policy";
+    await createInstance(vault, {
+      module_id: "application-tracker", instance_id: instanceId, display_name: "Application role policy",
+      fields: { application_type: "masters", region: "Australia", intake: "2027-S1", default_currency: "AUD", "monitoring.enabled": true, "monitoring.default_check_interval_days": 30 },
+    });
+    const inbox = path.join(vault, "20-Workspace", "Applications", instanceId, "Inbox");
+    for (const folder of ["Research", "Documents", "Private"]) assert.equal((await fs.stat(path.join(inbox, folder))).isDirectory(), true);
+    await fs.writeFile(path.join(inbox, "Research", "official-update.json"), JSON.stringify({ institution: "Monash University" }), "utf8");
+    await fs.writeFile(path.join(inbox, "Documents", "transcript.json"), JSON.stringify({ student: "Private user" }), "utf8");
+    const materialized = await materializeInboxAiTasks(vault);
+    assert.equal(materialized.created.length, 1, "only the Research role may create the generic capture task");
+    const repository = await RuntimeRepository.open(vault);
+    const researchTask = repository.getTask(materialized.created[0]!);
+    assert.equal(researchTask?.payload.asset_role, "research-report");
+    repository.close();
+    const items = await discoverInboxItems(vault);
+    const document = items.find((item) => item.filename === "transcript.json");
+    assert.equal(document?.state, "waiting-for-user");
+    assert.equal(document?.required_user_action, "resolve-review");
+    assert.equal((document?.attachment_classification?.current_policy as { max_representation?: string } | undefined)?.max_representation, "metadata");
+    assert.match(document?.error ?? "", /does not permit generic AI processing/);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
