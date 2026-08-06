@@ -32,3 +32,5 @@ node dist/cli.js module create --from examples/module-blueprints/course.blueprin
 ```
 
 The generated module stores a normalized copy of the Blueprint and a validation report. To change the design, edit the Blueprint and regenerate in a clean module target; do not treat generated files as the design source.
+
+For the current automated and manual acceptance status, see [milestone-j-validation.md](milestone-j-validation.md).
