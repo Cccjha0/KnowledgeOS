@@ -104,6 +104,7 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
       normal_capture: { fixture: "fixtures/sample-instance/capture-test.yaml" },
       ambiguous_capture: { fixture: "tests/behavior/ambiguous-input.md", expected: "review" },
       permission_denied: { target: `20-Workspace/${displayName}/forbidden.md` },
+      resource_unavailable: { resource: "codex", expected: "waiting-for-ai" },
       repeat_execution: { enabled: true },
       paused_instance: { enabled: true },
       archived_instance: { enabled: true },
