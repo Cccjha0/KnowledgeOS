@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
+import { updateAssetAccessPolicy } from "../core/ingestion.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
@@ -12,6 +13,28 @@ import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+
+function makePdf(text: string): Buffer {
+  const stream = `BT\n/F1 18 Tf\n72 720 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n%\xFF\xFF\xFF\xFF\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(Buffer.byteLength(pdf, "binary"));
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(pdf, "binary");
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "binary");
+}
 
 test("a declared experience-log workflow executes through the generic Runner without a platform Handler", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-workflow-runner-"));
@@ -147,6 +170,58 @@ test("a configuration module uses the same generic Runner for an Inbox capture",
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("a module policy that allows partial PDFs reaches the Runner, Codex Context, and completed Run", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-partial-pdf-allow-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "reading-partial-pdf";
+    await createInstance(vault, { module_id: "reading-log", instance_id: instanceId, display_name: "Partial PDF reading", fields: { timezone: "Asia/Shanghai" } });
+    const sourceRelative = `20-Workspace/Reading Log/${instanceId}/Inbox/partial-paper.pdf`;
+    await fs.writeFile(path.join(vault, ...sourceRelative.split("/")), makePdf("A".repeat(55_000)));
+
+    const first = await materializeInboxAiTasks(vault);
+    const repository = await RuntimeRepository.open(vault);
+    const waiting = repository.getTask(first.created[0]!);
+    assert.equal(waiting?.status, "waiting-for-user", "The user must classify a new attachment before any PDF policy can permit content.");
+    const capturePath = String((waiting?.payload.ingestion as JsonObject).capture_path);
+    repository.close();
+    await updateAssetAccessPolicy(vault, capturePath, { sensitivity_class: 0, max_representation: "full" });
+
+    const second = await materializeInboxAiTasks(vault);
+    assert.equal(second.deduplicated, 1, "Classification resumes the same idempotent Task rather than creating a duplicate.");
+    const queuedRepository = await RuntimeRepository.open(vault);
+    const queued = queuedRepository.getTask(first.created[0]!);
+    assert.equal(queued?.status, "queued");
+    assert.deepEqual(queued?.payload.pdf_policy, { accepted_statuses: ["completed", "partial"], partial_policy: "allow" });
+    queuedRepository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
+    queuedRepository.close();
+
+    let runtimeContext: JsonObject = {};
+    const output = {
+      id: "READ-2026-000002", type: "reading-note", schema_id: "record", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
+      title: "Partial paper", source_refs: [sourceRelative], created: "2026-08-06T10:00:00+08:00", updated: "2026-08-06T10:00:00+08:00",
+    };
+    const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async (options) => {
+      runtimeContext = JSON.parse(await fs.readFile(path.join(options.contextRoot, "runtime-context.json"), "utf8")) as JsonObject;
+      return { output, stderr: "" };
+    }) });
+    const diagnosticRepository = await RuntimeRepository.open(vault);
+    const diagnosticTask = diagnosticRepository.getTask(first.created[0]!);
+    diagnosticRepository.close();
+    assert.equal(dispatched.completed, 1, JSON.stringify({ status: diagnosticTask?.status, error: diagnosticTask?.last_error }));
+    const pdfInputs = runtimeContext.pdf_inputs as Array<JsonObject>;
+    assert.equal(pdfInputs[0]?.extraction_status, "partial");
+    assert.equal(pdfInputs[0]?.usable, true);
+    assert.deepEqual(pdfInputs[0]?.policy, { accepted_statuses: ["completed", "partial"], partial_policy: "allow" });
+    const completedRepository = await RuntimeRepository.open(vault);
+    const completed = completedRepository.getTask(first.created[0]!);
+    const run = completedRepository.getRuns(first.created[0]!)[0];
+    completedRepository.close();
+    assert.equal(completed?.status, "completed");
+    assert.equal((run?.metrics.pdf_inputs as Array<JsonObject>)[0]?.usable, true, "Run metrics preserve the actual PDF policy decision.");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("a sensitive document stops at waiting-for-user before Codex receives it", async () => {

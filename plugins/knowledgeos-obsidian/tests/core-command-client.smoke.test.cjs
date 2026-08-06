@@ -1,6 +1,10 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
 const { PassThrough } = require("node:stream");
+const { once } = require("node:events");
+const fs = require("node:fs/promises");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const { CoreCommandClient } = require("../services/core-command-client");
@@ -29,6 +33,30 @@ function createMockBridge(onRequest) {
 
 const clientSettings = { nodePath: "node", coreCliPath: "mock-cli.js", vaultPath: "mock-vault" };
 
+test("CoreCommandClient reaches the real Command API server with a temporary Vault", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-plugin-api-"));
+  const cli = path.resolve(__dirname, "..", "..", "..", "dist", "cli.js");
+  const client = new CoreCommandClient({ nodePath: process.execPath, coreCliPath: cli, vaultPath: vault }, { requestTimeoutMs: 15_000 });
+  try {
+    const first = await client.invoke("getModules", {}, "PLUGIN-REAL-001");
+    assert.equal(first.ok, true);
+    assert.equal(first.api_version, "1");
+    assert.equal(first.request_id, "PLUGIN-REAL-001");
+    assert.equal(first.method, "getModules");
+    assert.equal(Array.isArray(first.data), true);
+    const server = client.server;
+    const exited = server ? once(server, "exit") : Promise.resolve();
+    client.close();
+    await Promise.race([exited, new Promise((_, reject) => setTimeout(() => reject(new Error("Core API server did not exit.")), 5_000))]);
+    const second = await client.invoke("getModules", {}, "PLUGIN-REAL-002");
+    assert.equal(second.ok, true);
+    assert.equal(second.request_id, "PLUGIN-REAL-002");
+  } finally {
+    client.close();
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
 test("CoreCommandClient sends requests through the persistent Command API bridge", async () => {
   const loadedModules = [];
   let spawnCount = 0;
@@ -45,13 +73,13 @@ test("CoreCommandClient sends requests through the persistent Command API bridge
   );
 
   const modules = await client.invoke("getModules", {});
-  const health = await client.invoke("healthCheck", { scope: "plugin-smoke" });
+  const instances = await client.invoke("getInstances", { scope: "plugin-smoke" });
 
   assert.equal(modules.ok, true);
   assert.equal(modules.data[0].id, "reading-log");
   assert.deepEqual(loadedModules, modules.data);
-  assert.equal(health.ok, true);
-  assert.deepEqual(health.data, { method: "healthCheck", echoed: { scope: "plugin-smoke" } });
+  assert.equal(instances.ok, true);
+  assert.deepEqual(instances.data, { method: "getInstances", echoed: { scope: "plugin-smoke" } });
   assert.equal(spawnCount, 1);
   client.close();
 });
@@ -63,9 +91,9 @@ test("CoreCommandClient recovers from a Core API server restart", async () => {
     spawn: () => bridges[spawnCount++],
   });
 
-  assert.equal((await client.invoke("healthCheck")).ok, true);
+  assert.equal((await client.invoke("getModules")).ok, true);
   bridges[0].emit("exit", 1);
-  assert.equal((await client.invoke("healthCheck")).ok, true);
+  assert.equal((await client.invoke("getModules")).ok, true);
   assert.equal(spawnCount, 2);
   client.close();
 });
@@ -76,7 +104,7 @@ test("CoreCommandClient times out stalled requests and removes them from pending
     spawn: () => createMockBridge(() => {}),
   });
 
-  const response = await client.invoke("healthCheck");
+  const response = await client.invoke("getModules");
   assert.equal(response.ok, false);
   assert.match(response.error.message, /timed out/i);
   assert.equal(client.pending.size, 0);
@@ -92,8 +120,8 @@ test("CoreCommandClient matches concurrent requests to their own responses", asy
   });
 
   const [first, second] = await Promise.all([
-    client.invoke("healthCheck", { order: 1 }),
-    client.invoke("healthCheck", { order: 2 }),
+    client.invoke("getInstances", { order: 1 }),
+    client.invoke("getInstances", { order: 2 }),
   ]);
   assert.deepEqual(first.data, { order: 1 });
   assert.deepEqual(second.data, { order: 2 });
@@ -109,11 +137,11 @@ test("CoreCommandClient fails malformed JSON safely and starts a fresh bridge", 
     spawn: () => [broken, healthy][spawnCount++],
   });
 
-  const malformed = await client.invoke("healthCheck");
+  const malformed = await client.invoke("getModules");
   assert.equal(malformed.ok, false);
   assert.match(malformed.error.message, /malformed JSON/i);
   assert.equal(client.pending.size, 0);
-  assert.equal((await client.invoke("healthCheck")).ok, true);
+  assert.equal((await client.invoke("getModules")).ok, true);
   assert.equal(spawnCount, 2);
   client.close();
 });
@@ -124,7 +152,7 @@ test("CoreCommandClient clears pending requests when the plugin unloads", async 
     spawn: () => createMockBridge(() => {}),
   });
 
-  const request = client.invoke("healthCheck");
+  const request = client.invoke("getModules");
   assert.equal(client.pending.size, 1);
   client.close();
   const response = await request;
@@ -135,7 +163,7 @@ test("CoreCommandClient clears pending requests when the plugin unloads", async 
 
 test("CoreCommandClient gives a recoverable explanation when Core is not configured", async () => {
   const client = new CoreCommandClient({ nodePath: "node", coreCliPath: "", vaultPath: "" });
-  const response = await client.invoke("healthCheck");
+  const response = await client.invoke("getModules");
 
   assert.equal(response.ok, false);
   assert.match(response.error.impact, /Today/);

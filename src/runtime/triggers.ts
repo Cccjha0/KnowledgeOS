@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseMarkdown } from "../core/bridge.js";
 import { listFilesRecursive } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
-import type { CreateTaskInput, JobDefinition } from "./domain.js";
+import type { CreateTaskInput, EventSubscriptionScope, JobDefinition } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
 import { PkbError } from "../core/errors.js";
 
@@ -61,11 +61,33 @@ export function eventFingerprint(event: { type: string; module?: string; instanc
   }), "utf8").digest("hex");
 }
 
-export function resolveEventSubscriptions(jobs: JobDefinition[], eventType: string): JobDefinition[] {
+interface EventSubscriptionSource {
+  type: string;
+  module: string;
+  instanceId: string | null;
+}
+
+function subscriptionScope(job: JobDefinition): EventSubscriptionScope {
+  const declared = job.trigger.subscription_scope;
+  if (declared === "instance" || declared === "module" || declared === "global") return declared;
+  // Compatibility is deliberately conservative: instance Jobs remain isolated,
+  // while older module/core Jobs can only see events from their own module.
+  return job.scope === "instance" ? "instance" : "module";
+}
+
+function consumerInstanceId(job: JobDefinition): string | null {
+  return typeof job.trigger.instance_id === "string" ? job.trigger.instance_id : null;
+}
+
+export function resolveEventSubscriptions(jobs: JobDefinition[], event: EventSubscriptionSource): JobDefinition[] {
   return jobs.filter((job) => {
     if (!job.enabled || job.trigger.type !== "event") return false;
     const subscribed = job.trigger.event ?? job.trigger.event_type ?? job.trigger.source;
-    return subscribed === eventType;
+    if (subscribed !== event.type) return false;
+    const scope = subscriptionScope(job);
+    if (scope === "global") return true;
+    if (job.module !== event.module) return false;
+    return scope === "module" || (consumerInstanceId(job) !== null && consumerInstanceId(job) === event.instanceId);
   });
 }
 
@@ -117,8 +139,8 @@ export async function publishRuntimeEvent(vaultRoot: string, event: { type: stri
       return output;
     }
     const delivered = deliverEventSubscriptions(repository, {
-      eventId, eventType: event.type, eventFingerprint: fingerprint, instanceId: event.instance_id ?? null,
-      occurredAt, payload, jobs: resolveEventSubscriptions(repository.listJobs(), event.type),
+      eventId, eventType: event.type, eventFingerprint: fingerprint, sourceModule: event.module ?? "core", instanceId: event.instance_id ?? null,
+      occurredAt, payload, jobs: resolveEventSubscriptions(repository.listJobs(), { type: event.type, module: event.module ?? "core", instanceId: event.instance_id ?? null }),
     });
     output.created.push(...delivered.created); output.deduplicated += delivered.deduplicated;
     const status = delivered.failed === 0 ? "published" : delivered.created.length + delivered.deduplicated > 0 ? "partial" : "dead-letter";
@@ -134,16 +156,22 @@ function errorRecord(error: unknown): JsonObject {
   return { code: error instanceof PkbError ? error.code : "EVENT_DELIVERY_FAILED", message: error instanceof Error ? error.message : String(error) };
 }
 
-function deliverEventSubscriptions(repository: RuntimeRepository, options: { eventId: string; eventType: string; eventFingerprint: string; instanceId: string | null; occurredAt: string; payload: JsonObject; jobs: JobDefinition[]; subscriptionKeys?: Set<string> }): { created: string[]; deduplicated: number; failed: number } {
+function deliverEventSubscriptions(repository: RuntimeRepository, options: { eventId: string; eventType: string; eventFingerprint: string; sourceModule: string; instanceId: string | null; occurredAt: string; payload: JsonObject; jobs: JobDefinition[]; subscriptionKeys?: Set<string> }): { created: string[]; deduplicated: number; failed: number } {
   const output = { created: [] as string[], deduplicated: 0, failed: 0 };
   for (const job of options.jobs) {
     const subscriptionKey = job.job_id;
     if (options.subscriptionKeys && !options.subscriptionKeys.has(subscriptionKey)) continue;
     repository.recordEventDelivery(options.eventId, subscriptionKey, job.job_id);
     try {
+      const scope = subscriptionScope(job);
+      const consumerInstance = consumerInstanceId(job);
       const result = repository.createTask(taskFor(job, {
-        idempotency: `${job.job_id}:event:${options.eventFingerprint}`, trigger: { ...job.trigger, event_id: options.eventId, event_fingerprint: options.eventFingerprint },
-        payload: { event_id: options.eventId, event_type: options.eventType, ...options.payload }, instanceId: options.instanceId,
+        idempotency: `${job.job_id}:event:${options.eventFingerprint}`, trigger: {
+          ...job.trigger, event_id: options.eventId, event_fingerprint: options.eventFingerprint,
+          event_source_module: options.sourceModule, event_source_instance_id: options.instanceId,
+          event_subscription_scope: scope, event_consumer_instance_id: consumerInstance,
+        },
+        payload: { event_id: options.eventId, event_type: options.eventType, event_source_module: options.sourceModule, ...(options.instanceId ? { event_source_instance_id: options.instanceId } : {}), ...options.payload }, instanceId: consumerInstance,
         scheduledFor: options.occurredAt,
       }));
       if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
@@ -166,7 +194,9 @@ export async function replayRuntimeEvent(vaultRoot: string, eventId: string, sub
     const allDeliveries = repository.listEventDeliveries(eventId);
     const deliveries = allDeliveries.filter((delivery) => delivery.status === "failed" && (!requested || requested.has(String(delivery.subscription_key))));
     const output = { event_id: eventId, created: [] as string[], requeued: [] as string[], deduplicated: 0, failed: 0 };
-    const jobs = resolveEventSubscriptions(repository.listJobs(), String(event.event_type));
+    const sourceModule = String(event.module ?? "core");
+    const sourceInstanceId = typeof event.instance_id === "string" ? event.instance_id : null;
+    const jobs = resolveEventSubscriptions(repository.listJobs(), { type: String(event.event_type), module: sourceModule, instanceId: sourceInstanceId });
     const jobsById = new Map(jobs.map((job) => [job.job_id, job]));
     const pendingJobs: JobDefinition[] = [];
     for (const delivery of deliveries) {
@@ -191,7 +221,7 @@ export async function replayRuntimeEvent(vaultRoot: string, eventId: string, sub
       if (!deliveredKeys.has(job.job_id)) pendingJobs.push(job);
     }
     const dispatched = deliverEventSubscriptions(repository, {
-      eventId, eventType: String(event.event_type), eventFingerprint: String(event.fingerprint), instanceId: typeof event.instance_id === "string" ? event.instance_id : null,
+      eventId, eventType: String(event.event_type), eventFingerprint: String(event.fingerprint), sourceModule, instanceId: sourceInstanceId,
       occurredAt: String(event.occurred_at), payload: (event.payload && typeof event.payload === "object" && !Array.isArray(event.payload) ? event.payload : {}) as JsonObject,
       jobs: pendingJobs, subscriptionKeys: requested,
     });

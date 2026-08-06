@@ -178,6 +178,20 @@
         "instance_level": {
           "$ref": "#/$defs/inboxConfig"
         },
+        "asset_access_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sensitivity_class", "max_representation"],
+          "properties": {
+            "sensitivity_class": {
+              "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
+            },
+            "max_representation": {
+              "type": "string",
+              "enum": ["metadata", "summary", "full", "sensitive-original"]
+            }
+          }
+        },
         "allow_global_routing": {
           "type": "boolean"
         }

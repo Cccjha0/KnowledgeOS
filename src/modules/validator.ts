@@ -10,6 +10,15 @@ const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.j
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 function object(value: JsonValue | undefined): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value : null; }
 
+function legacyReadFields(value: JsonValue | undefined, trail = ""): string[] {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((item, index) => legacyReadFields(item, `${trail}[${index}]`));
+  return Object.entries(value as JsonObject).flatMap(([key, child]) => {
+    const current = trail ? `${trail}.${key}` : key;
+    return (["read_level", "content_read_level", "max_read_level", "max_default_read_level"].includes(key) ? [current] : []).concat(legacyReadFields(child, current));
+  });
+}
+
 function check(category: ModuleValidationCheck["category"], code: string, status: ModuleValidationCheck["status"], message: string, file: string | null = null, critical = false): ModuleValidationCheck {
   return { category, code, status, message, critical, path: file };
 }
@@ -32,6 +41,7 @@ function rangeSatisfied(version: string, range: string): boolean {
 }
 
 async function validateRegistry(moduleRoot: string, manifest: JsonObject, section: "schemas" | "prompts" | "workflows", checks: ModuleValidationCheck[]): Promise<void> {
+  const strictAccessContract = manifest.maturity === "beta" || manifest.maturity === "stable";
   const descriptor = object(manifest[section]);
   const registryRelative = typeof descriptor?.registry === "string" ? descriptor.registry : null;
   if (!registryRelative) { checks.push(check("references", `MODULE_${section.toUpperCase()}_REGISTRY_MISSING`, "fail", `${section} registry is required.`, "module.yaml", true)); return; }
@@ -63,6 +73,10 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
     }
     if (section === "workflows") {
       const workflow = parseYaml(moduleRoot, target);
+      if (strictAccessContract) {
+        const legacy = legacyReadFields(workflow);
+        if (legacy.length) checks.push(check("permissions", "LEGACY_READ_CONTRACT_FORBIDDEN", "fail", `${id} uses deprecated read-level fields: ${legacy.join(", ")}. Use read.representation and max_sensitivity_class.`, relative, true));
+      }
       const workflowId = workflow.workflow_id ?? workflow.id;
       const workflowVersion = workflow.workflow_version ?? workflow.version;
       if (workflowId !== id || String(workflowVersion) !== version) checks.push(check("contracts", "WORKFLOW_METADATA_LEGACY", "warning", `${id} registry and file metadata should use workflow_id/workflow_version ${version}.`, relative));
@@ -172,6 +186,10 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   const id = typeof manifest.id === "string" ? manifest.id : path.basename(moduleRoot);
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
   const maturity = (["experimental", "beta", "stable", "deprecated"].includes(String(manifest.maturity)) ? manifest.maturity : "experimental") as ModuleMaturity;
+  if (maturity === "beta" || maturity === "stable") {
+    const legacy = legacyReadFields(object(manifest.permissions) ?? {});
+    if (legacy.length) checks.push(check("permissions", "LEGACY_READ_CONTRACT_FORBIDDEN", "fail", `Beta/Stable modules cannot declare deprecated read-level fields: ${legacy.join(", ")}. Use max_sensitivity_class.`, "module.yaml", true));
+  }
   try {
     const engine = JSON.parse(await fs.readFile(path.join(engineRoot, "package.json"), "utf8")) as { version: string };
     const compatibility = object(manifest.engine);
@@ -200,6 +218,14 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
     for (const job of (jobRegistry.jobs as JsonObject[] | undefined) ?? []) {
       const workflowId = String(job.workflow_id ?? ""); const workflowVersion = String(job.workflow_version ?? ""); const registered = object(workflows?.[workflowId]);
       if (!registered || registered.active_version !== workflowVersion) checks.push(check("contracts", "JOB_WORKFLOW_UNREGISTERED", "fail", `Job ${String(job.id)} references unregistered ${workflowId}@${workflowVersion}.`, String(jobs.registry), true));
+      const trigger = object(job.trigger);
+      if (trigger?.type === "event") {
+        const subscriptionScope = trigger.subscription_scope;
+        const validScope = subscriptionScope === "instance" || subscriptionScope === "module" || subscriptionScope === "global";
+        if (!validScope) checks.push(check("events", "EVENT_SUBSCRIPTION_SCOPE_INVALID", "fail", `Event Job ${String(job.id)} must explicitly declare trigger.subscription_scope as instance, module, or global.`, String(jobs.registry), true));
+        if (subscriptionScope === "instance" && job.scope !== "instance") checks.push(check("events", "EVENT_INSTANCE_SCOPE_JOB_INVALID", "fail", `Event Job ${String(job.id)} uses instance subscription_scope but is not an instance Job.`, String(jobs.registry), true));
+        if (subscriptionScope === "module" && job.scope === "instance") checks.push(check("events", "EVENT_MODULE_SCOPE_JOB_INVALID", "fail", `Event Job ${String(job.id)} uses module subscription_scope and must not target an instance.`, String(jobs.registry), true));
+      }
     }
   }
   const dependencies = object(manifest.dependencies); const components = object(dependencies?.components);

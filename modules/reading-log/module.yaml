@@ -31,6 +31,14 @@ capabilities:
 accepted_inputs:
 - markdown
 - text
+- pdf
+pdf_policy:
+  # Reading material can remain useful when only a subset of its pages has
+  # extractable text, but the user must still classify the attachment first.
+  accepted_statuses:
+  - completed
+  - partial
+  partial_policy: allow
 inbox:
   module_level:
     enabled: true

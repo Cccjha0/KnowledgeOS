@@ -93,12 +93,10 @@ npm link
 ## 验证
 
 ```powershell
-python tools/validate.py --vault ../knowledgeos-vault
-node dist/cli.js validate --vault ../knowledgeos-vault
-node --test dist/tests/*.test.js
+npm test
 ```
 
-当前自动化测试覆盖确定性比较、Vault/Git 初始化，以及批准、修改后批准、拒绝、延后、讨论和用户直接修改对账。
+`npm test` 是跨平台的完整 Engine 测试入口，会负责边界检查、编译和测试发现；不要在 Windows Shell 中直接使用 `node --test dist/tests/*.test.js`。当前自动化测试覆盖确定性比较、Vault/Git 初始化，以及批准、修改后批准、拒绝、延后、讨论和用户直接修改对账。
 
 ## Obsidian Today MVP
 

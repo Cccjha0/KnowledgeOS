@@ -18,6 +18,8 @@ export type ResourceAvailability = "available" | "unavailable" | "unknown";
 export type CatchUpPolicy = "none" | "latest" | "all" | "aggregate" | "skip-if-stale";
 export type ConcurrencyPolicy = "allow" | "forbid" | "replace" | "merge";
 export type DependencyPolicy = "all-success" | "all-finished" | "any-success";
+/** The boundary used when an Event Job consumes a published Event. */
+export type EventSubscriptionScope = "instance" | "module" | "global";
 
 export interface TaskResources extends JsonObject {
   filesystem: ResourceRequirement;

@@ -56,6 +56,11 @@ pdf_policy:
   partial_policy: review
 
 inbox:
+  # Application evidence may be sensitive, but this module needs the complete
+  # text after it has been routed into this explicitly governed Inbox.
+  asset_access_policy:
+    sensitivity_class: 2
+    max_representation: full
   module_level:
     enabled: true
     path: 20-Workspace/Applications/Inbox
