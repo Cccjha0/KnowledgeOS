@@ -470,7 +470,21 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     }
     if (semantic && publications.length) {
       const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
-      for (const publication of publications) steps.push({ id: `publish-${String(publication.event).replace(/[^a-z0-9]+/g, "-")}`, uses: "core.publish-event", with: { event_type: String(publication.event), ...(object(publication.payload) ? { payload: object(publication.payload) } : { payload_from: workflow.trigger === "schedule" ? "summarize" : "normalize" }) } });
+      for (const publication of publications) {
+        const payload = object(publication.payload);
+        const source = workflow.trigger === "schedule" ? "summarize" : "normalize";
+        // Blueprint payloads describe an output contract with {output.field}.
+        // The generic Event step already supports payload_from/payload_fields;
+        // materialize that form instead of leaving an interpolation token that
+        // the runtime deliberately does not expose as a global variable.
+        const fields = payload && Object.values(payload).every((value) => typeof value === "string" && /^\{output\.[A-Za-z0-9_.-]+\}$/.test(value))
+          ? Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, String(value).slice("{output.".length, -1)]))
+          : null;
+        steps.push({ id: `publish-${String(publication.event).replace(/[^a-z0-9]+/g, "-")}`, uses: "core.publish-event", with: {
+          event_type: String(publication.event),
+          ...(fields ? { payload_from: source, payload_fields: fields } : payload ? { payload } : { payload_from: source }),
+        } });
+      }
       generated.steps = steps;
       generated.outputs = [...strings(generated.outputs).filter((item) => item !== "events"), "events"];
     } else generated.outputs = strings(generated.outputs).filter((item) => item !== "events");

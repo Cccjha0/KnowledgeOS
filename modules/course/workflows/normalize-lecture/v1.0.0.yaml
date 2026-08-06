@@ -37,8 +37,9 @@ steps:
   uses: core.publish-event
   with:
     event_type: course.lecture-created
-    payload:
-      lecture_id: '{output.id}'
+    payload_from: normalize
+    payload_fields:
+      lecture_id: id
 outputs:
 - operation_plan
 - dashboard_items
