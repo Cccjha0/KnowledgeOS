@@ -676,6 +676,20 @@
 .knowledgeos-module-builder-modal .knowledgeos-builder-preview p { color: var(--text-muted); font-size: var(--font-ui-small); margin: var(--size-4-1) 0; }
 .knowledgeos-module-builder-modal .knowledgeos-builder-preview pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; }
 .knowledgeos-module-builder-modal .knowledgeos-builder-actions { border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-4); padding-top: var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-summary { align-items: center; border-bottom: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-bottom: var(--size-4-3); padding-bottom: var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-state { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-state.state-ready-to-package,
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-state.state-installed { color: var(--text-success); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-state.state-test-failed { color: var(--text-error); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-workspace { color: var(--text-muted); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-list { border-top: 1px solid var(--background-modifier-border); list-style: none; margin: var(--size-4-4) 0 0; padding: 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-step { border-bottom: 1px solid var(--background-modifier-border); padding: var(--size-4-2) 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-heading { align-items: baseline; display: flex; gap: var(--size-4-3); justify-content: space-between; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-heading span { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: nowrap; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-step.is-complete .knowledgeos-builder-readiness-heading span { color: var(--text-success); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-step.is-failed .knowledgeos-builder-readiness-heading span { color: var(--text-error); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-readiness-message { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.5; margin-top: var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-state.is-error { border-left: 3px solid var(--text-error); color: var(--text-error); margin-top: var(--size-4-3); padding-left: var(--size-4-2); }
 .knowledgeos-module-builder-modal :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 @container knowledgeos-builder (max-width: 30rem) {
   .knowledgeos-module-builder-modal .setting-item { flex-direction: column; gap: var(--size-4-2); }
@@ -683,4 +697,5 @@
   .knowledgeos-module-builder-modal input[type="text"], .knowledgeos-module-builder-modal textarea, .knowledgeos-module-builder-modal select { width: 100%; }
   .knowledgeos-module-builder-modal .knowledgeos-builder-actions { align-items: stretch; flex-direction: column; }
   .knowledgeos-module-builder-modal .knowledgeos-builder-actions button { width: 100%; }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-readiness-heading { align-items: flex-start; flex-direction: column; gap: var(--size-4-1); }
 }
