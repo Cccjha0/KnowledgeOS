@@ -104,6 +104,30 @@ test("Blueprint compliance rejects runtime privacy drift", async () => {
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Workflow Event", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    const schemas = parseYaml(moduleRoot, path.join(moduleRoot, "schemas", "index.yaml"));
+    assert.equal(Boolean((schemas.schemas as JsonObject).lecture), true);
+    assert.equal(Boolean((schemas.schemas as JsonObject).assignment), true);
+    const lectureWorkflowPath = path.join(moduleRoot, "workflows", "normalize-lecture", "v1.0.0.yaml");
+    const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
+    const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");
+    assert.equal((eventStep?.with as JsonObject).event_type, "course.lecture-created", "Events must follow the declaring Workflow, never array order.");
+    const valid = await validateModule(engine, moduleRoot);
+    assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+
+    (eventStep!.with as JsonObject).event_type = "course.assignment-created";
+    writeYaml(moduleRoot, lectureWorkflowPath, lectureWorkflow);
+    const invalid = await validateModule(engine, moduleRoot);
+    assert.equal(invalid.overall, "FAIL");
+    assert.equal(invalid.checks.some((item) => item.code === "V2_WORKFLOW_EVENTS_BOUND" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("Official Course Blueprint module passes its executable Module Test contract", async () => {
   const report = await testModule(SOURCE_ROOT, "course");
   assert.equal(report.overall, "PASS", report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
