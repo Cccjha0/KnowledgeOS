@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { parseYaml } from "../core/bridge.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { exists } from "../core/files.js";
+import { PkbError } from "../core/errors.js";
 import type { JsonObject } from "../core/types.js";
 import type { JobDefinition, TaskPriority, TaskResources } from "./domain.js";
 import { RuntimeRepository } from "./repository.js";
@@ -34,6 +35,14 @@ function normalize(moduleId: string, raw: JsonObject, instance: JsonObject | nul
   if (typeof raw.workflow_id === "string") trigger.workflow_id = raw.workflow_id;
   if (typeof raw.workflow_version === "string") trigger.workflow_version = raw.workflow_version;
   if (trigger.timezone === "instance") trigger.timezone = String(instance?.timezone ?? "Asia/Shanghai");
+  if (trigger.type === "event" && trigger.subscription_scope === "global") {
+    const permitted = module.data.module_type === "integration"
+      || (module.data.permissions && typeof module.data.permissions === "object" && !Array.isArray(module.data.permissions)
+        && (module.data.permissions as JsonObject).global_event_subscription === true);
+    if (!permitted) throw new PkbError("GLOBAL_EVENT_SUBSCRIPTION_DENIED", `${moduleId} may not declare a global Event subscription without integration module_type or permissions.global_event_subscription: true.`);
+    const sources = Array.isArray(trigger.source_modules) ? trigger.source_modules.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    if (sources.length === 0) throw new PkbError("GLOBAL_EVENT_SOURCE_REQUIRED", `${moduleId} global Event subscriptions must declare trigger.source_modules.`);
+  }
   const concurrency = structuredClone((raw.concurrency ?? {}) as JsonObject);
   if (typeof concurrency.key === "string" && instanceId) concurrency.key = concurrency.key.replaceAll("{instance}", instanceId);
   return {

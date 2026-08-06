@@ -65,6 +65,28 @@ test("validation requires every declared Event Job to state its subscription sco
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("validation restricts global Event subscriptions to an authorized, source-scoped declaration", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "global-event-check", "minimal-config");
+    const root = path.join(engine, "modules", "global-event-check");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.capabilities = [...(manifest.capabilities as string[]), "event-subscription"];
+    manifest.events = { publishes: [], subscribes: [{ event: "application.updated", scope: "global", source_modules: ["application-tracker"] }] };
+    manifest.permissions = { ...(manifest.permissions as JsonObject), global_event_subscription: true };
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    writeYaml(root, path.join(root, "jobs", "jobs.yaml"), {
+      jobs: [{ id: "consume-application", scope: "module", enabled: true, task_type: "workflow", workflow: "global-event-check:normalize", workflow_id: "normalize", workflow_version: "1.0.0", trigger: { type: "event", event: "application.updated", subscription_scope: "global", source_modules: ["application-tracker"] } }],
+    });
+    const authorized = await validateModule(engine, root);
+    assert.equal(authorized.checks.some((item) => item.code === "GLOBAL_EVENT_SUBSCRIPTION_DENIED" && item.status === "fail"), false);
+    manifest.permissions = { ...(manifest.permissions as JsonObject), global_event_subscription: false };
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const denied = await validateModule(engine, root);
+    assert.equal(denied.checks.some((item) => item.code === "GLOBAL_EVENT_SUBSCRIPTION_DENIED" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("Module SDK allows structured plans but rejects cross-boundary and red operations", () => {
   const sdk = new ModuleSdk({ vaultRoot: "C:/vault", moduleId: "reading-log", moduleVersion: "0.1.0", instanceId: "reading-2026", allowedReadRoots: ["20-Workspace/Reading Log/reading-2026"], ownedWriteRoots: ["20-Workspace/Reading Log/reading-2026"], maxSensitivityClass: 0 });
   const operation: Operation = { operation_id: "OP-001", type: "create-file", target: "20-Workspace/Reading Log/reading-2026/Notes/a.md", risk: "green", confidence: 1, idempotency_key: "reading:a", payload: { format: "text", text: "A" }, requires_review_id: null };

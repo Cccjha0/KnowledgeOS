@@ -288,7 +288,30 @@
           "type": "array",
           "uniqueItems": true,
           "items": {
-            "type": "string"
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["event", "scope"],
+                "properties": {
+                  "event": { "type": "string", "minLength": 1 },
+                  "scope": { "type": "string", "enum": ["instance", "module", "global"] },
+                  "source_modules": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" }
+                  }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "scope": { "const": "global" } } },
+                    "then": { "required": ["source_modules"] }
+                  }
+                ]
+              }
+            ]
           }
         }
       }
@@ -360,6 +383,7 @@
         "codex": { "type": "string", "enum": ["required", "optional", "disabled"] },
         "delete": { "type": "boolean" },
         "cross_module_write": { "type": "boolean" },
+        "global_event_subscription": { "type": "boolean" },
         "max_default_read_level": {
           "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/readLevel"
         },

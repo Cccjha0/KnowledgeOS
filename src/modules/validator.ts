@@ -102,7 +102,15 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
 async function validateEventContracts(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   const events = object(manifest.events) ?? {};
   const declaredPublishes = new Set(Array.isArray(events.publishes) ? events.publishes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
-  const declaredSubscribes = new Set(Array.isArray(events.subscribes) ? events.subscribes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
+  const declaredSubscriptions = (Array.isArray(events.subscribes) ? events.subscribes : []).flatMap((item) => {
+    if (typeof item === "string" && item.trim()) return [{ event: item, scope: null as "instance" | "module" | "global" | null, sourceModules: null as string[] | null }];
+    const subscription = object(item as JsonValue);
+    const event = typeof subscription?.event === "string" && subscription.event.trim() ? subscription.event : null;
+    const scope = subscription?.scope === "instance" || subscription?.scope === "module" || subscription?.scope === "global" ? subscription.scope : null;
+    const sourceModules = Array.isArray(subscription?.source_modules) ? subscription.source_modules.filter((source): source is string => typeof source === "string" && source.trim().length > 0) : null;
+    return event ? [{ event, scope, sourceModules }] : [];
+  });
+  const declaredSubscribes = new Set(declaredSubscriptions.map((subscription) => subscription.event));
   const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((item): item is string => typeof item === "string") : []);
   const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
   const published = new Map<string, string[]>();
@@ -128,7 +136,7 @@ async function validateEventContracts(moduleRoot: string, manifest: JsonObject, 
   for (const [eventType, workflowIds] of published) if (!declaredPublishes.has(eventType)) checks.push(check("events", "UNDECLARED_EVENT_PUBLISHED", "fail", `${workflowIds.join(", ")} publishes ${eventType}, which is absent from manifest.events.publishes.`, "module.yaml", true));
 
   const jobsDescriptor = object(manifest.jobs);
-  const eventJobs = new Set<string>();
+  const eventJobs: Array<{ event: string; scope: "instance" | "module" | "global"; sourceModules: string[]; jobId: string }> = [];
   if (typeof jobsDescriptor?.registry === "string") {
     const jobsFile = path.join(moduleRoot, ...jobsDescriptor.registry.split("/"));
     if (await exists(jobsFile)) {
@@ -137,11 +145,35 @@ async function validateEventContracts(moduleRoot: string, manifest: JsonObject, 
         const job = object(raw as JsonValue); const trigger = object(job?.trigger);
         if (trigger?.type !== "event") continue;
         const eventType = trigger.event ?? trigger.event_type ?? trigger.source;
-        if (typeof eventType === "string") eventJobs.add(eventType);
+        if (typeof eventType !== "string") {
+          checks.push(check("events", "EVENT_JOB_TYPE_MISSING", "fail", "An Event Job must declare trigger.event, trigger.event_type, or trigger.source.", String(jobsDescriptor.registry), true));
+          continue;
+        }
+        const scope = trigger.subscription_scope === "instance" || trigger.subscription_scope === "module" || trigger.subscription_scope === "global"
+          ? trigger.subscription_scope
+          : job?.scope === "instance" ? "instance" : "module";
+        const sourceModules = Array.isArray(trigger.source_modules) ? trigger.source_modules.filter((source): source is string => typeof source === "string" && source.trim().length > 0) : [];
+        const jobId = typeof job?.id === "string" ? job.id : eventType;
+        eventJobs.push({ event: eventType, scope, sourceModules, jobId });
       }
     }
   }
-  for (const eventType of declaredSubscribes) if (!eventJobs.has(eventType)) checks.push(check("events", "DECLARED_EVENT_UNSUBSCRIBED", "fail", `Manifest subscribes to ${eventType}, but no Event Job consumes it.`, "module.yaml", true));
+  for (const eventType of declaredSubscribes) if (!eventJobs.some((job) => job.event === eventType)) checks.push(check("events", "DECLARED_EVENT_UNSUBSCRIBED", "fail", `Manifest subscribes to ${eventType}, but no Event Job consumes it.`, "module.yaml", true));
+  const canSubscribeGlobally = manifest.module_type === "integration"
+    || (object(manifest.permissions)?.global_event_subscription === true);
+  for (const job of eventJobs) {
+    const declared = declaredSubscriptions.some((subscription) => subscription.event === job.event
+      && (subscription.scope === null || subscription.scope === job.scope)
+      && (job.scope !== "global" || subscription.sourceModules !== null && subscription.sourceModules.length === job.sourceModules.length && subscription.sourceModules.every((source) => job.sourceModules.includes(source))));
+    if (!declared) checks.push(check("events", "EVENT_JOB_UNDECLARED", "fail", `${job.jobId} consumes ${job.event}, but manifest.events.subscribes does not declare the same subscription.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+    if (job.scope === "global") {
+      if (!canSubscribeGlobally) checks.push(check("permissions", "GLOBAL_EVENT_SUBSCRIPTION_DENIED", "fail", `${job.jobId} uses global scope, which requires an integration module or permissions.global_event_subscription: true.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+      if (job.sourceModules.length === 0) checks.push(check("events", "GLOBAL_EVENT_SOURCE_REQUIRED", "fail", `${job.jobId} global scope must declare trigger.source_modules.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+    }
+  }
+  if (capabilities.has("event-subscription") && eventJobs.length === 0) checks.push(check("events", "EVENT_SUBSCRIPTION_CAPABILITY_UNFULFILLED", "fail", "event-subscription requires at least one declared Event Job.", "module.yaml", true));
+  if (!capabilities.has("event-subscription") && eventJobs.length > 0) checks.push(check("events", "EVENT_JOB_CAPABILITY_UNDECLARED", "fail", "Event Jobs require the event-subscription capability.", "module.yaml", true));
+  if (!capabilities.has("event-subscription") && declaredSubscriptions.length > 0) checks.push(check("events", "EVENT_SUBSCRIPTION_CAPABILITY_MISSING", "fail", "Manifest event subscriptions require the event-subscription capability.", "module.yaml", true));
   checks.push(check("events", "EVENT_CONTRACTS_VALID", "pass", "Event declarations, publish steps, and Event Jobs were checked.", "module.yaml"));
 }
 

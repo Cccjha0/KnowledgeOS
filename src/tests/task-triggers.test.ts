@@ -10,8 +10,8 @@ import type { JsonObject } from "../core/types.js";
 
 const local: TaskResources = { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" };
 const base = (id: string, trigger: JsonObject): JobDefinition => ({ job_id: id, source: "core", module: "core", scope: "core", enabled: true, task_type: "core-operation", workflow: "core:test", trigger, resources: local, catch_up: { policy: "none" }, retry: { max_attempts: 2 }, concurrency: { policy: "forbid", key: id }, idempotency: {}, priority: "normal", updated_at: new Date().toISOString() });
-const eventJob = (id: string, module: string, scope: JobDefinition["scope"], subscriptionScope: "instance" | "module" | "global", instanceId: string | null = null): JobDefinition => ({
-  ...base(id, { type: "event", event: "application.updated", subscription_scope: subscriptionScope, ...(instanceId ? { instance_id: instanceId } : {}) }),
+const eventJob = (id: string, module: string, scope: JobDefinition["scope"], subscriptionScope: "instance" | "module" | "global", instanceId: string | null = null, sourceModules: string[] = []): JobDefinition => ({
+  ...base(id, { type: "event", event: "application.updated", subscription_scope: subscriptionScope, ...(instanceId ? { instance_id: instanceId } : {}), ...(sourceModules.length ? { source_modules: sourceModules } : {}) }),
   source: "module", module, scope,
 });
 
@@ -90,7 +90,8 @@ test("Event subscriptions keep instance tasks isolated and audit both source and
     repository.registerJob(eventJob("application.consume.b", "application-tracker", "instance", "instance", "uk-masters-2027"));
     repository.registerJob(eventJob("application.module-audit", "application-tracker", "module", "module"));
     repository.registerJob(eventJob("other.module-audit", "other-module", "module", "module"));
-    repository.registerJob(eventJob("core.explicit-global-audit", "core", "core", "global"));
+    repository.registerJob(eventJob("core.explicit-global-audit", "core", "core", "global", null, ["application-tracker"]));
+    repository.registerJob(eventJob("core.other-global-audit", "core", "core", "global", null, ["other-module"]));
     repository.close();
 
     const published = await publishRuntimeEvent(vault, {
@@ -103,6 +104,7 @@ test("Event subscriptions keep instance tasks isolated and audit both source and
     assert.equal(aTask.instance_id, "australia-masters-2027");
     assert.equal(tasks.some((task) => task.job_id === "application.consume.b"), false);
     assert.equal(tasks.some((task) => task.job_id === "other.module-audit"), false);
+    assert.equal(tasks.some((task) => task.job_id === "core.other-global-audit"), false);
     const moduleTask = tasks.find((task) => task.job_id === "application.module-audit")!;
     const globalTask = tasks.find((task) => task.job_id === "core.explicit-global-audit")!;
     for (const task of [aTask, moduleTask, globalTask]) {
@@ -127,7 +129,7 @@ test("Event replay preserves the original subscription scope instead of crossing
     repository.failEvent("EVT-application-a-replay", { code: "EVENT_DISPATCH_FAILED", message: "fixture before ledger" });
     repository.registerJob(eventJob("application.replay.a", "application-tracker", "instance", "instance", "australia-masters-2027"));
     repository.registerJob(eventJob("application.replay.b", "application-tracker", "instance", "instance", "uk-masters-2027"));
-    repository.registerJob(eventJob("core.replay.global", "core", "core", "global"));
+    repository.registerJob(eventJob("core.replay.global", "core", "core", "global", null, ["application-tracker"]));
     repository.close();
 
     const replay = await replayRuntimeEvent(vault, "EVT-application-a-replay");

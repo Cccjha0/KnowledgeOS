@@ -79,13 +79,21 @@ function consumerInstanceId(job: JobDefinition): string | null {
   return typeof job.trigger.instance_id === "string" ? job.trigger.instance_id : null;
 }
 
+function allowedGlobalEventSources(job: JobDefinition): string[] {
+  return Array.isArray(job.trigger.source_modules)
+    ? job.trigger.source_modules.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+}
+
 export function resolveEventSubscriptions(jobs: JobDefinition[], event: EventSubscriptionSource): JobDefinition[] {
   return jobs.filter((job) => {
     if (!job.enabled || job.trigger.type !== "event") return false;
     const subscribed = job.trigger.event ?? job.trigger.event_type ?? job.trigger.source;
     if (subscribed !== event.type) return false;
     const scope = subscriptionScope(job);
-    if (scope === "global") return true;
+    // Global subscriptions are deliberately opt-in and source-scoped. A
+    // generic global event name must never become a cross-module broadcast.
+    if (scope === "global") return allowedGlobalEventSources(job).includes(event.module);
     if (job.module !== event.module) return false;
     return scope === "module" || (consumerInstanceId(job) !== null && consumerInstanceId(job) === event.instanceId);
   });
