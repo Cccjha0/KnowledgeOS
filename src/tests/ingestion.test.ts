@@ -4,12 +4,13 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionDecision, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
+import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionDecision, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache, slideEvidenceLocator } from "../core/ingestion.js";
 import { initializeVault } from "../core/vault.js";
 import { runQualityAudit } from "../quality/audit.js";
 import { QualityRepository } from "../quality/repository.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
+import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
@@ -36,6 +37,22 @@ function makePdf(text: string): Buffer {
   return Buffer.from(pdf, "binary");
 }
 
+function makePptx(target: string): void {
+  const script = [
+    "import sys, zipfile",
+    "slide='<p:sld xmlns:p=\"p\" xmlns:a=\"a\"><p:cSld><p:spTree><a:t>Slide title</a:t><a:t>Slide body</a:t></p:spTree></p:cSld></p:sld>'",
+    "notes='<p:notes xmlns:p=\"p\" xmlns:a=\"a\"><a:t>Speaker note</a:t></p:notes>'",
+    "rels='<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Target=\"../media/image1.png\" Type=\"image\" /></Relationships>'",
+    "with zipfile.ZipFile(sys.argv[1], 'w') as z:",
+    " z.writestr('ppt/slides/slide1.xml', slide)",
+    " z.writestr('ppt/notesSlides/notesSlide1.xml', notes)",
+    " z.writestr('ppt/slides/_rels/slide1.xml.rels', rels)",
+    " z.writestr('ppt/media/image1.png', b'fixture')",
+  ].join("\n");
+  const result = spawnSync("python", ["-c", script, target], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
+}
+
 function makeBlankPdf(): Buffer {
   return makePdf("");
 }
@@ -59,6 +76,38 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
     assert.equal((await readExtractionCache(vault, yaml)).structured_data?.open, true);
     assert.equal(image.metadata.ocr, "not-run");
     assert.equal(await fs.stat(path.join(vault, "00-Inbox", "report.json")).then(() => true), true, "Ingestion must not modify original assets.");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Asset Metadata Sidecars are validated on write and read", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-sidecar-schema-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.mkdir(path.join(vault, "00-Inbox"), { recursive: true });
+    await fs.writeFile(path.join(vault, "00-Inbox", "private.txt"), "fixture", "utf8");
+    const asset = await ingestAsset(vault, "00-Inbox/private.txt");
+    const sidecar = path.join(vault, ...asset.sidecar_path.split("/"));
+    const corrupted = JSON.parse(await fs.readFile(sidecar, "utf8")) as Record<string, unknown>;
+    corrupted.classification_state = "unclassified";
+    corrupted.sensitivity_class = 2;
+    await fs.writeFile(sidecar, JSON.stringify(corrupted), "utf8");
+    await assert.rejects(readCaptureEnvelope(vault, asset.sidecar_path), /Schema validation failed/);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("PPTX Adapter extracts slide text, speaker notes, image references, and slide-level evidence", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-pptx-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.mkdir(path.join(vault, "00-Inbox"), { recursive: true });
+    makePptx(path.join(vault, "00-Inbox", "lecture.pptx"));
+    const asset = await ingestAsset(vault, "00-Inbox/lecture.pptx", { sensitivityClass: 0, maxRepresentation: "full", classificationState: "classified" });
+    const cache = await readExtractionCache(vault, asset);
+    assert.equal(asset.format, "pptx");
+    assert.equal(asset.metadata.slides, 1);
+    assert.equal(cache.slide_text[0]?.speaker_notes, "Speaker note");
+    assert.deepEqual(cache.slide_text[0]?.image_refs, ["ppt/media/image1.png"]);
+    assert.deepEqual(slideEvidenceLocator(asset, [1], "Slide title"), { asset_id: asset.asset_id, source_ref: `[[${asset.companion_note_path}]]`, original_asset_ref: `[[${asset.original_asset_ref}]]`, content_hash: asset.content_hash, slides: [1], locator: "Slide title" });
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -171,6 +220,34 @@ test("application-tracker materializes an accepted JSON Inbox asset as a module 
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("application Inbox roles keep Documents metadata-only and outside the generic research workflow", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-application-roles-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const instanceId = "applications-role-policy";
+    await createInstance(vault, {
+      module_id: "application-tracker", instance_id: instanceId, display_name: "Application role policy",
+      fields: { application_type: "masters", region: "Australia", intake: "2027-S1", default_currency: "AUD", "monitoring.enabled": true, "monitoring.default_check_interval_days": 30 },
+    });
+    const inbox = path.join(vault, "20-Workspace", "Applications", instanceId, "Inbox");
+    for (const folder of ["Research", "Documents", "Private"]) assert.equal((await fs.stat(path.join(inbox, folder))).isDirectory(), true);
+    await fs.writeFile(path.join(inbox, "Research", "official-update.json"), JSON.stringify({ institution: "Monash University" }), "utf8");
+    await fs.writeFile(path.join(inbox, "Documents", "transcript.json"), JSON.stringify({ student: "Private user" }), "utf8");
+    const materialized = await materializeInboxAiTasks(vault);
+    assert.equal(materialized.created.length, 1, "only the Research role may create the generic capture task");
+    const repository = await RuntimeRepository.open(vault);
+    const researchTask = repository.getTask(materialized.created[0]!);
+    assert.equal(researchTask?.payload.asset_role, "research-report");
+    repository.close();
+    const items = await discoverInboxItems(vault);
+    const document = items.find((item) => item.filename === "transcript.json");
+    assert.equal(document?.state, "waiting-for-user");
+    assert.equal(document?.required_user_action, "resolve-review");
+    assert.equal((document?.attachment_classification?.current_policy as { max_representation?: string } | undefined)?.max_representation, "metadata");
+    assert.match(document?.error ?? "", /does not permit generic AI processing/);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("unclassified non-Markdown Inbox attachments wait for user classification before a Codex task can run", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-unclassified-waiting-"));
   try {
@@ -193,6 +270,31 @@ test("unclassified non-Markdown Inbox attachments wait for user classification b
     assert.equal(envelope.classification_state, "unclassified");
     assert.equal(envelope.access_policy.max_representation, "metadata");
     repository.close();
+
+    const inbox = await invokeCommandApi({ vaultRoot: vault, requestId: "INBOX-CLASSIFY-VIEW", method: "getInboxCenterSnapshot", params: {} });
+    const inboxData = inbox.data as { inbox?: { items?: Array<{ item_id: string; required_user_action?: string; attachment_classification?: { capture_path?: string; classification_state?: string; requested_representation?: string } }> } };
+    const view = (inboxData.inbox?.items ?? [])
+      .find((candidate) => candidate.item_id === String(task?.payload.item_id));
+    assert.equal(view?.required_user_action, "classify-attachment");
+    assert.equal(view?.attachment_classification?.capture_path, ingestion.capture_path);
+    assert.equal(view?.attachment_classification?.classification_state, "unclassified");
+    assert.equal(view?.attachment_classification?.requested_representation, "full");
+
+    const classified = await invokeCommandApi({
+      vaultRoot: vault,
+      requestId: "INBOX-CLASSIFY-001",
+      method: "classifyInboxAttachment",
+      params: { item_id: String(task?.payload.item_id), sensitivity_class: 1, max_representation: "full" },
+    });
+    assert.equal(classified.ok, true, JSON.stringify(classified.error));
+    assert.equal((classified.data as { task_id?: string }).task_id, task?.task_id, "Classification must resume the same business task.");
+    const updated = await readCaptureEnvelope(vault, ingestion.capture_path!);
+    assert.equal(updated.classification_state, "classified");
+    assert.equal(updated.sensitivity_class, 1);
+    assert.equal(updated.access_policy.max_representation, "full");
+    const repositoryAfter = await RuntimeRepository.open(vault);
+    assert.equal(repositoryAfter.getTask(task!.task_id)?.status, "queued");
+    repositoryAfter.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -279,5 +381,18 @@ test("application-tracker holds partial PDFs for user review instead of sending 
     assert.equal(task?.payload.pdf_policy_source, "module-manifest");
     assert.deepEqual(task?.payload.pdf_extraction_decision, { usable: false, requires_review: true, status: "partial" });
     repository.close();
+
+    const approved = await invokeCommandApi({
+      vaultRoot: vault,
+      requestId: "PDF-PARTIAL-REVIEW-001",
+      method: "reviewPartialInboxExtraction",
+      params: { item_id: String(task?.payload.item_id), decision: "approve-extracted-text" },
+    });
+    assert.equal(approved.ok, true, JSON.stringify(approved.error));
+    const repositoryAfterReview = await RuntimeRepository.open(vault);
+    const resumed = repositoryAfterReview.getTask(task!.task_id);
+    assert.equal(resumed?.status, "queued");
+    assert.equal((resumed?.payload.pdf_user_review as { decision?: string }).decision, "approve-extracted-text");
+    repositoryAfterReview.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

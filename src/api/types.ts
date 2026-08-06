@@ -44,7 +44,12 @@ export type CommandApiMethod =
   | "runQualityAudit"
   | "getFieldProvenance"
   | "updateAssetAccessPolicy"
-  | "backfillQualityMetadata";
+  | "classifyInboxAttachment"
+  | "reviewPartialInboxExtraction"
+  | "migrateLegacyAccessPolicies"
+  | "backfillQualityMetadata"
+  | "previewModuleBlueprint"
+  | "createModuleFromBlueprint";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;
@@ -114,6 +119,27 @@ export interface ProcessInboxItemParams {
 export interface ProcessInboxBatchParams {
   item_ids: string[];
   mode: "high-confidence";
+}
+
+/** User-confirmed policy plus a managed resume for a blocked Inbox attachment. */
+export interface ClassifyInboxAttachmentParams {
+  item_id: string;
+  sensitivity_class: 0 | 1 | 2 | 3;
+  max_representation: "metadata" | "summary" | "full" | "sensitive-original";
+}
+
+/** Explicit user acknowledgement before a module may use a partial PDF extraction. */
+export interface ReviewPartialInboxExtractionParams {
+  item_id: string;
+  decision: "approve-extracted-text" | "keep-waiting";
+}
+
+/** Preview, explicitly apply, or undo the one-time legacy read_level policy migration. */
+export interface LegacyAccessPolicyMigrationParams {
+  action: "preview" | "apply" | "rollback";
+  preview_id?: string;
+  reviewed_paths?: string[];
+  confirm?: boolean;
 }
 
 export interface GetRunDetailsParams {

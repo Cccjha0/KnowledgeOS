@@ -1,0 +1,34 @@
+workflow_id: weekly-summary
+workflow_version: 1.0.0
+inputs:
+- instance
+- period
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+steps:
+- id: summarize
+  uses: codex.prompt
+  with:
+    prompt_id: weekly-summary
+    output_schema: https://pkb.local/schemas/course/record.schema.json
+- id: plan
+  uses: core.build-operation-plan
+  with:
+    output: summarize
+    output_schema: record
+    target: '{instance.content_root}/Summaries/{schedule.iso_week}.md'
+    template: templates/record.md
+    idempotency_key: course:{instance.instance_id}:weekly-summary:{schedule.iso_week}
+    summary: Create a weekly summary
+- id: publish-weekly-summary
+  uses: core.publish-event
+  with:
+    event_type: course.weekly-summary-created
+    payload:
+      summary: weekly-summary
+outputs:
+- operation_plan
+- events

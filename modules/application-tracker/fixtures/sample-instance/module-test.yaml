@@ -10,5 +10,13 @@ scenarios:
   prompt_regression: { fixture: tests/prompt-regression/facts.yaml }
   periodic_job: { enabled: false }
   event_consumption: { enabled: false }
-  event_publication: { enabled: false }
+  event_publication:
+    enabled: true
+    event_type: research.required
+    workflow_id: sync-due-research
+    instance_id: null
+    seed:
+      record_path: 20-Workspace/Applications/sample-applications/Records/Fixture-C6007.md
+      next_check: "2026-01-01T00:00:00Z"
+  pdf_policy: { enabled: true, partial_expected: review }
   migration_apply: { enabled: true, rollback: true }

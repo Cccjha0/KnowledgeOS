@@ -1,0 +1,5 @@
+owned_roots:
+- 20-Workspace/课程管理/{instance_id}
+inbox: '{content_root}/Inbox'
+records: '{content_root}/Records'
+archive: '{content_root}/Archive'

@@ -1,0 +1,4 @@
+interface:
+  display_name: "KnowledgeOS Module Builder"
+  short_description: "Design and scaffold safe KnowledgeOS modules"
+  default_prompt: "Use $knowledgeos-module-builder to turn my use case into a validated Module Blueprint and scaffold."

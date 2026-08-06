@@ -1,0 +1,95 @@
+registry_version: 1
+base_templates:
+  minimal-config:
+    scaffold_template: minimal-config
+    module_types: [configuration]
+  standard-workflow:
+    scaffold_template: workflow
+    module_types: [configuration, workflow]
+  integration:
+    scaffold_template: integration
+    module_types: [integration]
+packs:
+  capture-processing:
+    capabilities: [capture-processing]
+    requires: []
+    conflicts: []
+    adapters: [markdown]
+    components: {}
+  structured-entity:
+    capabilities: [metadata-enrichment]
+    requires: [capture-processing]
+    conflicts: []
+    adapters: []
+    components: {}
+  attachment-processing:
+    capabilities: [attachment-management]
+    requires: [capture-processing]
+    conflicts: []
+    adapters: []
+    components: {}
+  periodic-summary:
+    capabilities: [periodic-summary]
+    requires: [structured-entity]
+    conflicts: []
+    adapters: []
+    components:
+      periodic-rollup: "^1.0.0"
+  deadline-tracking:
+    capabilities: [review-items]
+    requires: [structured-entity]
+    conflicts: []
+    adapters: []
+    components:
+      status-machine: "^1.0.0"
+  event-publishing:
+    capabilities: [event-publishing]
+    requires: []
+    conflicts: []
+    adapters: []
+    components: {}
+  event-subscription:
+    capabilities: [event-subscription]
+    requires: []
+    conflicts: []
+    adapters: []
+    components: {}
+  research-request:
+    capabilities: [research-request]
+    requires: [event-publishing]
+    conflicts: []
+    adapters: []
+    components:
+      research-request: "^1.0.0"
+  high-privacy:
+    capabilities: []
+    requires: []
+    conflicts: [external-integration]
+    adapters: []
+    components: {}
+  immutable-user-content:
+    capabilities: []
+    requires: []
+    conflicts: []
+    adapters: []
+    components: {}
+  timeline:
+    capabilities: [dashboard-items]
+    requires: [structured-entity]
+    conflicts: []
+    adapters: []
+    components:
+      timeline: "^1.0.0"
+  comparison-table:
+    capabilities: [dashboard-items]
+    requires: [structured-entity]
+    conflicts: []
+    adapters: []
+    components:
+      comparison-table: "^1.0.0"
+  external-integration:
+    capabilities: []
+    requires: []
+    conflicts: [high-privacy]
+    adapters: []
+    components: {}

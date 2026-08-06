@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://pkb.local/schemas/core/capture.schema.json",
-  "title": "PKB Capture Envelope",
+  "title": "PKB Quick Capture Envelope",
+  "description": "Quick Capture routing record. This is not the Asset Metadata Sidecar; attachments use asset-sidecar.schema.json.",
   "type": "object",
   "additionalProperties": false,
   "required": [

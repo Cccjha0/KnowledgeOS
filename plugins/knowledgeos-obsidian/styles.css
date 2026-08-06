@@ -300,6 +300,29 @@
 .knowledgeos-inbox-center .knowledgeos-inbox-route label { color: var(--text-muted); display: flex; flex-direction: column; font-size: var(--font-ui-smaller); gap: var(--size-4-1); min-width: 0; }
 .knowledgeos-inbox-center .knowledgeos-inbox-route select { width: 100%; }
 .knowledgeos-inbox-center .knowledgeos-inbox-route-process { align-self: end; grid-column: 1 / -1; justify-self: start; }
+.knowledgeos-inbox-center .knowledgeos-inbox-attachment-action { display: block; }
+.knowledgeos-inbox-center .knowledgeos-inbox-attachment-copy { color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.5; margin-top: var(--size-4-1); }
+.knowledgeos-inbox-center .knowledgeos-inbox-attachment-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1.5; margin-top: var(--size-4-2); }
+.knowledgeos-attachment-classification-modal { container-name: knowledgeos-attachment-classification; container-type: inline-size; max-width: 38rem; }
+.knowledgeos-attachment-classification-modal .knowledgeos-modal-intro { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.55; margin-top: var(--size-4-2); }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-facts { border-top: 1px solid var(--background-modifier-border); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: var(--size-4-4) 0 0; }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-fact { border-bottom: 1px solid var(--background-modifier-border); min-width: 0; padding: var(--size-4-2) var(--size-4-3) var(--size-4-2) 0; }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-fact dt { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 600; }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-fact dd { font-size: var(--font-ui-small); line-height: 1.5; margin: var(--size-4-1) 0 0; overflow-wrap: anywhere; }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-form { display: grid; gap: var(--size-4-3); margin-top: var(--size-4-4); }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-form > label { color: var(--text-muted); display: grid; font-size: var(--font-ui-small); gap: var(--size-4-1); }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-suggestion { align-items: center; background: var(--background-secondary); color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: var(--font-ui-smaller); gap: var(--size-4-2); line-height: 1.5; padding: var(--size-4-2) var(--size-4-3); }
+.knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-preview { background: var(--background-secondary); border-left: 3px solid var(--interactive-accent); color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.55; margin-top: var(--size-4-3); padding: var(--size-4-2) var(--size-4-3); }
+.knowledgeos-attachment-classification-modal .knowledgeos-modal-submit-state { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.5; margin-top: var(--size-4-3); }
+.knowledgeos-attachment-classification-modal .knowledgeos-modal-submit-state.is-error { border-left: 3px solid var(--text-error); color: var(--text-error); padding-left: var(--size-4-2); }
+.knowledgeos-attachment-classification-modal .knowledgeos-modal-submit-state:empty { display: none; }
+.knowledgeos-attachment-classification-modal .knowledgeos-modal-actions { align-items: center; border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-top: var(--size-4-4); padding-top: var(--size-4-3); }
+.knowledgeos-attachment-classification-modal :is(button, select):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+@container knowledgeos-attachment-classification (max-width: 28rem) {
+  .knowledgeos-attachment-classification-modal .knowledgeos-attachment-classification-facts { grid-template-columns: minmax(0, 1fr); }
+  .knowledgeos-attachment-classification-modal .knowledgeos-modal-actions { align-items: stretch; flex-direction: column; }
+  .knowledgeos-attachment-classification-modal .knowledgeos-modal-actions button { width: 100%; }
+}
 .knowledgeos-inbox-center .knowledgeos-inbox-detail-label { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 600; margin-top: var(--size-4-3); }
 .knowledgeos-inbox-center .knowledgeos-inbox-detail-value { color: var(--text-normal); font-size: var(--font-ui-small); line-height: 1.5; margin-top: var(--size-4-1); overflow-wrap: anywhere; }
 .knowledgeos-inbox-center .knowledgeos-inbox-secondary-actions { align-items: center; display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-top: var(--size-4-3); }
@@ -565,6 +588,9 @@
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-actions { align-items: center; border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-top: var(--size-4-5); padding-top: var(--size-4-3); }
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-disabled-reason { color: var(--text-muted); flex: 1 1 12rem; font-size: var(--font-ui-smaller); }
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) :is(button, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review { align-items: start; display: grid; gap: var(--size-4-2); grid-template-columns: auto minmax(0, 1fr); cursor: pointer; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review input { margin-top: .2rem; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review .knowledgeos-modal-row-meta { grid-column: 2; }
 @container knowledgeos-modal (max-width: 40rem) {
   :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-facts { grid-template-columns: minmax(0, 1fr); }
   :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-title-row,
@@ -635,4 +661,26 @@
 @media (prefers-reduced-motion: reduce) {
   .knowledgeos-card, .knowledgeos-link, .knowledgeos-card-arrow { scroll-behavior: auto; transition: none; }
   .knowledgeos-skeleton { animation: none; }
+}
+
+.knowledgeos-module-builder-modal { container-name: knowledgeos-builder; container-type: inline-size; max-width: 46rem; }
+.knowledgeos-module-builder-modal > h2 { margin-bottom: var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-intro { color: var(--text-muted); line-height: 1.5; margin: 0 0 var(--size-4-4); max-width: 62ch; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-form { border-top: 1px solid var(--background-modifier-border); }
+.knowledgeos-module-builder-modal .setting-item { align-items: flex-start; }
+.knowledgeos-module-builder-modal textarea { min-height: 5rem; resize: vertical; width: min(26rem, 100%); }
+.knowledgeos-module-builder-modal input[type="text"] { width: min(26rem, 100%); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-state { color: var(--text-muted); font-size: var(--font-ui-small); min-height: var(--size-4-4); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview { border-left: 3px solid var(--interactive-accent); margin: var(--size-4-3) 0; padding: var(--size-4-2) var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview h3 { font-size: var(--font-ui-medium); margin: 0 0 var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview p { color: var(--text-muted); font-size: var(--font-ui-small); margin: var(--size-4-1) 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-preview pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-actions { border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-4); padding-top: var(--size-4-3); }
+.knowledgeos-module-builder-modal :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+@container knowledgeos-builder (max-width: 30rem) {
+  .knowledgeos-module-builder-modal .setting-item { flex-direction: column; gap: var(--size-4-2); }
+  .knowledgeos-module-builder-modal .setting-item-control { justify-content: flex-start; width: 100%; }
+  .knowledgeos-module-builder-modal input[type="text"], .knowledgeos-module-builder-modal textarea, .knowledgeos-module-builder-modal select { width: 100%; }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-actions { align-items: stretch; flex-direction: column; }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-actions button { width: 100%; }
 }

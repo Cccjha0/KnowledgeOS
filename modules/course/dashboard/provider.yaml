@@ -1,0 +1,6 @@
+provider_id: course-dashboard
+version: 1.0.0
+items:
+- inbox
+- waiting-review
+- recent-records

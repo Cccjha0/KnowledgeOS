@@ -1,0 +1,9 @@
+schemas:
+  instance:
+    version: 1
+    path: instance.schema.json
+    entity_type: instance
+  record:
+    version: 1
+    path: record.schema.json
+    entity_type: course-record

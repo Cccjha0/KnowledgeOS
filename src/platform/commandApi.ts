@@ -1,7 +1,8 @@
 import path from "node:path";
+import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown } from "../core/bridge.js";
+import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
+import { parseMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -16,7 +17,7 @@ import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
-import { materializeInboxAiTasks, processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
+import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem, reviewPartialInboxExtraction } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -36,10 +37,21 @@ import { QualityRepository } from "../quality/repository.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsidianCoordination.js";
 import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
+import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
+import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
+
+async function withTemporaryBlueprint<T>(vaultRoot: string, requestId: string, blueprint: JsonObject, action: (file: string) => Promise<T>): Promise<T> {
+  const root = path.join(vaultRoot, "90-System", "Cache", "Module Builder");
+  await fs.mkdir(root, { recursive: true });
+  const file = path.join(root, `${requestId.replace(/[^A-Za-z0-9_-]/g, "-")}.blueprint.yaml`);
+  writeYaml(vaultRoot, file, blueprint);
+  try { return await action(file); }
+  finally { await fs.rm(file, { force: true }); }
+}
 
 interface CommandContext {
   vaultRoot: string;
@@ -266,6 +278,18 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
   const obsidianOpenPaths = Array.isArray(params.obsidian_open_paths) ? params.obsidian_open_paths : null;
   if (obsidianOpenPaths !== null) await syncObsidianOpenFiles(vaultRoot, obsidianOpenPaths);
+  if (method === "previewModuleBlueprint") {
+    const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
+    if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    const result = await withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
+    return { report: result.report, scaffold_template: result.scaffoldTemplate } as unknown as JsonValue;
+  }
+  if (method === "createModuleFromBlueprint") {
+    if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
+    const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
+    if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => scaffoldModuleFromBlueprint(ENGINE_ROOT, file)) as Promise<JsonValue>;
+  }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";
     if (!["full", "overview", "tasks", "quality", "modules", "history"].includes(section)) {
@@ -329,6 +353,13 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return snapshot;
   }
   if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
+  if (method === "migrateLegacyAccessPolicies") {
+    const migration = params as unknown as LegacyAccessPolicyMigrationParams;
+    if (migration.action === "preview") return previewLegacyAccessPolicyMigration(vaultRoot);
+    if (migration.action === "apply") return applyLegacyAccessPolicyMigration(vaultRoot, migration);
+    if (migration.action === "rollback") return rollbackLegacyAccessPolicyMigration(vaultRoot, String(migration.preview_id ?? ""), migration.confirm === true);
+    throw new PkbError("INVALID_REQUEST", "action must be preview, apply, or rollback.");
+  }
   if (method === "getFieldProvenance") return getFieldProvenance(vaultRoot, stringParam(params, "target"), stringParam(params, "field"));
   if (method === "updateAssetAccessPolicy") {
     const capturePath = stringParam(params, "capture_path");
@@ -527,6 +558,8 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "processInboxItem") return processInboxItem(vaultRoot, params as unknown as ProcessInboxItemParams);
   if (method === "processInboxBatch") return processInboxBatch(vaultRoot, params as unknown as ProcessInboxBatchParams);
+  if (method === "classifyInboxAttachment") return classifyInboxAttachment(vaultRoot, params as unknown as ClassifyInboxAttachmentParams);
+  if (method === "reviewPartialInboxExtraction") return reviewPartialInboxExtraction(vaultRoot, params as unknown as ReviewPartialInboxExtractionParams);
   if (method === "manageModule") return manageModule(vaultRoot, params as unknown as ManageModuleParams);
   if (method === "createInstance") return createInstance(vaultRoot, params as unknown as CreateInstanceParams);
   if (method === "manageInstance") return manageInstance(vaultRoot, params as unknown as ManageInstanceParams);

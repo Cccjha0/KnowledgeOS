@@ -2,14 +2,16 @@ import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml, writeMarkdown } from "./bridge.js";
+import { parseMarkdown, parseYaml, validateSchema, writeMarkdown } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { ensureDir, exists, fromVaultPath, listFilesRecursive, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import type { JsonObject, JsonValue } from "./types.js";
 import { assertRepresentationLevel, assertSensitivityClass, defaultMaxRepresentation, resolveDocumentAccessPolicy, unclassifiedDocumentAccessPolicy, type AttachmentSensitivityClass, type ClassificationState, type DocumentAccessPolicy, type LegacyReadLevel, type RepresentationLevel, type SensitivityClass } from "./readLevels.js";
+import { adapterForExtension, availableIngestionAdapter, type IngestionFormat } from "./adapterRegistry.js";
 
-export type IngestionFormat = "markdown" | "text" | "json" | "yaml" | "pdf" | "image";
+export type { IngestionFormat } from "./adapterRegistry.js";
 export type PdfExtractionStatus = "pending" | "completed" | "partial" | "empty" | "scanned" | "encrypted" | "corrupted" | "unsupported" | "failed";
+const ASSET_SIDECAR_SCHEMA = "https://pkb.local/schemas/core/asset-sidecar.schema.json";
 
 export interface CaptureEnvelope extends JsonObject {
   schema_version: 3;
@@ -46,19 +48,29 @@ export interface ExtractionCache extends JsonObject {
   structured_data: JsonObject | null;
   /** PDF text remains page-addressable without putting page contents in Runtime State metadata. */
   page_text: Array<{ page: number; text: string; characters: number }>;
+  /** PPTX slide text, notes, and image references are kept in the disposable cache. */
+  slide_text: Array<{ slide: number; text: string; speaker_notes: string; image_refs: string[]; characters: number }>;
   created_at: string;
   last_accessed_at: string;
   reference_count: number;
 }
 
-const EXTENSIONS: Record<string, IngestionFormat> = {
-  ".md": "markdown", ".markdown": "markdown", ".txt": "text", ".text": "text", ".csv": "text",
-  ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".pdf": "pdf",
-  ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image", ".heic": "image",
-};
+/**
+ * The Asset Sidecar is Core-owned state, but is also a public contract. Validate
+ * before persistence and again after the atomic write so a corrupt or manually
+ * edited JSON file cannot silently become an authorization input.
+ */
+export async function writeAssetSidecar(vaultRoot: string, envelope: CaptureEnvelope): Promise<void> {
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, envelope);
+  const target = fromVaultPath(vaultRoot, envelope.sidecar_path);
+  await writeJsonAtomic(target, envelope);
+  const persisted = JSON.parse(await fs.readFile(target, "utf8")) as JsonObject;
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, persisted);
+}
 
 export function formatForExtension(extension: string): IngestionFormat | null {
-  return EXTENSIONS[extension.toLowerCase()] ?? null;
+  const adapter = adapterForExtension(extension);
+  return adapter && availableIngestionAdapter(adapter.format) ? adapter.format : null;
 }
 
 function asObject(value: JsonValue, message: string): JsonObject {
@@ -87,8 +99,20 @@ function extractionSummary(metadata: JsonObject, extractedText: string): JsonObj
   const extraction = metadata.extraction;
   if (!extraction || typeof extraction !== "object" || Array.isArray(extraction)) return { ...metadata, extraction: { status: extractedText.trim() ? "completed" : "empty", text_available: Boolean(extractedText.trim()) } };
   const detail = extraction as JsonObject;
-  const { page_text: _pageText, ...safeExtraction } = detail;
+  const { page_text: _pageText, slide_text: _slideText, ...safeExtraction } = detail;
   return { ...metadata, extraction: { ...safeExtraction, text_available: Boolean(extractedText.trim()) } };
+}
+
+function extractionSlides(metadata: JsonObject): ExtractionCache["slide_text"] {
+  const extraction = metadata.extraction;
+  if (!extraction || typeof extraction !== "object" || Array.isArray(extraction)) return [];
+  const slides = (extraction as JsonObject).slide_text;
+  if (!Array.isArray(slides)) return [];
+  return slides.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const slide = (value as JsonObject).slide; const text = (value as JsonObject).text; const speakerNotes = (value as JsonObject).speaker_notes; const imageRefs = (value as JsonObject).image_refs;
+    return typeof slide === "number" && typeof text === "string" ? [{ slide, text, speaker_notes: typeof speakerNotes === "string" ? speakerNotes : "", image_refs: Array.isArray(imageRefs) ? imageRefs.filter((item): item is string => typeof item === "string") : [], characters: text.length }] : [];
+  });
 }
 
 function extractionPages(metadata: JsonObject): ExtractionCache["page_text"] {
@@ -113,6 +137,16 @@ function extractPdfText(source: string): { text: string; metadata: JsonObject } 
     const parsed = JSON.parse(result.stdout) as PdfBridgeResponse;
     return { text: typeof parsed.text === "string" ? parsed.text : "", metadata: parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {} };
   } catch { throw new PkbError("PDF_EXTRACTION_FAILED", "PDF extraction returned invalid JSON."); }
+}
+
+function extractPptxText(source: string): { text: string; metadata: JsonObject } {
+  const bridge = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "tools", "pptx_ingestion_bridge.py");
+  const result = spawnSync("python", ["-X", "utf8", bridge, source, "--max-slides", "500", "--max-text-chars", "500000"], { encoding: "utf8", windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+  if (result.error || result.status !== 0) throw new PkbError("PPTX_EXTRACTION_FAILED", result.stderr.trim() || result.error?.message || "PPTX text extraction failed.");
+  try {
+    const parsed = JSON.parse(result.stdout) as PdfBridgeResponse;
+    return { text: typeof parsed.text === "string" ? parsed.text : "", metadata: parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {} };
+  } catch { throw new PkbError("PPTX_EXTRACTION_FAILED", "PPTX extraction returned invalid JSON."); }
 }
 
 /** A PDF is eligible for module/Codex workflows only when it has usable local text. */
@@ -174,9 +208,12 @@ export function pdfExtractionStatus(envelope: CaptureEnvelope): PdfExtractionSta
 export async function ingestAsset(vaultRoot: string, sourcePath: string, options: { sensitivityClass?: number; maxRepresentation?: RepresentationLevel; classificationState?: Exclude<ClassificationState, "unclassified">; /** @deprecated maps to sensitivityClass for legacy callers. */ readLevel?: number } = {}): Promise<CaptureEnvelope> {
   const source = fromVaultPath(vaultRoot, sourcePath);
   const extension = path.extname(source).toLowerCase();
-  const format = formatForExtension(extension);
-  if (!format) throw new PkbError("INGESTION_FORMAT_UNSUPPORTED", `No Ingestion Adapter is registered for ${extension || "this file type"}.`);
+  const registeredAdapter = adapterForExtension(extension);
+  const adapter = registeredAdapter && availableIngestionAdapter(registeredAdapter.format);
+  const format = adapter?.format ?? null;
+  if (!format || !adapter) throw new PkbError("INGESTION_FORMAT_UNSUPPORTED", `No available Ingestion Adapter is registered for ${extension || "this file type"}.`);
   const stat = await fs.stat(source);
+  if (stat.size > adapter.max_file_size) throw new PkbError("INGESTION_FILE_TOO_LARGE", `${sourcePath} exceeds ${adapter.adapter_id}'s maximum file size.`, { source_path: sourcePath, bytes: stat.size, max_file_size: adapter.max_file_size, adapter_id: adapter.adapter_id });
   const contentHash = await sha256File(source);
   const sidecarPath = `90-System/State/Sidecars/${contentHash}.json`;
   const capturePath = sidecarPath;
@@ -191,7 +228,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
   } catch { /* First ingestion or an obsolete sidecar: use the safe default below. */ }
   let extractedText = "";
   let structuredData: JsonObject | null = null;
-  let metadata: JsonObject = { extension, bytes: stat.size, modified_at: stat.mtime.toISOString() };
+  let metadata: JsonObject = { extension, bytes: stat.size, modified_at: stat.mtime.toISOString(), adapter: adapter.adapter_id, adapter_version: adapter.adapter_version, locator_type: adapter.locator_type };
   if (format === "text") extractedText = await fs.readFile(source, "utf8");
   if (format === "json") {
     structuredData = asObject(JSON.parse(await fs.readFile(source, "utf8")) as JsonValue, "JSON Capture inputs must be objects.");
@@ -205,15 +242,25 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
     const extracted = extractPdfText(source);
     extractedText = extracted.text; metadata = { ...metadata, ...extracted.metadata };
   }
+  if (format === "pptx") {
+    const extracted = extractPptxText(source);
+    extractedText = extracted.text; metadata = { ...metadata, ...extracted.metadata };
+  }
   if (format === "image") metadata = { ...metadata, adapter: "image-metadata", extraction: "metadata-only", ocr: "not-run" };
   const cache: ExtractionCache = {
     schema_version: 1, asset_id: assetId(contentHash), content_hash: contentHash,
-    extracted_text: extractedText, structured_data: structuredData, page_text: extractionPages(metadata), created_at: new Date().toISOString(), last_accessed_at: new Date().toISOString(), reference_count: 0,
+    extracted_text: extractedText, structured_data: structuredData, page_text: extractionPages(metadata), slide_text: extractionSlides(metadata), created_at: new Date().toISOString(), last_accessed_at: new Date().toISOString(), reference_count: 0,
   };
   const requestedSensitivity = options.sensitivityClass ?? options.readLevel;
   const explicitSensitivity = requestedSensitivity ?? (typeof persistedPolicy?.sensitivity_class === "number" ? persistedPolicy.sensitivity_class : 0);
   const hasExplicitPolicy = options.sensitivityClass !== undefined || options.maxRepresentation !== undefined || options.classificationState !== undefined;
-  const policy: DocumentAccessPolicy = hasExplicitPolicy
+  // A user-confirmed policy always wins over a module Inbox default on later
+  // materialization. Otherwise an Inbox refresh could silently undo the
+  // privacy choice that unblocked the task.
+  const hasUserConfirmedPolicy = persistedPolicy?.classification_state === "classified" && persistedPolicy.policy_source === "explicit";
+  const policy: DocumentAccessPolicy = hasUserConfirmedPolicy
+    ? persistedPolicy!
+    : hasExplicitPolicy
     ? {
         sensitivity_class: assertSensitivityClass(explicitSensitivity, "capture sensitivity_class"),
         max_representation: assertRepresentationLevel(options.maxRepresentation ?? defaultMaxRepresentation(assertSensitivityClass(explicitSensitivity, "capture sensitivity_class")), "capture access_policy.max_representation"),
@@ -233,7 +280,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
   };
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, sidecarPath)));
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, cachePath)));
-  await writeJsonAtomic(fromVaultPath(vaultRoot, sidecarPath), envelope);
+  await writeAssetSidecar(vaultRoot, envelope);
   await writeJsonAtomic(fromVaultPath(vaultRoot, cachePath), cache);
   if (!(await exists(fromVaultPath(vaultRoot, notePath)))) {
     await ensureDir(path.dirname(fromVaultPath(vaultRoot, notePath)));
@@ -245,7 +292,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
         extraction_status: pdfExtractionStatus(envelope) ?? "completed",
         extraction_cache_path: cachePath, created_at: envelope.created_at,
       },
-      content: `# ${path.basename(sourcePath)}\n\n## 原始附件\n\n[[${sourcePath}]]\n\n## 文件信息\n\n- Asset ID: ${envelope.asset_id}\n- 内容哈希: ${contentHash}\n- 格式: ${format}\n${format === "pdf" ? `- 页数: ${String(envelope.metadata.pages ?? "未知")}\n` : ""}- 提取状态: ${String(pdfExtractionStatus(envelope) ?? "completed")}\n\n## 我的笔记\n\n\n## AI 摘要\n\n\n## 相关内容\n\n`,
+      content: `# ${path.basename(sourcePath)}\n\n## 原始附件\n\n[[${sourcePath}]]\n\n## 文件信息\n\n- Asset ID: ${envelope.asset_id}\n- 内容哈希: ${contentHash}\n- 格式: ${format}\n${format === "pdf" ? `- 页数: ${String(envelope.metadata.pages ?? "未知")}\n` : ""}${format === "pptx" ? `- 幻灯片数: ${String(envelope.metadata.slides ?? "未知")}\n` : ""}- 提取状态: ${String(pdfExtractionStatus(envelope) ?? (envelope.metadata.extraction && typeof envelope.metadata.extraction === "object" ? (envelope.metadata.extraction as JsonObject).status ?? "completed" : "completed"))}\n\n## 我的笔记\n\n\n## AI 摘要\n\n\n## 相关内容\n\n`,
     });
   }
   return envelope;
@@ -267,7 +314,7 @@ export async function updateAssetAccessPolicy(vaultRoot: string, capturePath: st
     legacy_read_level: null,
     metadata: { ...envelope.metadata, policy_updated_at: updatedAt, policy_authority: "core-api" },
   };
-  await writeJsonAtomic(fromVaultPath(vaultRoot, updated.sidecar_path), updated);
+  await writeAssetSidecar(vaultRoot, updated);
   const noteFile = fromVaultPath(vaultRoot, updated.companion_note_path);
   if (await exists(noteFile)) {
     const note = parseMarkdown(vaultRoot, noteFile);
@@ -285,7 +332,7 @@ export async function readCaptureEnvelope(vaultRoot: string, capturePath: string
   if (parsed.schema_version === 1 && typeof parsed.extracted_text === "string") {
     // Compatibility for queued tasks created before the Sidecar/cache split.
     const hash = parsed.content_hash;
-    return {
+    const migrated: CaptureEnvelope = {
       schema_version: 3, asset_id: assetId(hash), capture_id: String(parsed.capture_id), source_path: parsed.source_path, original_asset_ref: String(parsed.original_asset_ref ?? parsed.source_path),
       format: parsed.format as IngestionFormat, content_hash: hash, sidecar_path: String(parsed.sidecar_path ?? capturePath), capture_path: capturePath,
       extraction_cache_path: String(parsed.capture_path ?? capturePath), companion_note_path: companionNotePath(hash, parsed.source_path),
@@ -293,20 +340,30 @@ export async function readCaptureEnvelope(vaultRoot: string, capturePath: string
       sensitivity_class: assertSensitivityClass(typeof parsed.read_level === "number" ? parsed.read_level : 0, "legacy capture read_level"), classification_state: "inherited", access_policy: { max_representation: "sensitive-original" }, policy_source: "legacy",
       legacy_read_level: typeof parsed.read_level === "number" ? assertSensitivityClass(parsed.read_level, "legacy capture read_level") : null, created_at: String(parsed.created_at ?? new Date().toISOString()),
     };
+    validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, migrated);
+    return migrated;
   }
   if (parsed.schema_version === 2 && typeof parsed.extraction_cache_path === "string") {
     const policy = resolveDocumentAccessPolicy(parsed);
-    return {
+    const migrated: CaptureEnvelope = {
       ...parsed, schema_version: 3, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
       legacy_read_level: policy.legacy_read_level ?? null,
     } as unknown as CaptureEnvelope;
+    validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, migrated);
+    return migrated;
   }
   if (parsed.schema_version !== 3 || typeof parsed.extraction_cache_path !== "string") throw new PkbError("CAPTURE_ENVELOPE_INVALID", `Invalid Asset Metadata Sidecar ${capturePath}.`);
+  // Validate the persisted v3 document before resolving defaults. Otherwise a
+  // malformed policy could be silently normalized into a different authority
+  // decision while the invalid on-disk Sidecar remained in place.
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, parsed);
   const policy = resolveDocumentAccessPolicy(parsed);
-  return {
+  const envelope: CaptureEnvelope = {
     ...parsed, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
     legacy_read_level: policy.legacy_read_level ?? null,
   } as unknown as CaptureEnvelope;
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, envelope);
+  return envelope;
 }
 
 export async function readExtractionCache(vaultRoot: string, envelope: CaptureEnvelope): Promise<ExtractionCache> {
@@ -320,18 +377,18 @@ export async function readExtractionCache(vaultRoot: string, envelope: CaptureEn
       // use it once without copying the text into a new long-lived Sidecar.
       return { schema_version: 1, asset_id: envelope.asset_id, content_hash: envelope.content_hash, extracted_text: parsed.extracted_text,
         structured_data: parsed.structured_data && typeof parsed.structured_data === "object" && !Array.isArray(parsed.structured_data) ? parsed.structured_data as JsonObject : null,
-        page_text: extractionPages(parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {}), created_at: envelope.created_at, last_accessed_at: new Date().toISOString(), reference_count: 0 };
+        page_text: extractionPages(parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {}), slide_text: extractionSlides(parsed.metadata && typeof parsed.metadata === "object" && !Array.isArray(parsed.metadata) ? parsed.metadata as JsonObject : {}), created_at: envelope.created_at, last_accessed_at: new Date().toISOString(), reference_count: 0 };
     }
     if (parsed.schema_version !== 1 || parsed.content_hash !== envelope.content_hash || typeof parsed.extracted_text !== "string") throw new Error("invalid extraction cache");
     const resolved: ExtractionCache = { schema_version: 1, asset_id: String(parsed.asset_id), content_hash: parsed.content_hash, extracted_text: parsed.extracted_text,
       structured_data: parsed.structured_data && typeof parsed.structured_data === "object" && !Array.isArray(parsed.structured_data) ? parsed.structured_data as JsonObject : null,
-      page_text: Array.isArray(parsed.page_text) ? parsed.page_text as ExtractionCache["page_text"] : [], created_at: typeof parsed.created_at === "string" ? parsed.created_at : envelope.created_at,
+      page_text: Array.isArray(parsed.page_text) ? parsed.page_text as ExtractionCache["page_text"] : [], slide_text: Array.isArray(parsed.slide_text) ? parsed.slide_text as ExtractionCache["slide_text"] : [], created_at: typeof parsed.created_at === "string" ? parsed.created_at : envelope.created_at,
       last_accessed_at: new Date().toISOString(), reference_count: typeof parsed.reference_count === "number" ? parsed.reference_count : 0 };
     await ensureDir(path.dirname(fromVaultPath(vaultRoot, canonicalPath)));
     await writeJsonAtomic(fromVaultPath(vaultRoot, canonicalPath), resolved);
     if (candidate !== canonicalPath) {
       await fs.rm(cachePath, { force: true });
-      await writeJsonAtomic(fromVaultPath(vaultRoot, envelope.sidecar_path), { ...envelope, extraction_cache_path: canonicalPath });
+      await writeAssetSidecar(vaultRoot, { ...envelope, extraction_cache_path: canonicalPath });
     }
     return resolved;
   } catch { /* Try the next compatible cache location. */ }
@@ -345,6 +402,11 @@ export async function readExtractionCache(vaultRoot: string, envelope: CaptureEn
 
 export function evidenceLocator(envelope: CaptureEnvelope, pages: number[] = [], locator?: string): JsonObject {
   return { asset_id: envelope.asset_id, source_ref: `[[${envelope.companion_note_path}]]`, original_asset_ref: `[[${envelope.original_asset_ref}]]`, content_hash: envelope.content_hash, ...(pages.length ? { pages: [...new Set(pages)].sort((a, b) => a - b) } : {}), ...(locator ? { locator } : {}) };
+}
+
+/** Slide-addressable provenance for locally extracted PowerPoint material. */
+export function slideEvidenceLocator(envelope: CaptureEnvelope, slides: number[] = [], locator?: string): JsonObject {
+  return { asset_id: envelope.asset_id, source_ref: `[[${envelope.companion_note_path}]]`, original_asset_ref: `[[${envelope.original_asset_ref}]]`, content_hash: envelope.content_hash, ...(slides.length ? { slides: [...new Set(slides)].sort((a, b) => a - b) } : {}), ...(locator ? { locator } : {}) };
 }
 
 /** Counts user-authored references, deliberately excluding the generated
@@ -379,7 +441,7 @@ export async function cleanIngestionArtifacts(vaultRoot: string, options: { now?
     }
     if (Number(envelope.metadata.reference_count ?? -1) !== references) {
       envelope.metadata = { ...envelope.metadata, reference_count: references, reference_counted_at: now.toISOString() };
-      await writeJsonAtomic(file, envelope);
+      await writeAssetSidecar(vaultRoot, envelope);
     }
     const cacheFile = fromVaultPath(vaultRoot, extractionCachePath(envelope.content_hash));
     if (await exists(cacheFile)) {

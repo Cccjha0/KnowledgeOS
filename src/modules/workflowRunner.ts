@@ -308,12 +308,16 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
     assertDocumentReadable(state, normalized, requested, policy);
     const pdfPolicy = effectivePdfUsePolicy(task.payload.pdf_policy ?? state.resolved.manifest.pdf_policy);
     const pdfDecision = pdfExtractionDecision(envelope, pdfPolicy);
+    const partialApprovedByUser = Boolean(pdfDecision.status === "partial" && pdfDecision.requires_review
+      && task.payload.pdf_user_review && typeof task.payload.pdf_user_review === "object" && !Array.isArray(task.payload.pdf_user_review)
+      && (task.payload.pdf_user_review as JsonObject).decision === "approve-extracted-text"
+      && (task.payload.pdf_user_review as JsonObject).capture_path === envelope.capture_path);
     if (envelope.format === "pdf") state.pdfDecisions.set(envelope.source_path, {
       source_path: envelope.source_path, capture_path: envelope.capture_path, extraction_status: pdfDecision.status,
-      usable: pdfDecision.usable, requires_review: pdfDecision.requires_review, policy: pdfPolicy,
+      usable: pdfDecision.usable || partialApprovedByUser, requires_review: pdfDecision.requires_review, user_approved: partialApprovedByUser, policy: pdfPolicy,
       policy_source: task.payload.pdf_policy ? String(task.payload.pdf_policy_source ?? "task-payload") : "workflow-resolution",
     });
-    if (!pdfDecision.usable) {
+    if (!pdfDecision.usable && !partialApprovedByUser) {
       throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfDecision.status}; this Workflow policy does not permit it without user action.`, {
         source_path: envelope.source_path,
         extraction_status: pdfDecision.status,
@@ -613,6 +617,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             allowedTypes: ["create-file", "update-frontmatter", "append-section", "move-file"],
             allowedTargets: plan.operations.map((operation) => operation.target!).filter(Boolean), requiredReviewId: null, gitSnapshot: snapshot,
           });
+          // Preserve the exact Capture/Task that produced a Review. This is
+          // required both for user explanation and for fixture tests to prove
+          // an ambiguous input created *its own* Review rather than relying on
+          // a Review left by an earlier scenario.
+          for (const review of plan.review_items) {
+            review.origin_task_id = task.task_id;
+            if (typeof task.payload.item_id === "string") review.item_id = task.payload.item_id;
+            if (typeof task.payload.source_file === "string") review.source_file = task.payload.source_file;
+          }
           await writeReviewItems(vaultRoot, plan.review_items);
           if (step.with.record_processed_report === true && typeof prepared.report === "object" && typeof prepared.destination === "string" && typeof prepared.reportHash === "string") {
             const report = object(prepared.report, "MODULE_WORKFLOW_REPORT_MISSING");

@@ -29,7 +29,7 @@ test("Vault initialization separates configuration, user data, state, logs, and 
       "20-Workspace", "30-Knowledge", "90-System/Core", "90-System/Modules", "90-System/Components",
       "90-System/State", "90-System/Logs", "90-System/Cache",
     ]) assert.equal((await fs.stat(path.join(vault, ...relative.split("/")))).isDirectory(), true);
-    assert.deepEqual(synced.modules.map((module) => module.id), ["application-tracker", "experience-log", "reading-log"]);
+    assert.deepEqual(synced.modules.map((module) => module.id), ["application-tracker", "course", "experience-log", "reading-log"]);
     assert.equal((await readJson<{ version: string }>(path.join(vault, "90-System", "Core", "engine.json"), { version: "" })).version, "0.9.0-beta");
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });

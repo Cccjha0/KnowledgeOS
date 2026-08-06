@@ -1,0 +1,90 @@
+blueprint_version: 1
+base_template: standard-workflow
+capability_packs:
+- attachment-processing
+- deadline-tracking
+- periodic-summary
+- event-publishing
+- high-privacy
+- immutable-user-content
+module:
+  id: course
+  display_name: 课程管理
+  description: 管理课程资料、作业、截止日期和课程总结
+  intended_users:
+  - university-student
+module_class:
+  type: workflow
+  complexity: standard
+use_cases:
+  primary:
+  - 保存课程讲义
+  - 跟踪作业截止日期
+  - 生成每周课程总结
+  excluded:
+  - 自动提交作业
+  - 自动发送邮件
+  - 修改用户原始课堂笔记
+entities:
+- id: course
+  ownership: module
+- id: lecture
+  ownership: instance
+- id: assignment
+  ownership: instance
+inputs:
+- markdown
+- pdf
+- pptx
+outputs:
+- lecture-note
+- assignment-record
+- weekly-summary
+inbox:
+  module_level: true
+  instance_level: true
+  global_routing: true
+privacy:
+  default_sensitivity_class: 2
+  default_max_representation: full
+  network_allowed: false
+  user_original_content_mutable: false
+workflows:
+- id: normalize-lecture
+  trigger: capture
+  requires_ai: true
+- id: generate-weekly-summary
+  trigger: schedule
+  requires_ai: true
+review_policy:
+  critical_fields:
+  - assignment.deadline
+  - assignment.submission_status
+  ambiguous_input: review
+  destructive_operations: forbidden
+jobs:
+- id: weekly-summary
+  schedule: weekly
+  catch_up: latest
+events:
+  publishes:
+  - course.assignment-created
+  subscribes: []
+dashboard:
+  sections:
+  - upcoming-deadlines
+  - recent-lectures
+  - waiting-reviews
+testing:
+  normal_input: required
+  ambiguous_input: required
+  repeat_execution: required
+  permission_denied: required
+  paused_instance: required
+  archived_instance: required
+  prompt_regression: required
+  periodic_job: required
+  event_publication: required
+  event_consumption: not-applicable
+  migration: not-applicable
+  attachment_policy: required

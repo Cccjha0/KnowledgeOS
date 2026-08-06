@@ -1,0 +1,16 @@
+workflows:
+  classify:
+    active_version: 1.0.0
+    path: classify/v1.0.0.yaml
+    versions:
+      1.0.0: classify/v1.0.0.yaml
+  normalize-lecture:
+    active_version: 1.0.0
+    path: normalize-lecture/v1.0.0.yaml
+    versions:
+      1.0.0: normalize-lecture/v1.0.0.yaml
+  generate-weekly-summary:
+    active_version: 1.0.0
+    path: generate-weekly-summary/v1.0.0.yaml
+    versions:
+      1.0.0: generate-weekly-summary/v1.0.0.yaml

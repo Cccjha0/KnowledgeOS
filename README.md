@@ -1,6 +1,6 @@
 # KnowledgeOS Engine
 
-Milestone I adds evidence-backed Critical fields, content ownership enforcement, freshness checks, durable Quality Issues and metrics, explanation chains, scheduled quality audits, a Quality Dashboard, Today alert filtering, and safe active-data backfill. See [docs/MILESTONE_I_QUALITY_OBSERVABILITY.md](docs/MILESTONE_I_QUALITY_OBSERVABILITY.md).
+Milestone I adds evidence-backed Critical fields, content ownership enforcement, freshness checks, durable Quality Issues and metrics, explanation chains, scheduled quality audits, a Quality Dashboard, Today alert filtering, and safe active-data backfill. See [docs/MILESTONE_I_QUALITY_OBSERVABILITY.md](docs/MILESTONE_I_QUALITY_OBSERVABILITY.md). Before enabling Journal, migrate old `read_level` data through the previewable, review-gated, reversible [Legacy Access Policy Migration](docs/LEGACY_ACCESS_POLICY_MIGRATION.md).
 
 Core 与模块的稳定边界、能力归属和公共 Schema 约定见 `docs/CORE_MODULE_BOUNDARY.md`。
 申请模块的日常使用状态机、字段风险、Research Request 和 Dashboard 约定见 `docs/APPLICATION_TRACKER_DAILY.md`。

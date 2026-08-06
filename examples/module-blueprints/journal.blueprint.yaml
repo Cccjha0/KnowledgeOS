@@ -1,0 +1,17 @@
+blueprint_version: 1
+base_template: standard-workflow
+capability_packs: [structured-entity, periodic-summary, high-privacy, immutable-user-content]
+module: { id: journal, display_name: 日记, description: 在严格隐私边界内整理日记并生成周期回顾, intended_users: [private-writer] }
+module_class: { type: workflow, complexity: standard }
+use_cases: { primary: [保存日记, 生成周度回顾], excluded: [读取未授权原文, 修改用户原始日记] }
+entities: [{ id: journal-entry, ownership: instance }, { id: journal-review, ownership: instance }]
+inputs: [markdown, text]
+outputs: [journal-entry, weekly-review]
+inbox: { module_level: false, instance_level: true, global_routing: false }
+privacy: { default_sensitivity_class: 3, default_max_representation: metadata, network_allowed: false, user_original_content_mutable: false }
+workflows: [{ id: normalize-entry, trigger: capture, requires_ai: false }, { id: weekly-review, trigger: schedule, requires_ai: true }]
+review_policy: { critical_fields: [], ambiguous_input: review, destructive_operations: forbidden }
+jobs: [{ id: weekly-review, schedule: weekly, catch_up: aggregate }]
+events: { publishes: [], subscribes: [] }
+dashboard: { sections: [recent-entries, waiting-reviews] }
+testing: { normal_input: required, ambiguous_input: required, repeat_execution: required, permission_denied: required, paused_instance: required, archived_instance: required, prompt_regression: required, periodic_job: required, event_publication: not-applicable, event_consumption: not-applicable, migration: not-applicable, attachment_policy: not-applicable }

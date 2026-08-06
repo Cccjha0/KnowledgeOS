@@ -1,0 +1,9 @@
+instance_id: sample-instance
+module_id: course
+status: active
+display_name: Sample Instance
+content_root: 20-Workspace/课程管理/sample-instance
+inbox_path: 20-Workspace/课程管理/sample-instance/Inbox
+timezone: Asia/Shanghai
+created: '2026-01-01T00:00:00Z'
+updated: '2026-01-01T00:00:00Z'

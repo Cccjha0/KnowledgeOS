@@ -1,0 +1,17 @@
+blueprint_version: 1
+base_template: standard-workflow
+capability_packs: [structured-entity, periodic-summary]
+module: { id: fitness-log, display_name: 健身记录, description: 将训练记录整理为结构化日志和周度摘要, intended_users: [fitness-tracker] }
+module_class: { type: workflow, complexity: minimal }
+use_cases: { primary: [记录训练, 生成周度摘要], excluded: [医疗诊断, 自动制定医疗建议] }
+entities: [{ id: workout, ownership: instance }]
+inputs: [markdown, text]
+outputs: [workout-record, weekly-summary]
+inbox: { module_level: true, instance_level: true, global_routing: true }
+privacy: { default_sensitivity_class: 2, default_max_representation: full, network_allowed: false, user_original_content_mutable: false }
+workflows: [{ id: normalize-workout, trigger: capture, requires_ai: true }, { id: weekly-summary, trigger: schedule, requires_ai: true }]
+review_policy: { critical_fields: [], ambiguous_input: review, destructive_operations: forbidden }
+jobs: [{ id: weekly-summary, schedule: weekly, catch_up: latest }]
+events: { publishes: [], subscribes: [] }
+dashboard: { sections: [recent-workouts, weekly-summary] }
+testing: { normal_input: required, ambiguous_input: required, repeat_execution: required, permission_denied: required, paused_instance: required, archived_instance: required, prompt_regression: required, periodic_job: required, event_publication: not-applicable, event_consumption: not-applicable, migration: not-applicable, attachment_policy: not-applicable }

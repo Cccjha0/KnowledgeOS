@@ -1,0 +1,17 @@
+blueprint_version: 1
+base_template: minimal-config
+capability_packs: [structured-entity, attachment-processing]
+module: { id: media-library, display_name: 媒体资料库, description: 将媒体资料整理为可检索的结构化记录, intended_users: [knowledge-worker] }
+module_class: { type: configuration, complexity: minimal }
+use_cases: { primary: [保存媒体资料, 建立结构化索引], excluded: [下载外部媒体, 修改原始附件] }
+entities: [{ id: media-item, ownership: module }]
+inputs: [markdown, image, pdf]
+outputs: [media-record]
+inbox: { module_level: true, instance_level: false, global_routing: true }
+privacy: { default_sensitivity_class: 1, default_max_representation: metadata, network_allowed: false, user_original_content_mutable: false }
+workflows: [{ id: normalize-media, trigger: capture, requires_ai: true }]
+review_policy: { critical_fields: [], ambiguous_input: review, destructive_operations: forbidden }
+jobs: []
+events: { publishes: [], subscribes: [] }
+dashboard: { sections: [recent-media, waiting-reviews] }
+testing: { normal_input: required, ambiguous_input: required, repeat_execution: required, permission_denied: required, paused_instance: required, archived_instance: required, prompt_regression: required, periodic_job: not-applicable, event_publication: not-applicable, event_consumption: not-applicable, migration: not-applicable, attachment_policy: required }

@@ -1,0 +1,19 @@
+prompts:
+  classify-capture:
+    active_version: 1.0.0
+    path: classify/v1.0.0.md
+    versions:
+      1.0.0: classify/v1.0.0.md
+    status: active
+  normalize-record:
+    active_version: 1.0.0
+    path: normalize/v1.0.0.md
+    versions:
+      1.0.0: normalize/v1.0.0.md
+    status: active
+  weekly-summary:
+    active_version: 1.0.0
+    path: summarize/v1.0.0.md
+    versions:
+      1.0.0: summarize/v1.0.0.md
+    status: active

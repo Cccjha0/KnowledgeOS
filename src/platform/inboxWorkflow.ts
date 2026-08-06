@@ -3,8 +3,8 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ProcessInboxBatchParams, ProcessInboxItemParams } from "../api/types.js";
-import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
+import type { ClassifyInboxAttachmentParams, ProcessInboxBatchParams, ProcessInboxItemParams, ReviewPartialInboxExtractionParams } from "../api/types.js";
+import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { ensureDir, exists, fromVaultPath, sha256File, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
@@ -18,8 +18,9 @@ import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInb
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
-import { effectivePdfUsePolicy, formatForExtension, ingestAsset, isAcceptedInput, parsePdfUsePolicy, pdfExtractionDecision, pdfExtractionStatus } from "../core/ingestion.js";
-import type { RepresentationLevel } from "../core/readLevels.js";
+import { effectivePdfUsePolicy, formatForExtension, ingestAsset, isAcceptedInput, parsePdfUsePolicy, pdfExtractionDecision, pdfExtractionStatus, readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
+import { assertRepresentationLevel, assertSensitivityClass, representationPermits, type RepresentationLevel } from "../core/readLevels.js";
+import { QualityRepository } from "../quality/repository.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -28,22 +29,104 @@ function normalizedOptional(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-function assetAccessPolicy(value: unknown): { sensitivityClass: number; maxRepresentation: RepresentationLevel; classificationState: "inherited" } | null {
+interface AssetPolicySuggestion {
+  sensitivityClass: number;
+  maxRepresentation: RepresentationLevel;
+  classificationState: "inherited";
+  source: "instance-policy" | "module-policy" | "asset-role";
+}
+
+interface InboxAssetRole {
+  id: string;
+  inboxSubpath: string;
+  policy: AssetPolicySuggestion;
+  entrypoint: string | null;
+  requiredUserAction: "resolve-review";
+}
+
+function object(value: unknown): JsonObject | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
+}
+
+function assetAccessPolicy(value: unknown, source: AssetPolicySuggestion["source"]): AssetPolicySuggestion | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const policy = value as JsonObject;
   const sensitivity = policy.sensitivity_class;
   const representation = policy.max_representation;
   if (!Number.isInteger(sensitivity) || Number(sensitivity) < 0 || Number(sensitivity) > 3) return null;
   if (representation !== "metadata" && representation !== "summary" && representation !== "full" && representation !== "sensitive-original") return null;
-  return { sensitivityClass: Number(sensitivity), maxRepresentation: representation, classificationState: "inherited" };
+  return { sensitivityClass: Number(sensitivity), maxRepresentation: representation, classificationState: "inherited", source };
 }
 
-async function inboxAssetPolicy(vaultRoot: string, module: JsonObject, instanceId: string): Promise<{ sensitivityClass: number; maxRepresentation: RepresentationLevel; classificationState: "inherited" } | null> {
+async function inboxAssetPolicy(vaultRoot: string, module: JsonObject, instanceId: string): Promise<AssetPolicySuggestion | null> {
   const instance = (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === instanceId);
-  const instancePolicy = assetAccessPolicy(instance?.data.inbox_asset_policy ?? instance?.data.asset_access_policy);
+  const instancePolicy = assetAccessPolicy(instance?.data.inbox_asset_policy ?? instance?.data.asset_access_policy, "instance-policy");
   if (instancePolicy) return instancePolicy;
   const inbox = module.inbox;
-  return assetAccessPolicy(inbox && typeof inbox === "object" && !Array.isArray(inbox) ? (inbox as JsonObject).asset_access_policy : null);
+  return assetAccessPolicy(inbox && typeof inbox === "object" && !Array.isArray(inbox) ? (inbox as JsonObject).asset_access_policy : null, "module-policy");
+}
+
+function inboxRole(value: unknown, id: string): InboxAssetRole | null {
+  const role = object(value);
+  if (!role || typeof role.inbox_subpath !== "string" || !role.inbox_subpath.trim()) return null;
+  const policy = assetAccessPolicy(role.asset_access_policy, "asset-role");
+  if (!policy) return null;
+  return {
+    id,
+    inboxSubpath: role.inbox_subpath.trim(),
+    policy,
+    entrypoint: typeof role.entrypoint === "string" && role.entrypoint.trim() ? role.entrypoint.trim() : null,
+    requiredUserAction: "resolve-review",
+  };
+}
+
+async function inboxAssetRole(vaultRoot: string, module: JsonObject, instanceId: string, item: InboxItemView): Promise<InboxAssetRole | null> {
+  const inbox = object(module.inbox);
+  const roles = object(inbox?.asset_roles);
+  if (!roles) return null;
+  const instance = (await discoverInstances(vaultRoot)).find((candidate) => candidate.data.instance_id === instanceId);
+  const inboxPath = typeof instance?.data.inbox_path === "string" ? instance.data.inbox_path.replace(/\\/g, "/").replace(/\/+$/, "") : null;
+  const relative = inboxPath && item.path.startsWith(`${inboxPath}/`) ? item.path.slice(inboxPath.length + 1) : "";
+  const firstSegment = relative.split("/")[0]?.toLocaleLowerCase();
+  for (const [id, raw] of Object.entries(roles)) {
+    const role = inboxRole(raw, id);
+    if (role && firstSegment === role.inboxSubpath.toLocaleLowerCase()) return role;
+  }
+  const defaultRoleId = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
+  return defaultRoleId ? inboxRole(roles[defaultRoleId], defaultRoleId) : null;
+}
+
+async function enabledInboxModule(vaultRoot: string, moduleId: string): Promise<DiscoveredDocument | null> {
+  return (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled") ?? null;
+}
+
+function moduleMaxSensitivity(module: JsonObject): number {
+  const permissions = module.permissions;
+  const value = permissions && typeof permissions === "object" && !Array.isArray(permissions)
+    ? (permissions as JsonObject).max_sensitivity_class
+    : null;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 3 ? value : 0;
+}
+
+function attachmentClassificationDetails(
+  item: InboxItemView,
+  taskId: string,
+  ingestion: Awaited<ReturnType<typeof ingestAsset>>,
+  suggestion: AssetPolicySuggestion | null,
+  module: JsonObject,
+  extractionStatus: string | null,
+): JsonObject {
+  return {
+    task_id: taskId,
+    capture_path: ingestion.capture_path,
+    classification_state: ingestion.classification_state,
+    current_policy: { sensitivity_class: ingestion.sensitivity_class, max_representation: ingestion.access_policy.max_representation },
+    suggested_policy: suggestion ? { sensitivity_class: suggestion.sensitivityClass, max_representation: suggestion.maxRepresentation } : null,
+    source_of_suggestion: suggestion?.source ?? null,
+    requested_representation: item.required_representation,
+    module_max_sensitivity: moduleMaxSensitivity(module),
+    pdf_extraction_status: extractionStatus,
+  };
 }
 
 async function findItem(vaultRoot: string, itemId: string): Promise<InboxItemView> {
@@ -90,23 +173,48 @@ function stateFor(item: InboxItemView, state: InboxStateRecord["state"], overrid
   };
 }
 
-async function inboxAiWorkflow(vaultRoot: string, moduleId: string): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"]; module: JsonObject } | null> {
-  const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === moduleId && entry.data.status === "enabled");
+async function inboxAiWorkflow(vaultRoot: string, moduleId: string, entrypoint = "capture"): Promise<{ workflow: string; workflowId: string; workflowVersion: string; entrypoint?: string; resources: RuntimeTask["resources"]; module: JsonObject } | null> {
+  const module = await enabledInboxModule(vaultRoot, moduleId);
   if (!module) return null;
   const entryWorkflows = module.data.entry_workflows as JsonObject | undefined;
-  if (typeof entryWorkflows?.capture !== "string") return null;
+  if (typeof entryWorkflows?.[entrypoint] !== "string") return null;
   return {
-    workflow: `module:${moduleId}:capture`, workflowId: "capture", workflowVersion: "active", entrypoint: "capture",
-    resources: resolveWorkflowResourceRequirements(module, null, "capture"), module: module.data,
+    workflow: `module:${moduleId}:${entrypoint}`, workflowId: entrypoint, workflowVersion: "active", entrypoint,
+    resources: resolveWorkflowResourceRequirements(module, null, entrypoint), module: module.data,
   };
 }
 
+async function holdRoleBoundInboxItem(vaultRoot: string, item: InboxItemView, module: JsonObject, instanceId: string, role: InboxAssetRole): Promise<JsonObject> {
+  const format = formatForExtension(item.extension);
+  if (!format || !isAcceptedInput(module, format)) return { status: "unsupported", item_id: item.item_id };
+  const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path, role.policy);
+  const extractionStatus = ingestion ? pdfExtractionStatus(ingestion) : null;
+  const result: JsonObject = {
+    status: "waiting-for-user",
+    required_user_action: role.requiredUserAction,
+    asset_role: role.id,
+    asset_role_message: `This ${role.id} file is protected by a metadata-only policy and has no enabled automatic workflow.`,
+    ...(ingestion ? { attachment_classification: attachmentClassificationDetails(item, item.task_id ?? "", ingestion, role.policy, module, extractionStatus) } : {}),
+  };
+  await writeInboxState(vaultRoot, stateFor(item, "waiting-for-user", {
+    error: `The ${role.id} Inbox role does not permit generic AI processing. Review or route the document explicitly.`,
+    result,
+  }));
+  return result;
+}
+
 async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, moduleId: string, instanceId: string | null, wake = false, codexModel?: string, codexReasoningEffort?: string): Promise<RuntimeTask | null> {
-  const workflow = await inboxAiWorkflow(vaultRoot, moduleId);
-  if (!workflow || !instanceId) return null;
+  if (!instanceId) return null;
+  const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+  if (!moduleDocument) return null;
+  const module = moduleDocument.data;
+  const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
+  if (role && !role.entrypoint) return null;
+  const workflow = await inboxAiWorkflow(vaultRoot, moduleId, role?.entrypoint ?? "capture");
+  if (!workflow) return null;
   const format = formatForExtension(item.extension);
   if (!format || !isAcceptedInput(workflow.module, format)) return null;
-  const assetPolicy = await inboxAssetPolicy(vaultRoot, workflow.module, instanceId);
+  const assetPolicy = role?.policy ?? await inboxAssetPolicy(vaultRoot, workflow.module, instanceId);
   const ingestion = format === "markdown" ? null : await ingestAsset(vaultRoot, item.path, assetPolicy ?? {});
   const declaredPdfPolicy = parsePdfUsePolicy(workflow.module.pdf_policy);
   const effectivePdfPolicy = effectivePdfUsePolicy(declaredPdfPolicy);
@@ -129,6 +237,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
       : ":deterministic";
     const taskPayload: JsonObject = {
       item_id: item.item_id, source_file: item.path, source_hash: sourceHash, module_id: moduleId, instance_id: instanceId,
+      ...(role ? { asset_role: role.id } : {}),
       ...(effectiveModel ? { codex_model: effectiveModel } : {}),
       ...(effectiveReasoningEffort ? { codex_reasoning_effort: effectiveReasoningEffort } : {}),
       ...(ingestion ? { ingestion: { capture_path: ingestion.capture_path, sidecar_path: ingestion.sidecar_path, format: ingestion.format, content_hash: ingestion.content_hash, original_asset_ref: ingestion.original_asset_ref, extraction_status: extractionStatus, classification_state: ingestion.classification_state } } : {}),
@@ -157,7 +266,22 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
     const itemState = requiresClassification || requiresExtractionAction ? "waiting-for-user" : task.status === "running" ? "processing" : task.status === "failed" ? "failed" : task.resources.codex === "required" ? "waiting-for-ai" : "pending";
     await writeInboxState(vaultRoot, stateFor(item, itemState, {
       attempts: task.attempt_count, task_id: task.task_id, error: requiresClassification ? "附件尚未分类；请先确认其隐私等级和允许的读取范围，系统不会将正文交给 AI。" : requiresExtractionAction ? extractionDecision?.requires_review ? "PDF extraction is partial; this module requires a user review before it may be used." : `PDF extraction is ${extractionStatus}; OCR or a text-based PDF is required before AI processing.` : task.last_error?.message ?? null,
-      result: { status: requiresClassification || requiresExtractionAction ? "waiting-for-user" : task.status, task_id: task.task_id, workflow: task.workflow, deduplicated: result.deduplicated, ...(ingestion?.format === "pdf" ? { pdf_policy: effectivePdfPolicy, pdf_policy_source: declaredPdfPolicy ? "module-manifest" : "core-default", pdf_extraction_decision: extractionDecision } : {}), ...(requiresClassification ? { classification_state: "unclassified", action_required: "Confirm attachment privacy classification" } : {}), ...(requiresExtractionAction ? { extraction_status: extractionStatus, action_required: extractionDecision?.requires_review ? "Review the partial PDF extraction before processing" : "OCR or a text-based PDF" } : {}) },
+      result: {
+        status: requiresClassification || requiresExtractionAction ? "waiting-for-user" : task.status,
+        task_id: task.task_id,
+        workflow: task.workflow,
+        deduplicated: result.deduplicated,
+        ...(ingestion?.format === "pdf" ? { pdf_policy: effectivePdfPolicy, pdf_policy_source: declaredPdfPolicy ? "module-manifest" : "core-default", pdf_extraction_decision: extractionDecision } : {}),
+        ...(requiresClassification && ingestion ? {
+          required_user_action: "classify-attachment",
+          attachment_classification: attachmentClassificationDetails(item, task.task_id, ingestion, assetPolicy, workflow.module, extractionStatus),
+        } : {}),
+        ...(requiresExtractionAction ? {
+          required_user_action: extractionDecision?.requires_review ? "review-partial-extraction" : "resolve-review",
+          extraction_status: extractionStatus,
+          attachment_classification: ingestion ? attachmentClassificationDetails(item, task.task_id, ingestion, assetPolicy, workflow.module, extractionStatus) : null,
+        } : {}),
+      },
     }));
     return task;
   } finally { repository.close(); }
@@ -168,14 +292,143 @@ export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: st
   for (const item of await discoverInboxItems(vaultRoot)) {
     if (item.scope !== "instance" || item.state === "empty" || item.blocked_by_open_editor || item.state === "deferred" || item.state === "ignored" || item.state === "unmanaged" || item.state === "processed") continue;
     const moduleId = item.suggested_module_id; const instanceId = item.suggested_instance_id;
-    if (!moduleId || !instanceId || !(await inboxAiWorkflow(vaultRoot, moduleId))) continue;
+    if (!moduleId || !instanceId) continue;
+    const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+    if (!moduleDocument) continue;
+    const module = moduleDocument.data;
     output.checked += 1;
+    const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
+    if (role && !role.entrypoint) {
+      await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
+      continue;
+    }
+    if (!(await inboxAiWorkflow(vaultRoot, moduleId, role?.entrypoint ?? "capture"))) continue;
     const previousTaskId = item.task_id;
     const task = await enqueueInboxAiTask(vaultRoot, item, moduleId, instanceId, false, codexModel, codexReasoningEffort);
     if (!task) continue;
     if (previousTaskId === task.task_id) output.deduplicated += 1; else output.created.push(task.task_id);
   }
   return output;
+}
+
+/**
+ * The Inbox-safe completion of attachment classification. This keeps the
+ * policy mutation, wait-task refresh, requeue, Inbox state, and Today refresh
+ * inside one Core command instead of asking the plugin to coordinate them.
+ */
+export async function classifyInboxAttachment(vaultRoot: string, params: ClassifyInboxAttachmentParams): Promise<JsonObject> {
+  if (!params.item_id?.trim()) throw new PkbError("INVALID_REQUEST", "item_id is required.");
+  const item = await findItem(vaultRoot, params.item_id);
+  const moduleId = item.suggested_module_id;
+  const instanceId = item.suggested_instance_id;
+  if (!moduleId || !instanceId) throw new PkbError("INBOX_ROUTE_REQUIRED", "Choose a module and instance before classifying this attachment.");
+  const workflow = await inboxAiWorkflow(vaultRoot, moduleId);
+  if (!workflow) throw new PkbError("INBOX_WORKFLOW_NOT_FOUND", `The ${moduleId} Inbox workflow is not available.`);
+  const taskId = item.task_id;
+  if (!taskId) throw new PkbError("INBOX_CLASSIFICATION_NOT_READY", "This Inbox attachment has not yet created a managed task.");
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const task = repository.getTask(taskId);
+    const ingestion = task?.payload.ingestion;
+    if (!ingestion || typeof ingestion !== "object" || Array.isArray(ingestion) || typeof (ingestion as JsonObject).capture_path !== "string") {
+      throw new PkbError("INBOX_CLASSIFICATION_NOT_READY", "This Inbox item has no managed attachment capture to classify.");
+    }
+    const capturePath = String((ingestion as JsonObject).capture_path);
+    const before = await readCaptureEnvelope(vaultRoot, capturePath);
+    if (before.classification_state !== "unclassified") {
+      throw new PkbError("INBOX_ATTACHMENT_ALREADY_CLASSIFIED", "This attachment is already classified. Refresh Inbox before continuing.");
+    }
+    const sensitivity = assertSensitivityClass(params.sensitivity_class, "sensitivity_class");
+    const representation = assertRepresentationLevel(params.max_representation, "max_representation");
+    const permittedSensitivity = moduleMaxSensitivity(workflow.module);
+    if (sensitivity > permittedSensitivity) {
+      throw new PkbError("MODULE_SENSITIVITY_DENIED", `This module may only read up to sensitivity class ${permittedSensitivity}. Choose a lower privacy class or route the file to another module.`);
+    }
+    if (!representationPermits(representation, item.required_representation)) {
+      throw new PkbError("ATTACHMENT_REPRESENTATION_TOO_RESTRICTIVE", `This workflow requires ${item.required_representation}, but the selected attachment policy only permits ${representation}.`);
+    }
+    const updated = await updateAssetAccessPolicy(vaultRoot, capturePath, { sensitivity_class: sensitivity, max_representation: representation });
+    const quality = await QualityRepository.open(vaultRoot);
+    try {
+      quality.recordChange({
+        entity_ref: `[[${updated.companion_note_path}]]`, field: "access_policy",
+        old_value: { sensitivity_class: before.sensitivity_class, max_representation: before.access_policy.max_representation },
+        new_value: { sensitivity_class: updated.sensitivity_class, max_representation: updated.access_policy.max_representation },
+        reason: "User classified an Inbox attachment and resumed its managed task.", evidence_refs: [], generation: null,
+        review: { status: "user-direct", reviewed_by: "user", reviewed_at: new Date().toISOString() }, changed_at: new Date().toISOString(),
+      });
+    } finally { quality.close(); }
+    const refreshedItem = await findItem(vaultRoot, item.item_id);
+    const resumed = await enqueueInboxAiTask(vaultRoot, refreshedItem, moduleId, instanceId, true);
+    await rebuildTodayDashboard(vaultRoot);
+    if (!resumed) throw new PkbError("INBOX_WORKFLOW_NOT_FOUND", `The ${moduleId} Inbox workflow could not be resumed.`);
+    return {
+      status: resumed.status,
+      ui_state: resumed.status === "queued" && resumed.resources.codex === "required" ? "waiting-for-ai" : resumed.status,
+      item_id: item.item_id,
+      task_id: resumed.task_id,
+      capture_path: updated.capture_path,
+      classification_state: updated.classification_state,
+      access_policy: updated.access_policy,
+      companion_note_path: updated.companion_note_path,
+      resumed: resumed.status !== "waiting-for-user",
+    };
+  } finally { repository.close(); }
+}
+
+/**
+ * Records an explicit user inspection of partial PDF text before requeueing
+ * the same task. The module policy still gates this path: only a policy that
+ * says `partial_policy: review` can be acknowledged here.
+ */
+export async function reviewPartialInboxExtraction(vaultRoot: string, params: ReviewPartialInboxExtractionParams): Promise<JsonObject> {
+  if (!params.item_id?.trim()) throw new PkbError("INVALID_REQUEST", "item_id is required.");
+  if (params.decision !== "approve-extracted-text" && params.decision !== "keep-waiting") throw new PkbError("INVALID_REQUEST", "A partial PDF review decision is required.");
+  const item = await findItem(vaultRoot, params.item_id);
+  if (params.decision === "keep-waiting") return { status: "waiting-for-user", item_id: item.item_id, kept_waiting: true };
+  if (!item.task_id || !item.suggested_module_id) throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This Inbox item has no managed partial-PDF task to review.");
+  const workflow = await inboxAiWorkflow(vaultRoot, item.suggested_module_id);
+  if (!workflow) throw new PkbError("INBOX_WORKFLOW_NOT_FOUND", `The ${item.suggested_module_id} Inbox workflow is not available.`);
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const task = repository.getTask(item.task_id);
+    const decision = task?.payload.pdf_extraction_decision;
+    const ingestion = task?.payload.ingestion;
+    if (!task || !decision || typeof decision !== "object" || Array.isArray(decision) || (decision as JsonObject).status !== "partial" || (decision as JsonObject).requires_review !== true) {
+      throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This task is not waiting for a partial PDF extraction review.");
+    }
+    if (!ingestion || typeof ingestion !== "object" || Array.isArray(ingestion) || typeof (ingestion as JsonObject).capture_path !== "string") {
+      throw new PkbError("INBOX_PARTIAL_REVIEW_NOT_READY", "This partial PDF has no managed Capture Envelope.");
+    }
+    const capturePath = String((ingestion as JsonObject).capture_path);
+    const envelope = await readCaptureEnvelope(vaultRoot, capturePath);
+    const approvedAt = new Date().toISOString();
+    const userReview: JsonObject = { decision: "approve-extracted-text", reviewed_by: "user", reviewed_at: approvedAt, capture_path: capturePath };
+    const payload: JsonObject = {
+      ...task.payload,
+      pdf_user_review: userReview,
+    };
+    let refreshed = repository.refreshWaitingTask(task.task_id, workflow.resources, payload);
+    refreshed = repository.retryTask(refreshed.task_id);
+    const itemState = refreshed.resources.codex === "required" ? "waiting-for-ai" : "pending";
+    await writeInboxState(vaultRoot, stateFor(item, itemState, {
+      attempts: refreshed.attempt_count,
+      task_id: refreshed.task_id,
+      error: null,
+      result: { status: refreshed.status, task_id: refreshed.task_id, workflow: refreshed.workflow, pdf_extraction_review: userReview },
+    }));
+    const quality = await QualityRepository.open(vaultRoot);
+    try {
+      quality.recordChange({
+        entity_ref: `[[${envelope.companion_note_path}]]`, field: "pdf_extraction_review",
+        old_value: null, new_value: userReview,
+        reason: "User reviewed a partial PDF extraction and approved the extracted text for this managed workflow.", evidence_refs: [], generation: null,
+        review: { status: "user-direct", reviewed_by: "user", reviewed_at: approvedAt }, changed_at: approvedAt,
+      });
+    } finally { quality.close(); }
+    await rebuildTodayDashboard(vaultRoot);
+    return { status: refreshed.status, ui_state: refreshed.resources.codex === "required" ? "waiting-for-ai" : refreshed.status, item_id: item.item_id, task_id: refreshed.task_id, resumed: true };
+  } finally { repository.close(); }
 }
 
 async function acquireItemLock(vaultRoot: string, itemId: string): Promise<FileHandle> {
@@ -320,6 +573,16 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
     await writeInboxState(vaultRoot, stateFor(item, "processing", { attempts: action === "retry" ? 2 : 1 }));
     if (item.scope === "global" || action === "route" || moduleId !== item.source_module || instanceId !== item.instance_id) {
       return await executeRoute(vaultRoot, item, moduleId, instanceId);
+    }
+    if (instanceId) {
+      const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
+      const module = moduleDocument?.data ?? null;
+      const role = module ? await inboxAssetRole(vaultRoot, module, instanceId, item) : null;
+      if (module && role && !role.entrypoint) {
+        const waiting = await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
+        await rebuildTodayDashboard(vaultRoot);
+        return { ...waiting, ui_state: "waiting-for-user", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId };
+      }
     }
     const task = await enqueueInboxAiTask(
       vaultRoot,

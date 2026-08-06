@@ -1,0 +1,2 @@
+cross_module_write: false
+cross_module_communication: events-only

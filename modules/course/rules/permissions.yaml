@@ -1,0 +1,4 @@
+network: false
+delete: false
+cross_module_write: false
+arbitrary_scripts: false

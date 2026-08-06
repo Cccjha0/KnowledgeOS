@@ -5,6 +5,8 @@ import { exists, listFilesRecursive, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } from "./types.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
+import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterRegistry.js";
+import { validateBlueprintCompliance } from "./blueprintCompliance.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -102,7 +104,15 @@ async function validateRegistry(moduleRoot: string, manifest: JsonObject, sectio
 async function validateEventContracts(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   const events = object(manifest.events) ?? {};
   const declaredPublishes = new Set(Array.isArray(events.publishes) ? events.publishes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
-  const declaredSubscribes = new Set(Array.isArray(events.subscribes) ? events.subscribes.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []);
+  const declaredSubscriptions = (Array.isArray(events.subscribes) ? events.subscribes : []).flatMap((item) => {
+    if (typeof item === "string" && item.trim()) return [{ event: item, scope: null as "instance" | "module" | "global" | null, sourceModules: null as string[] | null }];
+    const subscription = object(item as JsonValue);
+    const event = typeof subscription?.event === "string" && subscription.event.trim() ? subscription.event : null;
+    const scope = subscription?.scope === "instance" || subscription?.scope === "module" || subscription?.scope === "global" ? subscription.scope : null;
+    const sourceModules = Array.isArray(subscription?.source_modules) ? subscription.source_modules.filter((source): source is string => typeof source === "string" && source.trim().length > 0) : null;
+    return event ? [{ event, scope, sourceModules }] : [];
+  });
+  const declaredSubscribes = new Set(declaredSubscriptions.map((subscription) => subscription.event));
   const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((item): item is string => typeof item === "string") : []);
   const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
   const published = new Map<string, string[]>();
@@ -128,7 +138,7 @@ async function validateEventContracts(moduleRoot: string, manifest: JsonObject, 
   for (const [eventType, workflowIds] of published) if (!declaredPublishes.has(eventType)) checks.push(check("events", "UNDECLARED_EVENT_PUBLISHED", "fail", `${workflowIds.join(", ")} publishes ${eventType}, which is absent from manifest.events.publishes.`, "module.yaml", true));
 
   const jobsDescriptor = object(manifest.jobs);
-  const eventJobs = new Set<string>();
+  const eventJobs: Array<{ event: string; scope: "instance" | "module" | "global"; sourceModules: string[]; jobId: string }> = [];
   if (typeof jobsDescriptor?.registry === "string") {
     const jobsFile = path.join(moduleRoot, ...jobsDescriptor.registry.split("/"));
     if (await exists(jobsFile)) {
@@ -137,15 +147,82 @@ async function validateEventContracts(moduleRoot: string, manifest: JsonObject, 
         const job = object(raw as JsonValue); const trigger = object(job?.trigger);
         if (trigger?.type !== "event") continue;
         const eventType = trigger.event ?? trigger.event_type ?? trigger.source;
-        if (typeof eventType === "string") eventJobs.add(eventType);
+        if (typeof eventType !== "string") {
+          checks.push(check("events", "EVENT_JOB_TYPE_MISSING", "fail", "An Event Job must declare trigger.event, trigger.event_type, or trigger.source.", String(jobsDescriptor.registry), true));
+          continue;
+        }
+        const scope = trigger.subscription_scope === "instance" || trigger.subscription_scope === "module" || trigger.subscription_scope === "global"
+          ? trigger.subscription_scope
+          : job?.scope === "instance" ? "instance" : "module";
+        const sourceModules = Array.isArray(trigger.source_modules) ? trigger.source_modules.filter((source): source is string => typeof source === "string" && source.trim().length > 0) : [];
+        const jobId = typeof job?.id === "string" ? job.id : eventType;
+        eventJobs.push({ event: eventType, scope, sourceModules, jobId });
       }
     }
   }
-  for (const eventType of declaredSubscribes) if (!eventJobs.has(eventType)) checks.push(check("events", "DECLARED_EVENT_UNSUBSCRIBED", "fail", `Manifest subscribes to ${eventType}, but no Event Job consumes it.`, "module.yaml", true));
+  for (const eventType of declaredSubscribes) if (!eventJobs.some((job) => job.event === eventType)) checks.push(check("events", "DECLARED_EVENT_UNSUBSCRIBED", "fail", `Manifest subscribes to ${eventType}, but no Event Job consumes it.`, "module.yaml", true));
+  const canSubscribeGlobally = manifest.module_type === "integration"
+    || (object(manifest.permissions)?.global_event_subscription === true);
+  for (const job of eventJobs) {
+    const declared = declaredSubscriptions.some((subscription) => subscription.event === job.event
+      && (subscription.scope === null || subscription.scope === job.scope)
+      && (job.scope !== "global" || subscription.sourceModules !== null && subscription.sourceModules.length === job.sourceModules.length && subscription.sourceModules.every((source) => job.sourceModules.includes(source))));
+    if (!declared) checks.push(check("events", "EVENT_JOB_UNDECLARED", "fail", `${job.jobId} consumes ${job.event}, but manifest.events.subscribes does not declare the same subscription.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+    if (job.scope === "global") {
+      if (!canSubscribeGlobally) checks.push(check("permissions", "GLOBAL_EVENT_SUBSCRIPTION_DENIED", "fail", `${job.jobId} uses global scope, which requires an integration module or permissions.global_event_subscription: true.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+      if (job.sourceModules.length === 0) checks.push(check("events", "GLOBAL_EVENT_SOURCE_REQUIRED", "fail", `${job.jobId} global scope must declare trigger.source_modules.`, String(jobsDescriptor?.registry ?? "module.yaml"), true));
+    }
+  }
+  if (capabilities.has("event-subscription") && eventJobs.length === 0) checks.push(check("events", "EVENT_SUBSCRIPTION_CAPABILITY_UNFULFILLED", "fail", "event-subscription requires at least one declared Event Job.", "module.yaml", true));
+  if (!capabilities.has("event-subscription") && eventJobs.length > 0) checks.push(check("events", "EVENT_JOB_CAPABILITY_UNDECLARED", "fail", "Event Jobs require the event-subscription capability.", "module.yaml", true));
+  if (!capabilities.has("event-subscription") && declaredSubscriptions.length > 0) checks.push(check("events", "EVENT_SUBSCRIPTION_CAPABILITY_MISSING", "fail", "Manifest event subscriptions require the event-subscription capability.", "module.yaml", true));
   checks.push(check("events", "EVENT_CONTRACTS_VALID", "pass", "Event declarations, publish steps, and Event Jobs were checked.", "module.yaml"));
 }
 
-async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, moduleType: string, checks: ModuleValidationCheck[]): Promise<void> {
+function validateInboxRoleContracts(manifest: JsonObject, checks: ModuleValidationCheck[]): void {
+  const inbox = object(manifest.inbox);
+  const roles = object(inbox?.asset_roles);
+  if (!roles) return;
+  const entrypoints = object(manifest.entry_workflows) ?? {};
+  const defaultRole = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
+  if (defaultRole && !roles[defaultRole]) checks.push(check("contracts", "INBOX_DEFAULT_ROLE_MISSING", "fail", `inbox.default_asset_role ${defaultRole} is not declared in inbox.asset_roles.`, "module.yaml", true));
+  const folders = new Set<string>();
+  for (const [id, raw] of Object.entries(roles)) {
+    const role = object(raw);
+    const folder = typeof role?.inbox_subpath === "string" ? role.inbox_subpath.toLocaleLowerCase() : "";
+    if (folder && folders.has(folder)) checks.push(check("contracts", "INBOX_ROLE_FOLDER_DUPLICATE", "fail", `Inbox role ${id} reuses the subfolder ${role?.inbox_subpath}.`, "module.yaml", true));
+    if (folder) folders.add(folder);
+    const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : null;
+    if (entrypoint && typeof entrypoints[entrypoint] !== "string") checks.push(check("contracts", "INBOX_ROLE_ENTRYPOINT_MISSING", "fail", `Inbox role ${id} references undeclared entrypoint ${entrypoint}.`, "module.yaml", true));
+    if (!entrypoint && role?.required_user_action !== "resolve-review") checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare required_user_action: resolve-review.`, "module.yaml", true));
+  }
+  checks.push(check("contracts", "INBOX_ROLE_CONTRACTS_VALID", "pass", "Inbox asset roles and their entrypoints were checked.", "module.yaml"));
+}
+
+function enabledScenario(scenarios: JsonObject, name: string): boolean {
+  const scenario = object(scenarios[name]);
+  return Boolean(scenario && scenario.enabled !== false);
+}
+
+function acceptedInputFormats(manifest: JsonObject): Set<string> {
+  return new Set(Array.isArray(manifest.accepted_inputs) ? manifest.accepted_inputs.filter((value): value is string => typeof value === "string") : []);
+}
+
+function validateAcceptedInputAdapters(manifest: JsonObject, maturity: ModuleMaturity, checks: ModuleValidationCheck[]): void {
+  for (const format of acceptedInputFormats(manifest)) {
+    const declared = getIngestionAdapter(format);
+    const available = availableIngestionAdapter(format);
+    if (available) {
+      checks.push(check("contracts", "INGESTION_ADAPTER_AVAILABLE", "pass", `${format} is backed by ${available.adapter_id}@${available.adapter_version}.`, "module.yaml"));
+      continue;
+    }
+    const detail = declared ? `${declared.adapter_id}@${declared.adapter_version} is not installed/available on ${process.platform}.` : "No Core Adapter is registered.";
+    const status = maturity === "experimental" ? "warning" : "fail";
+    checks.push(check("contracts", "INGESTION_ADAPTER_UNAVAILABLE", status, `${format} cannot be accepted: ${detail}`, "module.yaml", status === "fail"));
+  }
+}
+
+async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   if (maturity !== "beta" && maturity !== "stable") return;
   const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
   if (!(await exists(contractPath))) {
@@ -156,9 +233,20 @@ async function validateExecutableFixtureContract(moduleRoot: string, maturity: M
   try { scenarios = object(parseYaml(moduleRoot, contractPath).scenarios) ?? {}; }
   catch (error) { checks.push(check("behavior", "MODULE_TEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "fixtures/sample-instance/module-test.yaml", true)); return; }
   const required = ["normal_capture", "ambiguous_capture", "permission_denied", "resource_unavailable", "repeat_execution", "paused_instance", "archived_instance", "prompt_regression"];
-  if (moduleType === "workflow") required.push("periodic_job", "event_consumption");
   const missing = required.filter((name) => !object(scenarios[name]));
   checks.push(check("behavior", missing.length ? "MODULE_TEST_SCENARIOS_MISSING" : "MODULE_TEST_SCENARIOS_VALID", missing.length ? "fail" : "pass", missing.length ? `Missing executable fixture scenarios: ${missing.join(", ")}.` : "Executable fixture contract declares all required scenarios.", "fixtures/sample-instance/module-test.yaml", missing.length > 0));
+  const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((value): value is string => typeof value === "string") : []);
+  const formats = acceptedInputFormats(manifest);
+  const pdfPolicy = object(manifest.pdf_policy);
+  const requiredEnabled: string[] = [];
+  if (capabilities.has("periodic-summary")) requiredEnabled.push("periodic_job");
+  if (capabilities.has("event-publishing")) requiredEnabled.push("event_publication");
+  if (capabilities.has("event-subscription")) requiredEnabled.push("event_consumption");
+  if (capabilities.has("review-items")) requiredEnabled.push("ambiguous_capture");
+  if (formats.has("pdf")) requiredEnabled.push("pdf_policy");
+  if (pdfPolicy?.partial_policy === "allow") requiredEnabled.push("partial_pdf_execution");
+  const disabled = requiredEnabled.filter((name) => !enabledScenario(scenarios, name));
+  checks.push(check("behavior", disabled.length ? "MODULE_TEST_REQUIRED_SCENARIO_DISABLED" : "MODULE_TEST_CAPABILITY_SCENARIOS_ENABLED", disabled.length ? "fail" : "pass", disabled.length ? `Declared capabilities require enabled executable scenarios: ${disabled.join(", ")}.` : "Every declared dynamic capability has an enabled executable fixture scenario.", "fixtures/sample-instance/module-test.yaml", disabled.length > 0));
   const prompt = object(scenarios.prompt_regression);
   const fixture = typeof prompt?.fixture === "string" ? path.join(moduleRoot, ...prompt.fixture.split("/")) : null;
   let invariants: string[] = [];
@@ -166,13 +254,14 @@ async function validateExecutableFixtureContract(moduleRoot: string, maturity: M
   catch { /* reported by the missing-invariants check below */ }
   const missingInvariants = ["preserve-facts", "uncertainty-preserved", "schema-valid"].filter((name) => !invariants.includes(name));
   if (!invariants.includes("no-invented-values") && !invariants.includes("no-invented-completion")) missingInvariants.push("no-invented-values or no-invented-completion");
-  checks.push(check("prompt-regression", missingInvariants.length ? "PROMPT_INVARIANTS_MISSING" : "PROMPT_INVARIANTS_VALID", missingInvariants.length ? "fail" : "pass", missingInvariants.length ? `Prompt regression fixture is missing: ${missingInvariants.join(", ")}.` : "Prompt regression fixture protects facts, uncertainty, and schema validity.", prompt?.fixture as string ?? "fixtures/sample-instance/module-test.yaml", missingInvariants.length > 0));
+  checks.push(check("prompt-regression", missingInvariants.length ? "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_MISSING" : "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_VALID", missingInvariants.length ? "fail" : "pass", missingInvariants.length ? `Deterministic Prompt Contract fixture is missing: ${missingInvariants.join(", ")}.` : "Deterministic Prompt Contract fixture protects facts, uncertainty, and schema validity; it is not a real-model evaluation.", prompt?.fixture as string ?? "fixtures/sample-instance/module-test.yaml", missingInvariants.length > 0));
   const migrationIndex = path.join(moduleRoot, "migrations", "index.yaml");
   if (await exists(migrationIndex)) {
     const migrations = object(parseYaml(moduleRoot, migrationIndex).migrations) ?? {};
     if (Object.keys(migrations).length) {
       const migration = object(scenarios.migration_apply);
-      checks.push(check("migration", migration?.enabled === true ? "MIGRATION_FIXTURE_DECLARED" : "MIGRATION_FIXTURE_MISSING", migration?.enabled === true ? "pass" : "fail", migration?.enabled === true ? "Migration fixture declares apply/repeat/rollback coverage." : "Module migrations require an enabled migration_apply fixture.", "fixtures/sample-instance/module-test.yaml", migration?.enabled !== true));
+      const migrationReady = migration?.enabled === true && migration.rollback === true;
+      checks.push(check("migration", migrationReady ? "MIGRATION_FIXTURE_DECLARED" : "MIGRATION_FIXTURE_MISSING", migrationReady ? "pass" : "fail", migrationReady ? "Migration fixture declares apply, repeat, and rollback coverage." : "Module migrations require an enabled migration_apply fixture with rollback enabled.", "fixtures/sample-instance/module-test.yaml", !migrationReady));
     }
   }
 }
@@ -186,6 +275,8 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   const id = typeof manifest.id === "string" ? manifest.id : path.basename(moduleRoot);
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
   const maturity = (["experimental", "beta", "stable", "deprecated"].includes(String(manifest.maturity)) ? manifest.maturity : "experimental") as ModuleMaturity;
+  validateAcceptedInputAdapters(manifest, maturity, checks);
+  validateInboxRoleContracts(manifest, checks);
   if (maturity === "beta" || maturity === "stable") {
     const legacy = legacyReadFields(object(manifest.permissions) ?? {});
     if (legacy.length) checks.push(check("permissions", "LEGACY_READ_CONTRACT_FORBIDDEN", "fail", `Beta/Stable modules cannot declare deprecated read-level fields: ${legacy.join(", ")}. Use max_sensitivity_class.`, "module.yaml", true));
@@ -239,8 +330,16 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
     }
   }
 
+  const compliance = await validateBlueprintCompliance(engineRoot, moduleRoot);
+  if (compliance.overall !== "NOT-APPLICABLE") {
+    for (const raw of Array.isArray(compliance.checks) ? compliance.checks : []) {
+      const item = object(raw);
+      if (!item) continue;
+      checks.push(check("contracts", String(item.code), item.status === "pass" ? "pass" : "fail", String(item.message), typeof item.path === "string" ? item.path : "module.blueprint.yaml", item.status !== "pass"));
+    }
+  }
   for (const file of ["README.md", "CHANGELOG.md", "docs/use-case.md"]) checks.push(check("documentation", `DOC_${file.replace(/\W/g, "_").toUpperCase()}`, await exists(path.join(moduleRoot, ...file.split("/"))) ? "pass" : "warning", `${file} ${await exists(path.join(moduleRoot, ...file.split("/"))) ? "exists" : "is missing"}.`, file));
-  await validateExecutableFixtureContract(moduleRoot, maturity, String(manifest.module_type ?? ""), checks);
+  await validateExecutableFixtureContract(moduleRoot, maturity, manifest, checks);
   const failed = checks.filter((item) => item.status === "fail").length;
   const warnings = checks.filter((item) => item.status === "warning").length;
   const critical = checks.filter((item) => item.critical && item.status === "fail").length;

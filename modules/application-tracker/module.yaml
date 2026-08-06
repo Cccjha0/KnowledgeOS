@@ -36,7 +36,6 @@ capabilities:
   - capture-processing
   - metadata-enrichment
   - file-organization
-  - periodic-summary
   - dashboard-items
   - review-items
   - research-request
@@ -56,11 +55,31 @@ pdf_policy:
   partial_policy: review
 
 inbox:
-  # Application evidence may be sensitive, but this module needs the complete
-  # text after it has been routed into this explicitly governed Inbox.
+  # Legacy/root-Inbox fallback. New files should be placed in one of the role
+  # folders below, so their policy is bound to their actual purpose.
   asset_access_policy:
     sensitivity_class: 2
     max_representation: full
+  default_asset_role: research-report
+  asset_roles:
+    research-report:
+      inbox_subpath: Research
+      asset_access_policy:
+        sensitivity_class: 2
+        max_representation: full
+      entrypoint: capture
+    application-document:
+      inbox_subpath: Documents
+      asset_access_policy:
+        sensitivity_class: 3
+        max_representation: metadata
+      required_user_action: resolve-review
+    private-material:
+      inbox_subpath: Private
+      asset_access_policy:
+        sensitivity_class: 3
+        max_representation: metadata
+      required_user_action: resolve-review
   module_level:
     enabled: true
     path: 20-Workspace/Applications/Inbox

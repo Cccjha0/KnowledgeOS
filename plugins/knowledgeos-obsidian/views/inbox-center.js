@@ -219,9 +219,21 @@ class InboxCenterView extends ItemView {
     return `建议归入：${module}${instance ? ` / ${instance}` : ""}`;
   }
 
-  inboxStateLabel(state, blockedByOpenEditor = false) {
+  inboxStateLabel(state, blockedByOpenEditor = false, requiredUserAction = null) {
     if (blockedByOpenEditor) return "等待关闭笔记";
+    if (requiredUserAction === "classify-attachment") return "需要确认附件隐私";
+    if (requiredUserAction === "review-partial-extraction") return "需要复核 PDF 提取";
+    if (requiredUserAction === "close-open-file") return "请关闭笔记后继续";
+    if (requiredUserAction === "resolve-review") return "需要人工确认";
     return ({ pending: "可以处理", processing: "正在处理", "waiting-for-user": "需要选择", "waiting-for-ai": "等待 AI", failed: "处理失败", empty: "空白副本", deferred: "已延后" })[state] || labelStatus(state);
+  }
+
+  attachmentActionText(item) {
+    if (item.required_user_action === "classify-attachment") return "分类附件并继续";
+    if (item.required_user_action === "review-partial-extraction") return "查看 PDF 提取";
+    if (item.required_user_action === "close-open-file") return "已关闭，继续";
+    if (item.required_user_action === "resolve-review") return "查看附件";
+    return "选择归属";
   }
 
   friendlyReason(item) {
@@ -252,7 +264,7 @@ class InboxCenterView extends ItemView {
     const heading = card.createDiv({ cls: "knowledgeos-inbox-item-heading" });
     const title = heading.createEl("button", { cls: "knowledgeos-link knowledgeos-inbox-item-title", text: item.title });
     title.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
-    heading.createSpan({ cls: `knowledgeos-inbox-item-status state-${item.state}`, text: this.inboxStateLabel(item.state, item.blocked_by_open_editor) });
+    heading.createSpan({ cls: `knowledgeos-inbox-item-status state-${item.state}`, text: this.inboxStateLabel(item.state, item.blocked_by_open_editor, item.required_user_action) });
     card.createDiv({ cls: `knowledgeos-inbox-ownership${item.suggested_module_id ? "" : " is-unresolved"}`, text: this.ownershipText(item) });
     card.createDiv({ cls: "knowledgeos-inbox-reason", text: this.friendlyReason(item) });
     const visibleError = this.itemActionErrors.get(item.item_id) || item.error;
@@ -266,7 +278,7 @@ class InboxCenterView extends ItemView {
     meta.createSpan({ text: item.content_type || "文件" });
     const time = createTime(meta, item.created_at, " · ");
     time.addClass("knowledgeos-inbox-created");
-    const primary = footer.createEl("button", { cls: `${item.state === "empty" ? "mod-warning" : "mod-cta"} knowledgeos-inbox-primary`, text: pending ? "处理中…" : item.state === "empty" ? "移至恢复区" : item.blocked_by_open_editor ? "已关闭，继续" : item.state === "failed" ? "重试" : item.state === "waiting-for-user" ? "选择归属" : item.state === "waiting-for-ai" ? "继续处理" : item.state === "deferred" ? "立即处理" : "处理" });
+    const primary = footer.createEl("button", { cls: `${item.state === "empty" ? "mod-warning" : "mod-cta"} knowledgeos-inbox-primary`, text: pending ? "处理中…" : item.state === "empty" ? "移至恢复区" : item.blocked_by_open_editor ? "已关闭，继续" : item.state === "failed" ? "重试" : item.state === "waiting-for-user" ? this.attachmentActionText(item) : item.state === "waiting-for-ai" ? "继续处理" : item.state === "deferred" ? "立即处理" : "处理" });
     primary.disabled = pending;
 
     const route = this.selectedRoute(item);
@@ -300,7 +312,46 @@ class InboxCenterView extends ItemView {
     moduleSelect.disabled = pending || this.partialWarnings.length > 0;
     instanceSelect.disabled = pending || this.partialWarnings.length > 0;
 
-    if (item.state === "empty") {
+    if (item.required_user_action === "classify-attachment") {
+      routeFieldset.empty();
+      routeFieldset.addClass("knowledgeos-inbox-attachment-action");
+      routeFieldset.createEl("legend", { text: "附件访问范围" });
+      const policy = item.attachment_classification || {};
+      const current = policy.current_policy || {};
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-attachment-copy", text: "该附件尚未分类。系统尚未把正文发送给 Codex。确认隐私等级和允许范围后，任务会由 Core 重新入队。" });
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-attachment-meta", text: `工作流需要：${this.representationLabel(policy.requested_representation || item.required_representation)}；当前：${this.privacyLabel(current.sensitivity_class)} / ${this.representationLabel(current.max_representation)}` });
+      const classify = routeFieldset.createEl("button", { cls: "mod-cta knowledgeos-inbox-route-process", text: "确认附件分类并继续" });
+      classify.disabled = pending || this.partialWarnings.length > 0;
+      classify.onclick = () => this.openAttachmentClassification(item);
+      primary.onclick = () => this.openAttachmentClassification(item);
+      moduleSelect.disabled = true;
+      instanceSelect.disabled = true;
+    } else if (item.required_user_action === "review-partial-extraction") {
+      routeFieldset.empty();
+      routeFieldset.addClass("knowledgeos-inbox-attachment-action");
+      routeFieldset.createEl("legend", { text: "PDF 提取需要复核" });
+      const status = item.attachment_classification?.pdf_extraction_status || "partial";
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-attachment-copy", text: `这份 PDF 的本地文本提取状态为 ${status}。当前模块要求先由你查看原文件，系统不会自动将不完整内容交给 Codex。` });
+      const openPdf = routeFieldset.createEl("button", { text: "打开原始附件" });
+      openPdf.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+      const approvePartial = routeFieldset.createEl("button", { cls: "mod-cta knowledgeos-inbox-route-process", text: "我已检查，使用已提取文本" });
+      approvePartial.disabled = pending || this.partialWarnings.length > 0;
+      approvePartial.onclick = () => this.openPartialExtractionReview(item);
+      primary.onclick = () => this.openPartialExtractionReview(item);
+      moduleSelect.disabled = true;
+      instanceSelect.disabled = true;
+    } else if (item.required_user_action === "resolve-review") {
+      routeFieldset.empty();
+      routeFieldset.addClass("knowledgeos-inbox-attachment-action");
+      routeFieldset.createEl("legend", { text: "附件需要人工处理" });
+      const status = item.attachment_classification?.pdf_extraction_status || "unavailable";
+      routeFieldset.createDiv({ cls: "knowledgeos-inbox-attachment-copy", text: `本地无法安全提取这份附件的可用文本（状态：${status}）。请提供可搜索的文字版、完成 OCR，或改为手动整理后再重试；系统不会把空白或损坏的提取结果交给 Codex。` });
+      const openSource = routeFieldset.createEl("button", { text: "打开原始附件" });
+      openSource.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+      primary.onclick = () => this.app.workspace.openLinkText(item.path, "", false);
+      moduleSelect.disabled = true;
+      instanceSelect.disabled = true;
+    } else if (item.state === "empty") {
       routeFieldset.createDiv({ cls: "knowledgeos-inbox-empty-source", text: "该文件没有正文，无需选择归属。" });
       moduleSelect.disabled = true;
       instanceSelect.disabled = true;
@@ -362,6 +413,76 @@ class InboxCenterView extends ItemView {
       }
     }
     renderDeveloperDetails(detailBody, this.plugin, [["Item ID", item.item_id], ["Task ID", item.task_id], ["原始状态", item.state], ["置信度", `${Math.round(item.confidence * 100)}%`], ["读取级别", item.required_read_level], ["Processor", item.processor], ["原始判断依据", item.reasons.join("；")]]);
+  }
+
+  privacyLabel(value) {
+    return ({ 0: "公开", 1: "普通", 2: "敏感", 3: "高度敏感", unknown: "尚未分类" })[value] || "尚未分类";
+  }
+
+  representationLabel(value) {
+    return ({ metadata: "仅元数据", summary: "安全摘要", full: "全文", "sensitive-original": "敏感原文" })[value] || "仅元数据";
+  }
+
+  openAttachmentClassification(item) {
+    const data = item.attachment_classification;
+    if (!data) {
+      this.plugin.notify("该附件的分类信息暂时不可用，请刷新 Inbox 后重试。", { error: true });
+      return;
+    }
+    new AttachmentClassificationModal(this.app, this.plugin, item, data, async (selection) => {
+      return this.classifyAttachment(item, selection);
+    }).open();
+  }
+
+  async classifyAttachment(item, selection) {
+    if (this.pendingItemIds.has(item.item_id)) return;
+    this.pendingItemIds.add(item.item_id);
+    this.itemActionErrors.delete(item.item_id);
+    const response = await this.plugin.client.invoke("classifyInboxAttachment", {
+      item_id: item.item_id,
+      sensitivity_class: selection.sensitivity_class,
+      max_representation: selection.max_representation,
+    });
+    this.pendingItemIds.delete(item.item_id);
+    if (!response.ok) {
+      const message = response.error?.message || "无法确认附件分类";
+      this.itemActionErrors.set(item.item_id, message);
+      this.expandedItems.add(item.item_id);
+      this.plugin.notify(message, { error: true });
+      this.render(item.item_id);
+      return false;
+    }
+    this.resultMessage = response.data.status === "waiting-for-user"
+      ? "附件分类已保存。PDF 提取仍需要你的复核，系统尚未将内容交给 Codex。"
+      : response.data.task_id
+        ? "附件分类已保存，受管任务已重新入队；满足资源条件后会自动继续。"
+        : "附件分类已保存。";
+    await this.refresh(item.item_id);
+    return true;
+  }
+
+  openPartialExtractionReview(item) {
+    const data = item.attachment_classification || {};
+    new PartialExtractionReviewModal(this.app, this.plugin, item, data, async () => this.approvePartialExtraction(item)).open();
+  }
+
+  async approvePartialExtraction(item) {
+    if (this.pendingItemIds.has(item.item_id)) return false;
+    this.pendingItemIds.add(item.item_id);
+    this.itemActionErrors.delete(item.item_id);
+    const response = await this.plugin.client.invoke("reviewPartialInboxExtraction", { item_id: item.item_id, decision: "approve-extracted-text" });
+    this.pendingItemIds.delete(item.item_id);
+    if (!response.ok) {
+      const message = response.error?.message || "无法确认 PDF 提取复核";
+      this.itemActionErrors.set(item.item_id, message);
+      this.expandedItems.add(item.item_id);
+      this.plugin.notify(message, { error: true });
+      this.render(item.item_id);
+      return false;
+    }
+    this.resultMessage = "已记录你对部分 PDF 提取的确认；同一条受管任务已重新入队。";
+    await this.refresh(item.item_id);
+    return true;
   }
 
   setItemBusy(card, message) {
@@ -439,6 +560,145 @@ class InboxCenterView extends ItemView {
 function rollbackLabel(assessment) {
   if (!assessment?.can_rollback) return "不可自动撤销";
   return assessment.requires_confirmation ? "撤销（需要确认）" : "安全撤销";
+}
+
+class AttachmentClassificationModal extends Modal {
+  constructor(app, plugin, item, data, onComplete) {
+    super(app);
+    this.plugin = plugin;
+    this.item = item;
+    this.data = data;
+    this.onComplete = onComplete;
+  }
+
+  representationLabel(value) {
+    return ({ metadata: "仅元数据", summary: "安全摘要", full: "全文", "sensitive-original": "敏感原文" })[value] || "仅元数据";
+  }
+
+  privacyLabel(value) {
+    return ({ 0: "公开", 1: "普通", 2: "敏感", 3: "高度敏感" })[value] || "尚未分类";
+  }
+
+  onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-attachment-classification-modal");
+    root.createEl("h2", { text: "确认附件访问范围" });
+    root.createDiv({ cls: "knowledgeos-modal-intro", text: "系统目前只保留了附件元数据，尚未将正文交给 Codex。确认后，Core 会保存策略、同步伴随笔记并恢复同一条受管任务。" });
+
+    const details = root.createEl("dl", { cls: "knowledgeos-attachment-classification-facts" });
+    const fact = (label, value) => {
+      const row = details.createDiv({ cls: "knowledgeos-attachment-classification-fact" });
+      row.createEl("dt", { text: label });
+      row.createEl("dd", { text: value });
+    };
+    fact("附件", this.item.filename);
+    fact("工作流需要", this.representationLabel(this.data.requested_representation || this.item.required_representation));
+    fact("模块可读上限", this.privacyLabel(this.data.module_max_sensitivity));
+    if (this.data.pdf_extraction_status) fact("PDF 提取", this.data.pdf_extraction_status);
+
+    const form = root.createDiv({ cls: "knowledgeos-attachment-classification-form" });
+    const sensitivityLabel = form.createEl("label", { text: "隐私等级" });
+    this.sensitivitySelect = sensitivityLabel.createEl("select");
+    const maximumSensitivity = Number.isInteger(this.data.module_max_sensitivity) ? this.data.module_max_sensitivity : 0;
+    for (const value of [0, 1, 2, 3]) {
+      const option = this.sensitivitySelect.createEl("option", { value: String(value), text: this.privacyLabel(value) });
+      option.disabled = value > maximumSensitivity;
+    }
+    const representationLabel = form.createEl("label", { text: "允许工作流读取" });
+    this.representationSelect = representationLabel.createEl("select");
+    const requested = this.data.requested_representation || this.item.required_representation || "metadata";
+    const ranks = { metadata: 0, summary: 1, full: 2, "sensitive-original": 3 };
+    for (const value of ["metadata", "summary", "full", "sensitive-original"]) {
+      const option = this.representationSelect.createEl("option", { value, text: this.representationLabel(value) });
+      option.disabled = ranks[value] < ranks[requested];
+    }
+    const suggested = this.data.suggested_policy;
+    const initialSensitivity = Number.isInteger(suggested?.sensitivity_class) && suggested.sensitivity_class <= maximumSensitivity ? suggested.sensitivity_class : 0;
+    const initialRepresentation = typeof suggested?.max_representation === "string" && ranks[suggested.max_representation] >= ranks[requested] ? suggested.max_representation : requested;
+    this.sensitivitySelect.value = String(initialSensitivity);
+    this.representationSelect.value = initialRepresentation;
+    if (suggested) {
+      const source = this.data.source_of_suggestion === "instance-policy" ? "实例默认策略" : "模块默认策略";
+      const suggestion = form.createDiv({ cls: "knowledgeos-attachment-classification-suggestion" });
+      suggestion.createSpan({ text: `建议：${source}（${this.privacyLabel(suggested.sensitivity_class)} / ${this.representationLabel(suggested.max_representation)}）` });
+      const apply = suggestion.createEl("button", { text: "采用建议" });
+      apply.onclick = () => { this.sensitivitySelect.value = String(suggested.sensitivity_class); this.representationSelect.value = suggested.max_representation; this.updatePreview(); };
+    }
+    this.preview = root.createDiv({ cls: "knowledgeos-attachment-classification-preview" });
+    this.sensitivitySelect.onchange = () => this.updatePreview();
+    this.representationSelect.onchange = () => this.updatePreview();
+    this.updatePreview();
+
+    this.status = markLiveRegion(root.createDiv({ cls: "knowledgeos-modal-submit-state" }));
+    const actions = root.createDiv({ cls: "knowledgeos-modal-actions" });
+    this.confirm = actions.createEl("button", { cls: "mod-cta", text: "确认并继续处理" });
+    this.confirm.onclick = () => this.submit();
+    const cancel = actions.createEl("button", { text: "取消" });
+    cancel.onclick = () => this.close();
+  }
+
+  updatePreview() {
+    const representation = this.representationSelect.value;
+    const privacy = this.privacyLabel(Number(this.sensitivitySelect.value));
+    this.preview.setText(`确认后：此附件标记为“${privacy}”；本次工作流最多可读取“${this.representationLabel(representation)}”。${representation === "full" || representation === "sensitive-original" ? "符合条件时，受管工作流会将这一范围的内容放入隔离 Context Workspace 供 Codex 读取。" : "正文仍不会直接交给 Codex。"}`);
+  }
+
+  async submit() {
+    this.confirm.disabled = true;
+    this.contentEl.setAttr("aria-busy", "true");
+    this.status.setText("正在保存分类并恢复受管任务…");
+    const completed = await this.onComplete({ sensitivity_class: Number(this.sensitivitySelect.value), max_representation: this.representationSelect.value });
+    this.confirm.disabled = false;
+    this.contentEl.removeAttribute("aria-busy");
+    if (completed === false) {
+      this.status.addClass("is-error");
+      this.status.setText("未能保存分类。附件和原任务均未被删除；请根据提示调整后重试。");
+      return;
+    }
+    this.close();
+  }
+}
+
+class PartialExtractionReviewModal extends Modal {
+  constructor(app, plugin, item, data, onComplete) {
+    super(app);
+    this.plugin = plugin;
+    this.item = item;
+    this.data = data;
+    this.onComplete = onComplete;
+  }
+
+  onOpen() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("knowledgeos-attachment-classification-modal");
+    root.createEl("h2", { text: "确认使用部分 PDF 提取" });
+    root.createDiv({ cls: "knowledgeos-modal-intro", text: "请先检查原始 PDF，确认已提取的内容足以支持本次工作流。此确认只适用于当前受管任务，不会把 PDF 标记为完整，也不会修改原始附件。" });
+    const status = this.data.pdf_extraction_status || "partial";
+    root.createDiv({ cls: "knowledgeos-attachment-classification-preview", text: `当前提取状态：${status}。确认后，Core 会保留该确认记录，并只让隔离 Context Workspace 使用本地已提取的文本。` });
+    this.status = markLiveRegion(root.createDiv({ cls: "knowledgeos-modal-submit-state" }));
+    const actions = root.createDiv({ cls: "knowledgeos-modal-actions" });
+    this.confirm = actions.createEl("button", { cls: "mod-cta", text: "我已检查，继续处理" });
+    this.confirm.onclick = () => this.submit();
+    const keepWaiting = actions.createEl("button", { text: "暂不处理" });
+    keepWaiting.onclick = () => this.close();
+  }
+
+  async submit() {
+    this.confirm.disabled = true;
+    this.contentEl.setAttr("aria-busy", "true");
+    this.status.setText("正在记录 PDF 提取复核并恢复任务…");
+    const completed = await this.onComplete();
+    this.confirm.disabled = false;
+    this.contentEl.removeAttribute("aria-busy");
+    if (completed === false) {
+      this.status.addClass("is-error");
+      this.status.setText("未能恢复任务。原文件和等待状态均保持不变。请根据提示重试。");
+      return;
+    }
+    this.close();
+  }
 }
 
 class RollbackConfirmModal extends Modal {

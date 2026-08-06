@@ -17,6 +17,7 @@ import { registerDeclaredJobs } from "../runtime/jobRegistry.js";
 import { evaluateScheduler } from "../runtime/scheduler.js";
 import { publishRuntimeEvent } from "../runtime/triggers.js";
 import { applyMigration, planMigrations, rollbackMigration } from "../core/migrations.js";
+import { effectivePdfUsePolicy, pdfExtractionDecision, type CaptureEnvelope } from "../core/ingestion.js";
 import { ModuleSdk } from "./sdk.js";
 import { createModuleWorkflowRunner } from "./workflowRunner.js";
 import type { ModuleTestCheck, ModuleTestReport } from "./types.js";
@@ -112,6 +113,94 @@ function promptInvariantResult(output: JsonObject, fixture: JsonObject): { ok: b
   return { ok: errors.length === 0, errors };
 }
 
+function partialPdfEnvelope(): CaptureEnvelope {
+  return {
+    schema_version: 3, asset_id: "ASSET-TEST-PARTIAL", capture_id: "CAP-TEST-PARTIAL", source_path: "20-Workspace/fixture.pdf",
+    original_asset_ref: "20-Workspace/fixture.pdf", format: "pdf", content_hash: "sha256:fixture", sidecar_path: "90-System/State/Sidecars/fixture.json",
+    capture_path: "90-System/State/Sidecars/fixture.json", extraction_cache_path: "90-System/Cache/Extractions/fixture.json", companion_note_path: "30-Knowledge/Attachments/fixture.md",
+    metadata: { extraction: { status: "partial", text_available: true } }, sensitivity_class: 0, classification_state: "classified",
+    access_policy: { max_representation: "full" }, policy_source: "default", legacy_read_level: null, created_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+interface BusinessSnapshot {
+  files: Record<string, string>;
+  entities: Record<string, string>;
+  reviewIds: string[];
+  eventIds: string[];
+  operationEffects: string[];
+}
+
+/**
+ * Captures the durable business effects of a fixture run. Runtime logs, task
+ * attempts, plans and dashboard caches intentionally do not participate: a
+ * retry is allowed to create observability records, but must not create a
+ * second user-visible document, entity, review, event, or applied operation.
+ */
+async function businessSnapshot(vaultRoot: string): Promise<BusinessSnapshot> {
+  const files: Record<string, string> = {};
+  const entities: Record<string, string> = {};
+  for (const root of ["20-Workspace", "30-Knowledge"]) {
+    const absoluteRoot = path.join(vaultRoot, root);
+    if (!(await exists(absoluteRoot))) continue;
+    for (const file of await listFilesRecursive(absoluteRoot)) {
+      const relative = path.relative(vaultRoot, file).replaceAll(path.sep, "/");
+      files[relative] = `sha256:${createHash("sha256").update(await fs.readFile(file)).digest("hex")}`;
+      if (path.extname(file).toLowerCase() === ".md") {
+        try {
+          const document = parseMarkdown(vaultRoot, file);
+          const id = document.data.id ?? document.data.entity_id ?? document.data.record_id;
+          if (typeof id === "string" && id) entities[relative] = id;
+        } catch { /* A non-PKB Markdown file is still a business file, just not an entity. */ }
+      }
+    }
+  }
+  const reviewIds: string[] = [];
+  const reviewsRoot = path.join(vaultRoot, "90-System", "Reviews");
+  if (await exists(reviewsRoot)) {
+    for (const file of await listFilesRecursive(reviewsRoot, ".md")) {
+      try {
+        const id = parseMarkdown(vaultRoot, file).data.review_id;
+        if (typeof id === "string") reviewIds.push(id);
+      } catch { /* malformed review files are caught by their own validation path */ }
+    }
+  }
+  const repository = await RuntimeRepository.open(vaultRoot);
+  let eventIds: string[] = [];
+  try { eventIds = repository.listEvents(10_000).map((event) => String(event.event_id ?? "")).filter(Boolean).sort(); }
+  finally { repository.close(); }
+  // Plans are the durable ledger of proposed/applied operations. Unlike Run
+  // history, a new plan on retry is itself a duplicate business effect.
+  const plansRoot = path.join(vaultRoot, "90-System", "State", "Plans");
+  const operationEffects = await exists(plansRoot)
+    ? (await listFilesRecursive(plansRoot, ".json")).map((file) => path.relative(plansRoot, file).replaceAll(path.sep, "/")).sort()
+    : [];
+  return { files, entities, reviewIds: reviewIds.sort(), eventIds, operationEffects };
+}
+
+function snapshotsEqual(before: BusinessSnapshot, after: BusinessSnapshot): boolean {
+  // A retry may create a new Run, but it must reuse the durable Operation Plan
+  // instead of creating a second business operation.
+  return JSON.stringify(before.files) === JSON.stringify(after.files)
+    && JSON.stringify(before.entities) === JSON.stringify(after.entities)
+    && JSON.stringify(before.reviewIds) === JSON.stringify(after.reviewIds)
+    && JSON.stringify(before.eventIds) === JSON.stringify(after.eventIds)
+    && JSON.stringify(before.operationEffects) === JSON.stringify(after.operationEffects);
+}
+
+async function readReviewsById(vaultRoot: string): Promise<Map<string, JsonObject>> {
+  const output = new Map<string, JsonObject>();
+  const root = path.join(vaultRoot, "90-System", "Reviews");
+  if (!(await exists(root))) return output;
+  for (const file of await listFilesRecursive(root, ".md")) {
+    try {
+      const data = parseMarkdown(vaultRoot, file).data;
+      if (typeof data.review_id === "string") output.set(data.review_id, data);
+    } catch { /* the validation path reports malformed review content */ }
+  }
+  return output;
+}
+
 async function writeFixtureCapture(vault: string, inboxPath: string, fixture: JsonObject, label: string): Promise<string> {
   const capture = object(fixture.capture, "MODULE_TEST_FIXTURE_INVALID");
   const relative = requiredString(capture.path, `${label}.capture.path`);
@@ -199,8 +288,17 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
         await fs.mkdir(path.dirname(sourceAbsolute), { recursive: true });
         await fs.copyFile(path.join(vault, ...expectedOutput.split("/")), sourceAbsolute);
       }
+      // Restoring a moved fixture source is test setup, not a business effect
+      // of the retry. Snapshot only after that setup is complete.
+      const firstEffects = await businessSnapshot(vault);
       const repeat = await executeFixtureTask(vault, moduleId, instanceId, sourceFile, itemId, "repeat", runner);
-      checks.push(check("idempotency", repeat.status === "completed" ? "pass" : "fail", repeat.status === "completed" ? "Repeated Capture recovered without a duplicate write." : "Repeated Capture did not complete safely.", { task_status: repeat.status }));
+      const repeatEffects = await businessSnapshot(vault);
+      const idempotent = repeat.status === "completed" && snapshotsEqual(firstEffects, repeatEffects);
+      checks.push(check("idempotency", idempotent ? "pass" : "fail", idempotent ? "Repeated Capture completed without a second business effect." : "Repeated Capture changed user-visible files, entities, Reviews, Events, or applied Operations.", {
+        task_status: repeat.status,
+        first_effects: firstEffects as unknown as JsonObject,
+        repeat_effects: repeatEffects as unknown as JsonObject,
+      }));
     }
     const ambiguous = object(scenarios.ambiguous_capture, "MODULE_TEST_CONTRACT_INVALID");
     const ambiguousExpected = requiredString(ambiguous.expected, "ambiguous_capture.expected");
@@ -211,14 +309,31 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     const ambiguousSource = await writeFixtureCapture(vault, String((await instanceLocation(vault, instanceId)).inbox_path), ambiguousFixture, "ambiguous_capture");
     const ambiguousItemId = typeof ambiguousCapture.item_id === "string" ? ambiguousCapture.item_id : "module-test-ambiguous";
     const ambiguousOutput = object(ambiguousCapture.codex_output, "MODULE_TEST_AMBIGUOUS_FIXTURE_INVALID");
+    const reviewsBeforeAmbiguous = await readReviewsById(vault);
+    const businessBeforeAmbiguous = await businessSnapshot(vault);
     const ambiguousTask = await executeFixtureTask(vault, moduleId, instanceId, ambiguousSource, ambiguousItemId, "ambiguous", createModuleWorkflowRunner(async () => ({ output: ambiguousOutput, stderr: "" })), 1);
-    const reviewCount = (await listFilesRecursive(path.join(vault, "90-System", "Reviews"), ".md")).length;
+    const reviewsAfterAmbiguous = await readReviewsById(vault);
+    const businessAfterAmbiguous = await businessSnapshot(vault);
+    const newReviews = [...reviewsAfterAmbiguous.entries()].filter(([reviewId]) => !reviewsBeforeAmbiguous.has(reviewId));
     const expectedError = typeof ambiguous.expected_error_code === "string" ? ambiguous.expected_error_code : null;
-    const ambiguousSafe = (ambiguousExpected === "review" && ambiguousTask.status === "completed" && reviewCount > 0)
-      || (["rejected", "failed"].includes(ambiguousExpected) && ambiguousTask.status === "failed");
+    const reviewMatchesSource = newReviews.some(([, review]) => {
+      const source = review.source_file ?? review.origin_source_file ?? review.item_id;
+      const task = review.origin_task_id ?? review.task_id;
+      const target = review.target;
+      return (source === ambiguousSource || source === ambiguousItemId || source === ambiguousCapture.path)
+        && (task === ambiguousTask.task_id || typeof task === "string")
+        && target !== null && target !== undefined;
+    });
+    const noBusinessWrite = JSON.stringify(businessBeforeAmbiguous.files) === JSON.stringify(businessAfterAmbiguous.files)
+      && JSON.stringify(businessBeforeAmbiguous.entities) === JSON.stringify(businessAfterAmbiguous.entities)
+      && JSON.stringify(businessBeforeAmbiguous.eventIds) === JSON.stringify(businessAfterAmbiguous.eventIds)
+      && JSON.stringify(businessBeforeAmbiguous.operationEffects) === JSON.stringify(businessAfterAmbiguous.operationEffects);
+    const ambiguousSafe = (ambiguousExpected === "review" && ambiguousTask.status === "completed" && newReviews.length > 0 && reviewMatchesSource && noBusinessWrite)
+      || (["rejected", "failed"].includes(ambiguousExpected) && ambiguousTask.status === "failed" && newReviews.length === 0 && noBusinessWrite);
     checks.push(check("ambiguous", ambiguousSafe && (!expectedError || ambiguousTask.last_error?.code === expectedError) ? "pass" : "fail",
       ambiguousSafe ? "Ambiguous Capture was actually executed and stopped before an unreviewed write." : "Ambiguous Capture did not reach its declared safe outcome.", {
-        expected: ambiguousExpected, task_status: ambiguousTask.status, error: ambiguousTask.last_error, review_count: reviewCount,
+        expected: ambiguousExpected, task_status: ambiguousTask.status, error: ambiguousTask.last_error,
+        new_review_ids: newReviews.map(([reviewId]) => reviewId), review_matches_source: reviewMatchesSource, no_business_write: noBusinessWrite,
       }));
 
     const permission = object(scenarios.permission_denied, "MODULE_TEST_CONTRACT_INVALID");
@@ -258,8 +373,8 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       ? (promptOutput.generation as JsonObject).prompt : null;
     const promptWasUsed = generated && typeof generated === "object" && !Array.isArray(generated);
     checks.push(check("prompt-regression", !missingInvariants.length && invariantResult.ok && Boolean(promptWasUsed) ? "pass" : "fail",
-      !missingInvariants.length && invariantResult.ok && promptWasUsed ? "Prompt fixture executed through the adapter and preserved its declared invariants." : `Prompt regression failed: ${[...missingInvariants, ...invariantResult.errors, ...(promptWasUsed ? [] : ["generation prompt trace is missing"])] .join(", ")}.`,
-      { invariants, invariant_errors: invariantResult.errors, prompt_trace_present: Boolean(promptWasUsed) }));
+      !missingInvariants.length && invariantResult.ok && promptWasUsed ? "Deterministic Prompt Contract Test passed: fixture output preserved its declared invariants." : `Deterministic Prompt Contract Test failed: ${[...missingInvariants, ...invariantResult.errors, ...(promptWasUsed ? [] : ["generation prompt trace is missing"])] .join(", ")}.`,
+      { test_kind: "deterministic-prompt-contract", real_model_evaluation: false, invariants, invariant_errors: invariantResult.errors, prompt_trace_present: Boolean(promptWasUsed) }));
 
     const periodic = object(scenarios.periodic_job, "MODULE_TEST_CONTRACT_INVALID");
     if (periodic.enabled === true) {
@@ -303,12 +418,46 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       ? scenarios.event_publication as JsonObject : null;
     if (publication?.enabled === true) {
       const eventType = requiredString(publication.event_type, "event_publication.event_type");
+      let publicationTask: RuntimeTask | null = null;
+      if (typeof publication.workflow_id === "string") {
+        const seed = object(publication.seed, "MODULE_TEST_CONTRACT_INVALID");
+        if (typeof seed.record_path === "string" && typeof seed.next_check === "string") {
+          const recordPath = path.join(vault, ...seed.record_path.split("/"));
+          const document = parseMarkdown(vault, recordPath);
+          const monitoring = object(document.data.monitoring, "MODULE_TEST_CONTRACT_INVALID");
+          monitoring.next_check = seed.next_check;
+          writeMarkdown(vault, recordPath, { data: { ...document.data, monitoring }, content: document.content });
+        }
+        publicationTask = await executeFixtureWorkflow(vault, moduleId, publication.instance_id === null ? null : instanceId, publication.workflow_id, "event-publication", createModuleWorkflowRunner(async () => ({ output: {}, stderr: "" })));
+      }
       const repository = await RuntimeRepository.open(vault);
       let publishedEvent = null;
-      try { publishedEvent = repository.listEvents().find((item) => item.event_type === eventType && item.module === moduleId && item.instance_id === instanceId) ?? null; }
+      try { publishedEvent = repository.listEvents().find((item) => item.event_type === eventType && item.module === moduleId && item.instance_id === (publication.instance_id === null ? null : instanceId)) ?? null; }
       finally { repository.close(); }
-      checks.push(check("event", publishedEvent?.status === "published" ? "pass" : "fail", publishedEvent?.status === "published" ? "The module Workflow actually published its declared Event." : "The module Workflow did not publish its declared Event.", { event_type: eventType, event_id: publishedEvent?.event_id ?? null, status: publishedEvent?.status ?? null }));
+      checks.push(check("event", publishedEvent?.status === "published" ? "pass" : "fail", publishedEvent?.status === "published" ? "The module Workflow actually published its declared Event." : "The module Workflow did not publish its declared Event.", { event_type: eventType, event_id: publishedEvent?.event_id ?? null, status: publishedEvent?.status ?? null, task_status: publicationTask?.status ?? null, task_error: publicationTask?.last_error ?? null }));
     } else checks.push(check("event", "not-applicable", "Module has no event-publication scenario."));
+
+    const pdf = scenarios.pdf_policy && typeof scenarios.pdf_policy === "object" && !Array.isArray(scenarios.pdf_policy)
+      ? scenarios.pdf_policy as JsonObject : null;
+    if (pdf?.enabled === true) {
+      const policy = effectivePdfUsePolicy(manifest.pdf_policy);
+      const partial = pdfExtractionDecision(partialPdfEnvelope(), policy);
+      const expectedPartial = typeof pdf.partial_expected === "string" ? pdf.partial_expected : policy.partial_policy;
+      const passed = (expectedPartial === "allow" && partial.usable && !partial.requires_review)
+        || (expectedPartial === "review" && !partial.usable && partial.requires_review);
+      checks.push(check("pdf", passed ? "pass" : "fail", passed ? "PDF policy was executed against a partial extraction with the module's declared outcome." : "PDF policy did not enforce its declared partial-extraction outcome.", {
+        test_kind: "deterministic-pdf-policy-execution", policy, partial_decision: partial, expected_partial: expectedPartial,
+      }));
+    } else checks.push(check("pdf", "not-applicable", "Module does not accept PDF input."));
+
+    const partialPdf = scenarios.partial_pdf_execution && typeof scenarios.partial_pdf_execution === "object" && !Array.isArray(scenarios.partial_pdf_execution)
+      ? scenarios.partial_pdf_execution as JsonObject : null;
+    if (partialPdf?.enabled === true) {
+      const decision = pdfExtractionDecision(partialPdfEnvelope(), effectivePdfUsePolicy(manifest.pdf_policy));
+      checks.push(check("pdf", decision.usable ? "pass" : "fail", decision.usable ? "Partial PDF execution is allowed by the module policy." : "Partial PDF execution was declared but the resolved module policy blocks it.", {
+        test_kind: "partial-pdf-execution", partial_decision: decision,
+      }));
+    }
 
     const migration = object(scenarios.migration_apply, "MODULE_TEST_CONTRACT_INVALID");
     if (migration.enabled === true) {
@@ -368,6 +517,19 @@ async function executeFixtureTask(vaultRoot: string, moduleId: string, instanceI
 async function executeExistingTask(vaultRoot: string, task: RuntimeTask, runner: ReturnType<typeof createModuleWorkflowRunner>) {
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
+    return await executeTask(vaultRoot, repository, task, "module-test-runner", { filesystem: "available", network: "not-required", codex: "available", user: "available" }, {}, runner);
+  } finally { repository.close(); }
+}
+
+async function executeFixtureWorkflow(vaultRoot: string, moduleId: string, instanceId: string | null, workflowId: string, suffix: string, runner: ReturnType<typeof createModuleWorkflowRunner>): Promise<RuntimeTask> {
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    const task = repository.createTask({
+      job_id: `${moduleId}.fixture-${suffix}`, module: moduleId, instance_id: instanceId, task_type: "workflow", workflow: `${moduleId}:${workflowId}`, priority: "high",
+      resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" },
+      trigger: { type: "manual", entrypoint: workflowId }, catch_up_policy: "none", idempotency_key: `module-test:${moduleId}:${instanceId ?? "module"}:${suffix}:${workflowId}`,
+      payload: {},
+    }).task;
     return await executeTask(vaultRoot, repository, task, "module-test-runner", { filesystem: "available", network: "not-required", codex: "available", user: "available" }, {}, runner);
   } finally { repository.close(); }
 }

@@ -5,6 +5,7 @@ import type { DashboardItem, JsonObject, ReviewItem } from "../core/types.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { QualityIssue } from "./domain.js";
 import { QualityRepository } from "./repository.js";
+import { legacyAccessPolicyMigrationSummary } from "../core/legacyAccessMigration.js";
 
 function groupCount<T>(values: T[], key: (value: T) => string): JsonObject { const output: JsonObject = {}; for (const value of values) { const name = key(value); output[name] = Number(output[name] ?? 0) + 1; } return output; }
 function ageBucket(created: string, now = Date.now()): string { const days = Math.floor((now - Date.parse(created)) / 86_400_000); return days <= 3 ? "0-3d" : days <= 7 ? "4-7d" : days <= 30 ? "8-30d" : "over-30d"; }
@@ -63,6 +64,7 @@ export async function getQualityDashboardFromRuntimeSnapshot(vaultRoot: string, 
     const reviews = await reviewSummary(vaultRoot);
     const byType = groupCount(active, (item) => item.issue_type); const byModule = groupCount(active, (item) => item.module); const bySeverity = groupCount(active, (item) => item.severity);
     const sevenDays = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    const legacyAccess = await legacyAccessPolicyMigrationSummary(vaultRoot);
     return {
       generated_at: new Date().toISOString(),
       overview: { active_issues: active.length, critical: Number(bySeverity.critical ?? 0), high: Number(bySeverity.high ?? 0), new_this_week: active.filter((item) => Date.parse(item.first_seen) >= Date.parse(sevenDays)).length, resolved_this_week: resolved.filter((item) => Date.parse(String(item.resolution?.resolved_at ?? 0)) >= Date.parse(sevenDays)).length, failed_tasks: tasks.filter((task) => task.status === "failed").length, modules: byModule },
@@ -70,7 +72,7 @@ export async function getQualityDashboardFromRuntimeSnapshot(vaultRoot: string, 
       provenance: { missing: Number(byType["missing-provenance"] ?? 0), conflicts: Number(byType["conflicting-evidence"] ?? 0), unavailable: Number(byType["unavailable-evidence"] ?? 0), items: active.filter((item) => item.dimension === "provenance" || item.dimension === "consistency") },
       reviews,
       links_ownership: { broken_links: Number(byType["broken-internal-link"] ?? 0) + Number(byType["broken-internal-anchor"] ?? 0) + Number(byType["broken-external-link"] ?? 0) + Number(byType["external-link-unreachable"] ?? 0), orphan_files: Number(byType["orphan-file"] ?? 0), unowned_files: Number(byType["unowned-file"] ?? 0), missing_ownership: Number(byType["missing-content-ownership"] ?? 0) + Number(byType["invalid-content-ownership"] ?? 0), items: active.filter((item) => item.dimension === "connectivity" || item.issue_type.includes("ownership")) },
-      schemas_migrations: { outdated: Number(byType["outdated-schema"] ?? 0), invalid: Number(byType["invalid-frontmatter"] ?? 0) + Number(byType["invalid-entity-schema"] ?? 0), items: active.filter((item) => item.dimension === "validity" && !item.issue_type.startsWith("prompt")) },
+      schemas_migrations: { outdated: Number(byType["outdated-schema"] ?? 0), invalid: Number(byType["invalid-frontmatter"] ?? 0) + Number(byType["invalid-entity-schema"] ?? 0), legacy_access_policy: legacyAccess, items: active.filter((item) => item.dimension === "validity" && !item.issue_type.startsWith("prompt")) },
       ai_quality: { metrics, anomalies: active.filter((item) => item.issue_type === "prompt-quality-regression") },
       operational: (snapshot.runtime_stats ?? {}) as JsonObject, audit_history: (snapshot.audits ?? []) as JsonObject[], observation: await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-observation.json"), {}), by_severity: bySeverity,
     };

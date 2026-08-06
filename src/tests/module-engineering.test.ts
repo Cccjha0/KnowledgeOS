@@ -12,22 +12,112 @@ import { invokeCommandApi } from "../platform/commandApi.js";
 import { installModulePackage, packModule, rollbackModulePackage } from "../modules/packageManager.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
+import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
+import { runModuleSandbox } from "../modules/sandbox.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 async function temporaryEngine(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-engine-"));
-  await fs.mkdir(path.join(root, "core", "schemas"), { recursive: true });
-  await fs.cp(path.join(SOURCE_ROOT, "core", "schemas", "module-manifest.schema.json"), path.join(root, "core", "schemas", "module-manifest.schema.json"));
+  await fs.mkdir(path.join(root, "core"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "core", "schemas"), path.join(root, "core", "schemas"), { recursive: true });
+  await fs.mkdir(path.join(root, "core", "module-builder"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "core", "module-builder", "capability-packs.yaml"), path.join(root, "core", "module-builder", "capability-packs.yaml"));
   await fs.cp(path.join(SOURCE_ROOT, "components"), path.join(root, "components"), { recursive: true });
   await fs.mkdir(path.join(root, "tools"), { recursive: true });
   await fs.cp(path.join(SOURCE_ROOT, "tools", "module_bridge.py"), path.join(root, "tools", "module_bridge.py"));
   await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ version: "0.9.0-beta" }), "utf8");
   return root;
 }
+
+test("Module Blueprint resolves templates, Capability Packs, Adapters, and Components", async () => {
+  const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+  const { report, scaffoldTemplate } = await validateModuleBlueprint(SOURCE_ROOT, blueprint);
+  assert.equal(report.overall, "PASS");
+  assert.equal(scaffoldTemplate, "workflow");
+  assert.equal(report.resolved_capability_packs.includes("capture-processing"), true, "transitive Pack dependencies should resolve");
+  assert.equal(report.resolved_capabilities.includes("periodic-summary"), true);
+  assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
+  assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
+});
+
+test("Module Blueprint rejects inputs without an installed Adapter", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-invalid-"));
+  try {
+    const source = path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml");
+    const blueprint = parseYaml(SOURCE_ROOT, source);
+    blueprint.inputs = ["markdown", "docx"];
+    const target = path.join(root, "invalid.blueprint.yaml");
+    writeYaml(root, target, blueprint);
+    const { report } = await validateModuleBlueprint(SOURCE_ROOT, target);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_UNAVAILABLE" && item.status === "fail"), true);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("Command API previews a Module Blueprint without creating source files", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-preview-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-PREVIEW", method: "previewModuleBlueprint", params: { blueprint } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).scaffold_template, "minimal-config");
+    assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Blueprint scaffolding deterministically creates a runtime-valid module", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    assert.equal(await fs.stat(path.join(moduleRoot, "module.blueprint.yaml")).then(() => true), true);
+    assert.equal(await fs.stat(path.join(moduleRoot, "docs", "blueprint-boundary.md")).then(() => true), true);
+    const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
+    assert.deepEqual(manifest.accepted_inputs, ["markdown", "pdf", "pptx"]);
+    assert.equal((manifest.inbox as JsonObject).asset_access_policy !== undefined, true);
+    const validation = await validateModule(engine, moduleRoot);
+    assert.notEqual(validation.overall, "FAIL", validation.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+    assert.equal(validation.checks.filter((item) => item.code.startsWith("BLUEPRINT_")).every((item) => item.status === "pass"), true);
+    await assert.rejects(() => scaffoldModuleFromBlueprint(engine, blueprint), /already exists/);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Blueprint compliance rejects runtime privacy drift", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
+    (manifest.permissions as JsonObject).max_sensitivity_class = 3;
+    writeYaml(moduleRoot, path.join(moduleRoot, "module.yaml"), manifest);
+    const report = await validateModule(engine, moduleRoot);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "BLUEPRINT_SENSITIVITY_MATCH" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Official Course Blueprint module passes its executable Module Test contract", async () => {
+  const report = await testModule(SOURCE_ROOT, "course");
+  assert.equal(report.overall, "PASS", report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+  assert.equal(report.checks.find((item) => item.category === "periodic")?.status, "pass");
+  assert.equal(report.checks.some((item) => item.category === "event" && item.status === "pass"), true);
+  assert.equal(report.checks.find((item) => item.category === "pdf")?.status, "pass");
+});
+
+test("Module Sandbox executes fixtures in a disposable Vault", async () => {
+  const report = await runModuleSandbox(SOURCE_ROOT, "reading-log");
+  assert.equal(report.isolation, "temporary-vault");
+  assert.equal(report.lifecycle, "created-executed-cleaned");
+  assert.equal(report.overall, "PASS");
+});
 
 test("all scaffold templates generate manifests that satisfy the base contract", async () => {
   const engine = await temporaryEngine();
@@ -51,6 +141,20 @@ test("validation fails before enable when a registered prompt is missing", async
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("Beta and Stable modules cannot declare an unavailable Ingestion Adapter", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "unavailable-adapter", "minimal-config");
+    const root = path.join(engine, "modules", "unavailable-adapter");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.maturity = "beta";
+    manifest.accepted_inputs = [...(manifest.accepted_inputs as string[]), "docx"];
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const report = await validateModule(engine, root);
+    assert.equal(report.checks.some((item) => item.code === "INGESTION_ADAPTER_UNAVAILABLE" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("validation requires every declared Event Job to state its subscription scope", async () => {
   const engine = await temporaryEngine();
   try {
@@ -62,6 +166,28 @@ test("validation requires every declared Event Job to state its subscription sco
     const report = await validateModule(engine, root);
     assert.equal(report.overall, "FAIL");
     assert.equal(report.checks.some((item) => item.code === "EVENT_SUBSCRIPTION_SCOPE_INVALID" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("validation restricts global Event subscriptions to an authorized, source-scoped declaration", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "global-event-check", "minimal-config");
+    const root = path.join(engine, "modules", "global-event-check");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.capabilities = [...(manifest.capabilities as string[]), "event-subscription"];
+    manifest.events = { publishes: [], subscribes: [{ event: "application.updated", scope: "global", source_modules: ["application-tracker"] }] };
+    manifest.permissions = { ...(manifest.permissions as JsonObject), global_event_subscription: true };
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    writeYaml(root, path.join(root, "jobs", "jobs.yaml"), {
+      jobs: [{ id: "consume-application", scope: "module", enabled: true, task_type: "workflow", workflow: "global-event-check:normalize", workflow_id: "normalize", workflow_version: "1.0.0", trigger: { type: "event", event: "application.updated", subscription_scope: "global", source_modules: ["application-tracker"] } }],
+    });
+    const authorized = await validateModule(engine, root);
+    assert.equal(authorized.checks.some((item) => item.code === "GLOBAL_EVENT_SUBSCRIPTION_DENIED" && item.status === "fail"), false);
+    manifest.permissions = { ...(manifest.permissions as JsonObject), global_event_subscription: false };
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const denied = await validateModule(engine, root);
+    assert.equal(denied.checks.some((item) => item.code === "GLOBAL_EVENT_SUBSCRIPTION_DENIED" && item.status === "fail"), true);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 

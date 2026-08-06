@@ -65,8 +65,8 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   await yaml(root, "workflows/index.yaml", { workflows: workflowEntries });
   await yaml(root, "workflows/classify/v1.0.0.yaml", { workflow_id: "classify", workflow_version: "1.0.0", inputs: ["capture"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "classify", uses: "codex.prompt", with: { prompt_id: "classify-capture", output_schema: "https://pkb.local/schemas/core/match-result.schema.json" } }], outputs: ["match_result"] });
   const normalizeSteps: JsonObject[] = [
-    { id: "validate-capture", uses: "core.validate-capture" },
-    { id: "parse-capture", uses: "core.parse-structured-document" },
+    { id: "validate-capture", uses: "core.validate-capture", with: { read: { representation: "full" } } },
+    { id: "parse-capture", uses: "core.parse-structured-document", with: { read: { representation: "full" } } },
     { id: "normalize", uses: "codex.prompt", with: { prompt_id: "normalize-record", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } },
     { id: "plan", uses: "core.build-operation-plan", with: { output: "normalize", output_schema: "record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/record.md", idempotency_key: `${id}:{instance.instance_id}:record:{task.payload.item_id}`, summary: "Create a normalized record" } },
   ];
@@ -75,7 +75,7 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
     workflow_id: "normalize", workflow_version: "1.0.0", inputs: ["capture", "instance"], resources: { filesystem: "required", network: integrationResource(template), codex: "required", user: "not-required" },
     steps: normalizeSteps, outputs: ["operation_plan", "dashboard_items", ...(publishesEvents ? ["events"] : [])],
   });
-  if (template === "workflow") await yaml(root, "workflows/weekly-summary/v1.0.0.yaml", { workflow_id: "weekly-summary", workflow_version: "1.0.0", inputs: ["instance", "period"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "summarize", uses: "codex.prompt", with: { prompt_id: "weekly-summary", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan" }, { id: "publish-weekly-summary", uses: "core.publish-event", with: { event_type: `${id}.weekly-summary-created`, payload: { summary: "weekly-summary" } } }], outputs: ["operation_plan", "events"] });
+  if (template === "workflow") await yaml(root, "workflows/weekly-summary/v1.0.0.yaml", { workflow_id: "weekly-summary", workflow_version: "1.0.0", inputs: ["instance", "period"], resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, steps: [{ id: "summarize", uses: "codex.prompt", with: { prompt_id: "weekly-summary", output_schema: `https://pkb.local/schemas/${id}/record.schema.json` } }, { id: "plan", uses: "core.build-operation-plan", with: { output: "summarize", output_schema: "record", target: "{instance.content_root}/Summaries/{schedule.iso_week}.md", template: "templates/record.md", idempotency_key: `${id}:{instance.instance_id}:weekly-summary:{schedule.iso_week}`, summary: "Create a weekly summary" } }, { id: "publish-weekly-summary", uses: "core.publish-event", with: { event_type: `${id}.weekly-summary-created`, payload: { summary: "weekly-summary" } } }], outputs: ["operation_plan", "events"] });
   await yaml(root, "rules/paths.yaml", { owned_roots: [`20-Workspace/${displayName}/{instance_id}`], inbox: "{content_root}/Inbox", records: "{content_root}/Records", archive: "{content_root}/Archive" });
   await yaml(root, "rules/naming.yaml", { record: "{date}-{slug}.md", duplicate_key: "{instance_id}:{source_hash}" });
   await yaml(root, "rules/linking.yaml", { cross_module_write: false, cross_module_communication: "events-only" });
@@ -97,20 +97,22 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
     },
   });
   for (const [folder, fixture] of [["contract", "valid-plan.yaml"], ["behavior", "normal-input.md"], ["behavior", "ambiguous-input.md"], ["behavior", "invalid-input.md"], ["behavior", "duplicate-input.md"], ["permission", "cross-module-write.yaml"], ["prompt-regression", "facts.yaml"], ["lifecycle", "pause-archive.yaml"], ["migration", "v1-idempotency.yaml"]] as const) await text(path.join(root, "tests", folder, fixture), `# ${fixture}\nexpected: pass`);
+  await yaml(root, "tests/behavior/ambiguous-input.md", { capture: { path: "ambiguous-input.md", item_id: "ambiguous-input", content: "# Ambiguous input\n\nThe fixture intentionally lacks the fields required for a safe structured result.", codex_output: {} } });
   await yaml(root, "tests/prompt-regression/facts.yaml", { invariants: ["preserve-facts", "no-invented-values", "uncertainty-preserved", "schema-valid"] });
   await yaml(root, "fixtures/sample-instance/module-test.yaml", {
     contract_version: 1,
     scenarios: {
       normal_capture: { fixture: "fixtures/sample-instance/capture-test.yaml" },
-      ambiguous_capture: { fixture: "tests/behavior/ambiguous-input.md", expected: "review" },
+      ambiguous_capture: { fixture: "tests/behavior/ambiguous-input.md", expected: "failed" },
       permission_denied: { target: `20-Workspace/${displayName}/forbidden.md` },
       resource_unavailable: { resource: "codex", expected: "waiting-for-ai" },
       repeat_execution: { enabled: true },
       paused_instance: { enabled: true },
       archived_instance: { enabled: true },
       prompt_regression: { fixture: "tests/prompt-regression/facts.yaml" },
-      periodic_job: { enabled: template === "workflow", ...(template === "workflow" ? { scheduled_at: "2026-08-09T10:00:00Z" } : {}) },
-      event_consumption: { enabled: template === "workflow", ...(template === "workflow" ? { event_type: `${id}.fixture-event` } : {}) },
+      periodic_job: { enabled: template === "workflow", ...(template === "workflow" ? { job_id: `${id}.weekly-summary.sample-instance`, scheduled_at: "2026-08-09T10:00:00Z", expected_output: `20-Workspace/${displayName}/sample-instance/Summaries/2026-W32.md`, codex_output: { id: `${id}-weekly-2026-W32`, type: `${id}-record`, schema_id: "record", schema_version: 1, module_version: "0.1.0", instance_id: "sample-instance", title: "2026-W32 Weekly Summary", source_refs: [], created: "2026-08-09T10:00:00Z", updated: "2026-08-09T10:00:00Z" } } : {}) },
+      event_publication: { enabled: publishesEvents, ...(publishesEvents ? { event_type: `${id}.record-created` } : {}) },
+      event_consumption: { enabled: false },
       migration_apply: { enabled: false, rollback: false },
     },
   });
