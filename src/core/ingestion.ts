@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml, writeMarkdown } from "./bridge.js";
+import { parseMarkdown, parseYaml, validateSchema, writeMarkdown } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { ensureDir, exists, fromVaultPath, listFilesRecursive, sha256File, toVaultPath, writeJsonAtomic } from "./files.js";
 import type { JsonObject, JsonValue } from "./types.js";
@@ -10,6 +10,7 @@ import { assertRepresentationLevel, assertSensitivityClass, defaultMaxRepresenta
 
 export type IngestionFormat = "markdown" | "text" | "json" | "yaml" | "pdf" | "image";
 export type PdfExtractionStatus = "pending" | "completed" | "partial" | "empty" | "scanned" | "encrypted" | "corrupted" | "unsupported" | "failed";
+const ASSET_SIDECAR_SCHEMA = "https://pkb.local/schemas/core/asset-sidecar.schema.json";
 
 export interface CaptureEnvelope extends JsonObject {
   schema_version: 3;
@@ -49,6 +50,19 @@ export interface ExtractionCache extends JsonObject {
   created_at: string;
   last_accessed_at: string;
   reference_count: number;
+}
+
+/**
+ * The Asset Sidecar is Core-owned state, but is also a public contract. Validate
+ * before persistence and again after the atomic write so a corrupt or manually
+ * edited JSON file cannot silently become an authorization input.
+ */
+export async function writeAssetSidecar(vaultRoot: string, envelope: CaptureEnvelope): Promise<void> {
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, envelope);
+  const target = fromVaultPath(vaultRoot, envelope.sidecar_path);
+  await writeJsonAtomic(target, envelope);
+  const persisted = JSON.parse(await fs.readFile(target, "utf8")) as JsonObject;
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, persisted);
 }
 
 const EXTENSIONS: Record<string, IngestionFormat> = {
@@ -239,7 +253,7 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
   };
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, sidecarPath)));
   await ensureDir(path.dirname(fromVaultPath(vaultRoot, cachePath)));
-  await writeJsonAtomic(fromVaultPath(vaultRoot, sidecarPath), envelope);
+  await writeAssetSidecar(vaultRoot, envelope);
   await writeJsonAtomic(fromVaultPath(vaultRoot, cachePath), cache);
   if (!(await exists(fromVaultPath(vaultRoot, notePath)))) {
     await ensureDir(path.dirname(fromVaultPath(vaultRoot, notePath)));
@@ -273,7 +287,7 @@ export async function updateAssetAccessPolicy(vaultRoot: string, capturePath: st
     legacy_read_level: null,
     metadata: { ...envelope.metadata, policy_updated_at: updatedAt, policy_authority: "core-api" },
   };
-  await writeJsonAtomic(fromVaultPath(vaultRoot, updated.sidecar_path), updated);
+  await writeAssetSidecar(vaultRoot, updated);
   const noteFile = fromVaultPath(vaultRoot, updated.companion_note_path);
   if (await exists(noteFile)) {
     const note = parseMarkdown(vaultRoot, noteFile);
@@ -291,7 +305,7 @@ export async function readCaptureEnvelope(vaultRoot: string, capturePath: string
   if (parsed.schema_version === 1 && typeof parsed.extracted_text === "string") {
     // Compatibility for queued tasks created before the Sidecar/cache split.
     const hash = parsed.content_hash;
-    return {
+    const migrated: CaptureEnvelope = {
       schema_version: 3, asset_id: assetId(hash), capture_id: String(parsed.capture_id), source_path: parsed.source_path, original_asset_ref: String(parsed.original_asset_ref ?? parsed.source_path),
       format: parsed.format as IngestionFormat, content_hash: hash, sidecar_path: String(parsed.sidecar_path ?? capturePath), capture_path: capturePath,
       extraction_cache_path: String(parsed.capture_path ?? capturePath), companion_note_path: companionNotePath(hash, parsed.source_path),
@@ -299,20 +313,30 @@ export async function readCaptureEnvelope(vaultRoot: string, capturePath: string
       sensitivity_class: assertSensitivityClass(typeof parsed.read_level === "number" ? parsed.read_level : 0, "legacy capture read_level"), classification_state: "inherited", access_policy: { max_representation: "sensitive-original" }, policy_source: "legacy",
       legacy_read_level: typeof parsed.read_level === "number" ? assertSensitivityClass(parsed.read_level, "legacy capture read_level") : null, created_at: String(parsed.created_at ?? new Date().toISOString()),
     };
+    validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, migrated);
+    return migrated;
   }
   if (parsed.schema_version === 2 && typeof parsed.extraction_cache_path === "string") {
     const policy = resolveDocumentAccessPolicy(parsed);
-    return {
+    const migrated: CaptureEnvelope = {
       ...parsed, schema_version: 3, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
       legacy_read_level: policy.legacy_read_level ?? null,
     } as unknown as CaptureEnvelope;
+    validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, migrated);
+    return migrated;
   }
   if (parsed.schema_version !== 3 || typeof parsed.extraction_cache_path !== "string") throw new PkbError("CAPTURE_ENVELOPE_INVALID", `Invalid Asset Metadata Sidecar ${capturePath}.`);
+  // Validate the persisted v3 document before resolving defaults. Otherwise a
+  // malformed policy could be silently normalized into a different authority
+  // decision while the invalid on-disk Sidecar remained in place.
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, parsed);
   const policy = resolveDocumentAccessPolicy(parsed);
-  return {
+  const envelope: CaptureEnvelope = {
     ...parsed, sensitivity_class: policy.sensitivity_class, classification_state: policy.classification_state, access_policy: { max_representation: policy.max_representation }, policy_source: policy.policy_source,
     legacy_read_level: policy.legacy_read_level ?? null,
   } as unknown as CaptureEnvelope;
+  validateSchema(vaultRoot, ASSET_SIDECAR_SCHEMA, envelope);
+  return envelope;
 }
 
 export async function readExtractionCache(vaultRoot: string, envelope: CaptureEnvelope): Promise<ExtractionCache> {
@@ -337,7 +361,7 @@ export async function readExtractionCache(vaultRoot: string, envelope: CaptureEn
     await writeJsonAtomic(fromVaultPath(vaultRoot, canonicalPath), resolved);
     if (candidate !== canonicalPath) {
       await fs.rm(cachePath, { force: true });
-      await writeJsonAtomic(fromVaultPath(vaultRoot, envelope.sidecar_path), { ...envelope, extraction_cache_path: canonicalPath });
+      await writeAssetSidecar(vaultRoot, { ...envelope, extraction_cache_path: canonicalPath });
     }
     return resolved;
   } catch { /* Try the next compatible cache location. */ }
@@ -385,7 +409,7 @@ export async function cleanIngestionArtifacts(vaultRoot: string, options: { now?
     }
     if (Number(envelope.metadata.reference_count ?? -1) !== references) {
       envelope.metadata = { ...envelope.metadata, reference_count: references, reference_counted_at: now.toISOString() };
-      await writeJsonAtomic(file, envelope);
+      await writeAssetSidecar(vaultRoot, envelope);
     }
     const cacheFile = fromVaultPath(vaultRoot, extractionCachePath(envelope.content_hash));
     if (await exists(cacheFile)) {

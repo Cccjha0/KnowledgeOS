@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/asset-sidecar.schema.json",
+  "title": "PKB Asset Metadata Sidecar",
+  "description": "Core-managed metadata and access-policy record for an ingested attachment. Extracted content belongs in the referenced cache, not this Sidecar.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "asset_id", "capture_id", "source_path", "original_asset_ref", "format", "content_hash",
+    "sidecar_path", "capture_path", "extraction_cache_path", "companion_note_path", "metadata",
+    "sensitivity_class", "classification_state", "access_policy", "policy_source", "legacy_read_level", "created_at"
+  ],
+  "properties": {
+    "schema_version": { "const": 3 },
+    "asset_id": { "type": "string", "pattern": "^AST-[A-F0-9]+$" },
+    "capture_id": { "type": "string", "pattern": "^CAP-[A-Z0-9-]+$" },
+    "source_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "original_asset_ref": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "format": { "type": "string", "enum": ["markdown", "text", "json", "yaml", "pdf", "image"] },
+    "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 digest without a display prefix; user-facing records may render it as sha256:<digest>." },
+    "sidecar_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "capture_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath", "description": "Compatibility alias for sidecar_path." },
+    "extraction_cache_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "companion_note_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+    "metadata": { "type": "object", "additionalProperties": true },
+    "sensitivity_class": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 3 }, { "const": "unknown" }] },
+    "classification_state": { "type": "string", "enum": ["unclassified", "classified", "inherited"] },
+    "access_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_representation"],
+      "properties": { "max_representation": { "type": "string", "enum": ["metadata", "summary", "full", "sensitive-original"] } }
+    },
+    "policy_source": { "type": "string", "enum": ["explicit", "legacy", "default", "inherited"] },
+    "legacy_read_level": { "type": ["integer", "null"], "minimum": 0, "maximum": 3 },
+    "read_level": { "type": "integer", "minimum": 0, "maximum": 3, "deprecated": true },
+    "content_read_level": { "type": "integer", "minimum": 0, "maximum": 3, "deprecated": true },
+    "policy_migration": { "type": "object", "additionalProperties": false, "required": ["migration_id", "migrated_at", "previous_read_level"], "properties": {
+      "migration_id": { "type": "string", "minLength": 1 },
+      "migrated_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" },
+      "previous_read_level": { "type": "integer", "minimum": 0, "maximum": 3 }
+    } },
+    "created_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "classification_state": { "const": "unclassified" } } },
+      "then": { "properties": { "sensitivity_class": { "const": "unknown" }, "access_policy": { "properties": { "max_representation": { "const": "metadata" } } } } }
+    },
+    {
+      "if": { "properties": { "classification_state": { "enum": ["classified", "inherited"] } } },
+      "then": { "properties": { "sensitivity_class": { "type": "integer", "minimum": 0, "maximum": 3 } } }
+    }
+  ]
+}

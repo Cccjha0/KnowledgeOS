@@ -63,6 +63,22 @@ test("Ingestion Adapters create Core-owned envelopes and sidecars for structured
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Asset Metadata Sidecars are validated on write and read", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-sidecar-schema-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.mkdir(path.join(vault, "00-Inbox"), { recursive: true });
+    await fs.writeFile(path.join(vault, "00-Inbox", "private.txt"), "fixture", "utf8");
+    const asset = await ingestAsset(vault, "00-Inbox/private.txt");
+    const sidecar = path.join(vault, ...asset.sidecar_path.split("/"));
+    const corrupted = JSON.parse(await fs.readFile(sidecar, "utf8")) as Record<string, unknown>;
+    corrupted.classification_state = "unclassified";
+    corrupted.sensitivity_class = 2;
+    await fs.writeFile(sidecar, JSON.stringify(corrupted), "utf8");
+    await assert.rejects(readCaptureEnvelope(vault, asset.sidecar_path), /Schema validation failed/);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("binary asset Sidecars retain sensitivity and representation policy across repeat ingestion", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-read-level-"));
   try {

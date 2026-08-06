@@ -5,7 +5,7 @@ import { parseMarkdown, writeMarkdown } from "./bridge.js";
 import { PkbError } from "./errors.js";
 import { exists, fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "./files.js";
 import { createGitSnapshot } from "./git.js";
-import { ingestAsset } from "./ingestion.js";
+import { ingestAsset, readCaptureEnvelope, writeAssetSidecar } from "./ingestion.js";
 import { assertSensitivityClass, defaultMaxRepresentation, type RepresentationLevel, type SensitivityClass } from "./readLevels.js";
 import type { JsonObject, JsonValue } from "./types.js";
 import { QualityRepository } from "../quality/repository.js";
@@ -175,9 +175,8 @@ export async function applyLegacyAccessPolicyMigration(vaultRoot: string, params
         maxRepresentation: (proposed.access_policy as JsonObject).max_representation as RepresentationLevel,
         classificationState: "classified",
       });
-      const refreshed = JSON.parse(await fs.readFile(fromVaultPath(vaultRoot, migrated.sidecar_path), "utf8")) as JsonObject;
-      delete refreshed.read_level;
-      await writeJsonAtomic(fromVaultPath(vaultRoot, migrated.sidecar_path), { ...refreshed, legacy_read_level: null, policy_migration: { migration_id: preview.migration_id, migrated_at: new Date().toISOString(), previous_read_level: candidate.legacy_read_level } });
+      const refreshed = await readCaptureEnvelope(vaultRoot, migrated.sidecar_path);
+      await writeAssetSidecar(vaultRoot, { ...refreshed, legacy_read_level: null, policy_migration: { migration_id: preview.migration_id, migrated_at: new Date().toISOString(), previous_read_level: candidate.legacy_read_level } });
     }
   }
   const quality = await QualityRepository.open(vaultRoot);
