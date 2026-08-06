@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionDecision, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
+import { cleanIngestionArtifacts, countAssetReferences, evidenceLocator, ingestAsset, pdfExtractionDecision, pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache, slideEvidenceLocator } from "../core/ingestion.js";
 import { initializeVault } from "../core/vault.js";
 import { runQualityAudit } from "../quality/audit.js";
 import { QualityRepository } from "../quality/repository.js";
@@ -35,6 +35,22 @@ function makePdf(text: string): Buffer {
   for (const offset of offsets.slice(1)) pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf, "binary");
+}
+
+function makePptx(target: string): void {
+  const script = [
+    "import sys, zipfile",
+    "slide='<p:sld xmlns:p=\"p\" xmlns:a=\"a\"><p:cSld><p:spTree><a:t>Slide title</a:t><a:t>Slide body</a:t></p:spTree></p:cSld></p:sld>'",
+    "notes='<p:notes xmlns:p=\"p\" xmlns:a=\"a\"><a:t>Speaker note</a:t></p:notes>'",
+    "rels='<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Target=\"../media/image1.png\" Type=\"image\" /></Relationships>'",
+    "with zipfile.ZipFile(sys.argv[1], 'w') as z:",
+    " z.writestr('ppt/slides/slide1.xml', slide)",
+    " z.writestr('ppt/notesSlides/notesSlide1.xml', notes)",
+    " z.writestr('ppt/slides/_rels/slide1.xml.rels', rels)",
+    " z.writestr('ppt/media/image1.png', b'fixture')",
+  ].join("\n");
+  const result = spawnSync("python", ["-c", script, target], { encoding: "utf8", windowsHide: true });
+  assert.equal(result.status, 0, result.stderr);
 }
 
 function makeBlankPdf(): Buffer {
@@ -76,6 +92,22 @@ test("Asset Metadata Sidecars are validated on write and read", async () => {
     corrupted.sensitivity_class = 2;
     await fs.writeFile(sidecar, JSON.stringify(corrupted), "utf8");
     await assert.rejects(readCaptureEnvelope(vault, asset.sidecar_path), /Schema validation failed/);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("PPTX Adapter extracts slide text, speaker notes, image references, and slide-level evidence", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-ingestion-pptx-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await fs.mkdir(path.join(vault, "00-Inbox"), { recursive: true });
+    makePptx(path.join(vault, "00-Inbox", "lecture.pptx"));
+    const asset = await ingestAsset(vault, "00-Inbox/lecture.pptx", { sensitivityClass: 0, maxRepresentation: "full", classificationState: "classified" });
+    const cache = await readExtractionCache(vault, asset);
+    assert.equal(asset.format, "pptx");
+    assert.equal(asset.metadata.slides, 1);
+    assert.equal(cache.slide_text[0]?.speaker_notes, "Speaker note");
+    assert.deepEqual(cache.slide_text[0]?.image_refs, ["ppt/media/image1.png"]);
+    assert.deepEqual(slideEvidenceLocator(asset, [1], "Slide title"), { asset_id: asset.asset_id, source_ref: `[[${asset.companion_note_path}]]`, original_asset_ref: `[[${asset.original_asset_ref}]]`, content_hash: asset.content_hash, slides: [1], locator: "Slide title" });
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

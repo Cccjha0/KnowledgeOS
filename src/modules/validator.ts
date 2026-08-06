@@ -5,6 +5,7 @@ import { exists, listFilesRecursive, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } from "./types.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
+import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterRegistry.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -206,6 +207,20 @@ function acceptedInputFormats(manifest: JsonObject): Set<string> {
   return new Set(Array.isArray(manifest.accepted_inputs) ? manifest.accepted_inputs.filter((value): value is string => typeof value === "string") : []);
 }
 
+function validateAcceptedInputAdapters(manifest: JsonObject, maturity: ModuleMaturity, checks: ModuleValidationCheck[]): void {
+  for (const format of acceptedInputFormats(manifest)) {
+    const declared = getIngestionAdapter(format);
+    const available = availableIngestionAdapter(format);
+    if (available) {
+      checks.push(check("contracts", "INGESTION_ADAPTER_AVAILABLE", "pass", `${format} is backed by ${available.adapter_id}@${available.adapter_version}.`, "module.yaml"));
+      continue;
+    }
+    const detail = declared ? `${declared.adapter_id}@${declared.adapter_version} is not installed/available on ${process.platform}.` : "No Core Adapter is registered.";
+    const status = maturity === "experimental" ? "warning" : "fail";
+    checks.push(check("contracts", "INGESTION_ADAPTER_UNAVAILABLE", status, `${format} cannot be accepted: ${detail}`, "module.yaml", status === "fail"));
+  }
+}
+
 async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   if (maturity !== "beta" && maturity !== "stable") return;
   const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
@@ -259,6 +274,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   const id = typeof manifest.id === "string" ? manifest.id : path.basename(moduleRoot);
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
   const maturity = (["experimental", "beta", "stable", "deprecated"].includes(String(manifest.maturity)) ? manifest.maturity : "experimental") as ModuleMaturity;
+  validateAcceptedInputAdapters(manifest, maturity, checks);
   validateInboxRoleContracts(manifest, checks);
   if (maturity === "beta" || maturity === "stable") {
     const legacy = legacyReadFields(object(manifest.permissions) ?? {});

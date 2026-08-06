@@ -51,6 +51,20 @@ test("validation fails before enable when a registered prompt is missing", async
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("Beta and Stable modules cannot declare an unavailable Ingestion Adapter", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "unavailable-adapter", "minimal-config");
+    const root = path.join(engine, "modules", "unavailable-adapter");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.maturity = "beta";
+    manifest.accepted_inputs = [...(manifest.accepted_inputs as string[]), "docx"];
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const report = await validateModule(engine, root);
+    assert.equal(report.checks.some((item) => item.code === "INGESTION_ADAPTER_UNAVAILABLE" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("validation requires every declared Event Job to state its subscription scope", async () => {
   const engine = await temporaryEngine();
   try {

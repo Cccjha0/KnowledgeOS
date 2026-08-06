@@ -16,7 +16,7 @@
     "capture_id": { "type": "string", "pattern": "^CAP-[A-Z0-9-]+$" },
     "source_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
     "original_asset_ref": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
-    "format": { "type": "string", "enum": ["markdown", "text", "json", "yaml", "pdf", "image"] },
+    "format": { "type": "string", "enum": ["markdown", "text", "json", "yaml", "pdf", "pptx", "docx", "image", "archive", "email"] },
     "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "SHA-256 digest without a display prefix; user-facing records may render it as sha256:<digest>." },
     "sidecar_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
     "capture_path": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath", "description": "Compatibility alias for sidecar_path." },
