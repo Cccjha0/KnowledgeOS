@@ -172,7 +172,9 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
   };
   manifest.events = { publishes: strings(events.publishes), subscribes: strings(events.subscribes) };
   writeYaml(moduleRoot, manifestPath, manifest);
+  await materializeDeclaredWorkflows(moduleRoot, resolved.blueprint, manifest);
   await alignScaffoldEvents(moduleRoot, strings(events.publishes));
+  writeYaml(moduleRoot, manifestPath, manifest);
   writeYaml(moduleRoot, path.join(moduleRoot, "module.blueprint.yaml"), resolved.blueprint);
   await fs.writeFile(path.join(moduleRoot, "docs", "blueprint-boundary.md"), renderBoundaryDocument(resolved.blueprint), "utf8");
   await fs.writeFile(path.join(moduleRoot, "blueprint-validation-report.json"), `${JSON.stringify(resolved.report, null, 2)}\n`, "utf8");
@@ -180,10 +182,13 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
 }
 
 async function alignScaffoldEvents(moduleRoot: string, publishedEvents: string[]): Promise<void> {
-  const workflowFiles = [
-    path.join(moduleRoot, "workflows", "normalize", "v1.0.0.yaml"),
-    path.join(moduleRoot, "workflows", "weekly-summary", "v1.0.0.yaml"),
-  ];
+  const registry = parseYaml(moduleRoot, path.join(moduleRoot, "workflows", "index.yaml"));
+  const entries = object(registry.workflows) ?? {};
+  const workflowFiles = Object.values(entries)
+    .map((entry) => object(entry))
+    .filter((entry): entry is JsonObject => entry !== null)
+    .filter((entry) => typeof entry.path === "string")
+    .map((entry) => path.join(moduleRoot, "workflows", ...String(entry.path).split("/")));
   let eventIndex = 0;
   for (const workflowFile of workflowFiles) {
     if (!(await exists(workflowFile))) continue;
@@ -201,6 +206,57 @@ async function alignScaffoldEvents(moduleRoot: string, publishedEvents: string[]
     workflow.outputs = strings(workflow.outputs).filter((output) => output !== "events" || hasPublisher);
     writeYaml(moduleRoot, workflowFile, workflow);
   }
+}
+
+async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject): Promise<void> {
+  const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+  const registryPath = path.join(moduleRoot, "workflows", "index.yaml");
+  const registry = parseYaml(moduleRoot, registryPath);
+  const current = object(registry.workflows) ?? {};
+  const classify = current.classify;
+  const nextRegistry: JsonObject = classify ? { classify } : {};
+  const captureEntrypoints: JsonObject = {};
+  const normalizeTemplate = parseYaml(moduleRoot, path.join(moduleRoot, "workflows", "normalize", "v1.0.0.yaml"));
+  const weeklyPath = path.join(moduleRoot, "workflows", "weekly-summary", "v1.0.0.yaml");
+  const weeklyTemplate = await exists(weeklyPath) ? parseYaml(moduleRoot, weeklyPath) : normalizeTemplate;
+  for (const workflow of declared) {
+    const id = String(workflow.id);
+    const source = workflow.trigger === "schedule" ? weeklyTemplate : normalizeTemplate;
+    const generated: JsonObject = JSON.parse(JSON.stringify(source)) as JsonObject;
+    generated.workflow_id = id;
+    generated.resources = {
+      ...(object(generated.resources) ?? {}),
+      network: workflow.requires_network === true ? "required" : "not-required",
+      codex: workflow.requires_ai === true ? "required" : "not-required",
+    };
+    const relative = `${id}/v1.0.0.yaml`;
+    writeYaml(moduleRoot, path.join(moduleRoot, "workflows", id, "v1.0.0.yaml"), generated);
+    nextRegistry[id] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative } };
+    if (workflow.trigger === "capture" && Object.keys(captureEntrypoints).length === 0) captureEntrypoints.capture = `workflows/${relative}`;
+  }
+  registry.workflows = nextRegistry;
+  writeYaml(moduleRoot, registryPath, registry);
+  manifest.entry_workflows = { ...(object(manifest.entry_workflows) ?? {}), ...captureEntrypoints };
+
+  const jobs = Array.isArray(blueprint.jobs) ? blueprint.jobs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+  const scheduledWorkflow = declared.find((workflow) => workflow.trigger === "schedule");
+  const jobEntries: JsonObject[] = jobs.map((job) => {
+    const id = String(job.id);
+    const workflowId = declared.some((workflow) => workflow.id === id) ? id : String(scheduledWorkflow?.id ?? id);
+    const schedule = String(job.schedule);
+    const trigger: JsonObject = schedule === "weekly"
+      ? { type: "weekly", weekday: "Sun", at: "18:00", timezone: "instance" }
+      : schedule === "daily" ? { type: "cron", expression: "0 8 * * *", timezone: "instance" }
+        : { type: schedule };
+    return {
+      id, scope: "instance", enabled: true, task_type: "workflow", workflow: `${String(object(blueprint.module)?.id)}:${workflowId}`,
+      workflow_id: workflowId, workflow_version: "1.0.0", trigger,
+      resources: { filesystem: "required", network: "not-required", codex: scheduledWorkflow?.requires_ai === true ? "required" : "not-required", user: "not-required" },
+      catch_up: { policy: String(job.catch_up), max_age_days: 21 }, retry: { max_attempts: 3 },
+      concurrency: { policy: "forbid", key: `${String(object(blueprint.module)?.id)}:{instance}:${id}` }, priority: "normal",
+    };
+  });
+  writeYaml(moduleRoot, path.join(moduleRoot, "jobs", "jobs.yaml"), { jobs: jobEntries });
 }
 
 function renderBoundaryDocument(blueprint: JsonObject): string {

@@ -6,6 +6,7 @@ import type { JsonObject, JsonValue } from "../core/types.js";
 import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } from "./types.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterRegistry.js";
+import { validateBlueprintCompliance } from "./blueprintCompliance.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -329,6 +330,14 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
     }
   }
 
+  const compliance = await validateBlueprintCompliance(engineRoot, moduleRoot);
+  if (compliance.overall !== "NOT-APPLICABLE") {
+    for (const raw of Array.isArray(compliance.checks) ? compliance.checks : []) {
+      const item = object(raw);
+      if (!item) continue;
+      checks.push(check("contracts", String(item.code), item.status === "pass" ? "pass" : "fail", String(item.message), typeof item.path === "string" ? item.path : "module.blueprint.yaml", item.status !== "pass"));
+    }
+  }
   for (const file of ["README.md", "CHANGELOG.md", "docs/use-case.md"]) checks.push(check("documentation", `DOC_${file.replace(/\W/g, "_").toUpperCase()}`, await exists(path.join(moduleRoot, ...file.split("/"))) ? "pass" : "warning", `${file} ${await exists(path.join(moduleRoot, ...file.split("/"))) ? "exists" : "is missing"}.`, file));
   await validateExecutableFixtureContract(moduleRoot, maturity, manifest, checks);
   const failed = checks.filter((item) => item.status === "fail").length;

@@ -16,6 +16,7 @@ import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
+import { runModuleSandbox } from "../modules/sandbox.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -70,8 +71,31 @@ test("Blueprint scaffolding deterministically creates a runtime-valid module", a
     assert.equal((manifest.inbox as JsonObject).asset_access_policy !== undefined, true);
     const validation = await validateModule(engine, moduleRoot);
     assert.notEqual(validation.overall, "FAIL", validation.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+    assert.equal(validation.checks.filter((item) => item.code.startsWith("BLUEPRINT_")).every((item) => item.status === "pass"), true);
     await assert.rejects(() => scaffoldModuleFromBlueprint(engine, blueprint), /already exists/);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Blueprint compliance rejects runtime privacy drift", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
+    (manifest.permissions as JsonObject).max_sensitivity_class = 3;
+    writeYaml(moduleRoot, path.join(moduleRoot, "module.yaml"), manifest);
+    const report = await validateModule(engine, moduleRoot);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "BLUEPRINT_SENSITIVITY_MATCH" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Module Sandbox executes fixtures in a disposable Vault", async () => {
+  const report = await runModuleSandbox(SOURCE_ROOT, "reading-log");
+  assert.equal(report.isolation, "temporary-vault");
+  assert.equal(report.lifecycle, "created-executed-cleaned");
+  assert.equal(report.overall, "PASS");
 });
 
 test("all scaffold templates generate manifests that satisfy the base contract", async () => {

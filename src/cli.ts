@@ -33,6 +33,7 @@ import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "./modules/
 import { installModulePackage, packModule, rollbackModulePackage } from "./modules/packageManager.js";
 import { validateModule } from "./modules/validator.js";
 import { testModule } from "./modules/testRunner.js";
+import { runModuleSandbox } from "./modules/sandbox.js";
 import type { ModuleTemplate } from "./modules/types.js";
 
 interface ParsedArgs {
@@ -137,7 +138,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module blueprint validate BLUEPRINT\n  pkb module create --from BLUEPRINT\n  pkb module scaffold --from BLUEPRINT\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test ID\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime event-replay EVENT_ID [SUBSCRIPTION_KEY...] [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module blueprint validate BLUEPRINT\n  pkb module create --from BLUEPRINT\n  pkb module scaffold --from BLUEPRINT\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test|sandbox ID\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime event-replay EVENT_ID [SUBSCRIPTION_KEY...] [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
 }
 
 async function main(): Promise<void> {
@@ -240,6 +241,12 @@ async function main(): Promise<void> {
     if (!value) throw new Error("module test requires MODULE_ID");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const report = await testModule(engineRoot, value, { writeReport: true });
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
+  }
+  if (command === "module" && subcommand === "sandbox") {
+    if (!value) throw new Error("module sandbox requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const report = await runModuleSandbox(engineRoot, value);
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
   }
   if (command === "module" && subcommand === "pack") {
