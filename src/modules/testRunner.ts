@@ -527,7 +527,13 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     }
   } catch (error) {
     checks.push(check("capture", "fail", error instanceof Error ? error.message : String(error)));
-  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+  } finally {
+    // Windows can keep SQLite WAL handles alive briefly after a fully completed
+    // fixture run. Cleanup must never turn a completed acceptance report into
+    // an opaque multi-minute hang; a later temp-directory sweep can remove a
+    // transient locked directory safely.
+    await fs.rm(vault, { recursive: true, force: true, maxRetries: 0, retryDelay: 0 }).catch(() => undefined);
+  }
   return finalize(engineRoot, moduleRoot, fixtureRoot, moduleId, manifest, staticValidation, checks, options);
 }
 

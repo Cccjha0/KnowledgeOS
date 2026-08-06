@@ -21,12 +21,11 @@ It must remain under user review rather than being silently sent to Codex.
   entrypoints, and Course includes a deterministic assignment fixture in
   addition to the lecture fixture.
 
-## Remaining dynamic acceptance blocker
+## Dynamic acceptance on Windows
 
-On the current Windows development environment, `pkb module test course`
-progresses through the lecture, assignment, and ambiguity paths but does not
-finish its later lifecycle stages before the local command timeout. This is
-recorded as **incomplete**, not a passing dynamic acceptance result. The next
-maintenance task is to instrument the module test runner with per-scenario
-timeouts/progress so that the exact lifecycle stage and retained temporary
-Vault evidence are reported without leaving an opaque hanging command.
+The fixture run reaches the archived lifecycle state after executing its
+lecture, assignment, ambiguity, resource, periodic-summary, event, PDF-policy,
+pause, resume, and archive paths. The runner now uses non-retrying cleanup for
+its disposable Vault: a briefly locked SQLite handle may leave a harmless temp
+directory for the operating system to reclaim, but it no longer hides the
+completed acceptance result behind a multi-minute deletion retry.
