@@ -22,8 +22,8 @@ const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 
 async function temporaryEngine(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-engine-"));
-  await fs.mkdir(path.join(root, "core", "schemas"), { recursive: true });
-  await fs.cp(path.join(SOURCE_ROOT, "core", "schemas", "module-manifest.schema.json"), path.join(root, "core", "schemas", "module-manifest.schema.json"));
+  await fs.mkdir(path.join(root, "core"), { recursive: true });
+  await fs.cp(path.join(SOURCE_ROOT, "core", "schemas"), path.join(root, "core", "schemas"), { recursive: true });
   await fs.mkdir(path.join(root, "core", "module-builder"), { recursive: true });
   await fs.cp(path.join(SOURCE_ROOT, "core", "module-builder", "capability-packs.yaml"), path.join(root, "core", "module-builder", "capability-packs.yaml"));
   await fs.cp(path.join(SOURCE_ROOT, "components"), path.join(root, "components"), { recursive: true });
@@ -89,6 +89,14 @@ test("Blueprint compliance rejects runtime privacy drift", async () => {
     assert.equal(report.overall, "FAIL");
     assert.equal(report.checks.some((item) => item.code === "BLUEPRINT_SENSITIVITY_MATCH" && item.status === "fail"), true);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Official Course Blueprint module passes its executable Module Test contract", async () => {
+  const report = await testModule(SOURCE_ROOT, "course");
+  assert.equal(report.overall, "PASS", report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+  assert.equal(report.checks.find((item) => item.category === "periodic")?.status, "pass");
+  assert.equal(report.checks.some((item) => item.category === "event" && item.status === "pass"), true);
+  assert.equal(report.checks.find((item) => item.category === "pdf")?.status, "pass");
 });
 
 test("Module Sandbox executes fixtures in a disposable Vault", async () => {

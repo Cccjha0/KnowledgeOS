@@ -1,0 +1,10 @@
+green:
+- create-new-record
+- add-source-ref
+yellow:
+- replace-user-field
+- ambiguous-match
+red:
+- delete-file
+- cross-module-write
+- external-side-effect

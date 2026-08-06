@@ -1,0 +1,44 @@
+workflow_id: normalize-lecture
+workflow_version: 1.0.0
+inputs:
+- capture
+- instance
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+steps:
+- id: validate-capture
+  uses: core.validate-capture
+  with:
+    read:
+      representation: full
+- id: parse-capture
+  uses: core.parse-structured-document
+  with:
+    read:
+      representation: full
+- id: normalize
+  uses: codex.prompt
+  with:
+    prompt_id: normalize-record
+    output_schema: https://pkb.local/schemas/course/record.schema.json
+- id: plan
+  uses: core.build-operation-plan
+  with:
+    output: normalize
+    output_schema: record
+    target: '{instance.content_root}/Records/{task.payload.item_id}.md'
+    template: templates/record.md
+    idempotency_key: course:{instance.instance_id}:record:{task.payload.item_id}
+    summary: Create a normalized record
+- id: publish-record-created
+  uses: core.publish-event
+  with:
+    event_type: course.assignment-created
+    payload_from: normalize
+outputs:
+- operation_plan
+- dashboard_items
+- events

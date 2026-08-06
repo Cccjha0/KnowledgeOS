@@ -1,0 +1,27 @@
+jobs:
+- id: weekly-summary
+  scope: instance
+  enabled: true
+  task_type: workflow
+  workflow: course:generate-weekly-summary
+  workflow_id: generate-weekly-summary
+  workflow_version: 1.0.0
+  trigger:
+    type: weekly
+    weekday: Sun
+    at: '18:00'
+    timezone: instance
+  resources:
+    filesystem: required
+    network: not-required
+    codex: required
+    user: not-required
+  catch_up:
+    policy: latest
+    max_age_days: 21
+  retry:
+    max_attempts: 3
+  concurrency:
+    policy: forbid
+    key: course:{instance}:weekly-summary
+  priority: normal

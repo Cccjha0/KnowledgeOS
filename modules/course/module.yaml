@@ -1,0 +1,89 @@
+id: course
+name: 课程管理
+version: 0.1.0
+maturity: experimental
+status: disabled
+description: 管理课程资料、作业、截止日期和课程总结
+engine:
+  api_version: 1
+  min_version: 0.9.0-beta
+  max_version: 0.x
+data:
+  schema_version: 1
+module_type: workflow
+capabilities:
+- capture-processing
+- attachment-management
+- metadata-enrichment
+- review-items
+- periodic-summary
+- event-publishing
+- dashboard-items
+accepted_inputs:
+- markdown
+- pdf
+- pptx
+inbox:
+  module_level:
+    enabled: true
+    path: 20-Workspace/课程管理/Inbox
+  instance_level:
+    enabled: true
+    path_pattern: '{content_root}/Inbox'
+  allow_global_routing: true
+  asset_access_policy:
+    sensitivity_class: 2
+    max_representation: full
+routing:
+  matcher: workflows/classify/v1.0.0.yaml
+  auto_route_threshold: 0.85
+  review_threshold: 0.6
+entry_workflows:
+  capture: workflows/normalize-lecture/v1.0.0.yaml
+schemas:
+  registry: schemas/index.yaml
+  instance: schemas/instance.schema.json
+  record: schemas/record.schema.json
+prompts:
+  registry: prompts/index.yaml
+workflows:
+  registry: workflows/index.yaml
+rules:
+  paths: rules/paths.yaml
+  review: rules/review-policy.yaml
+  permissions: rules/permissions.yaml
+dashboard:
+  provider: dashboard/provider.yaml
+jobs:
+  registry: jobs/jobs.yaml
+events:
+  publishes:
+  - course.assignment-created
+  subscribes: []
+dependencies:
+  components:
+    status-machine: ^1.0.0
+    periodic-rollup: ^1.0.0
+scheduled_jobs: []
+permissions:
+  max_sensitivity_class: 2
+  network: false
+  codex: optional
+  delete: false
+  cross_module_write: false
+  allow_external_network: false
+  allow_delete: false
+  allow_bulk_move: false
+instance_form:
+  content_root_pattern: 20-Workspace/课程管理/{instance_id}
+  inbox_path_pattern: '{content_root}/Inbox'
+  fields:
+  - key: timezone
+    label: Timezone
+    type: timezone
+    required: true
+    default: Asia/Shanghai
+pdf_policy:
+  accepted_statuses:
+  - completed
+  partial_policy: review

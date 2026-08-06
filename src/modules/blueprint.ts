@@ -171,9 +171,11 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
     allow_external_network: privacy.network_allowed === true,
   };
   manifest.events = { publishes: strings(events.publishes), subscribes: strings(events.subscribes) };
+  if (strings(resolved.blueprint.inputs).includes("pdf")) manifest.pdf_policy = { accepted_statuses: ["completed"], partial_policy: "review" };
   writeYaml(moduleRoot, manifestPath, manifest);
   await materializeDeclaredWorkflows(moduleRoot, resolved.blueprint, manifest);
   await alignScaffoldEvents(moduleRoot, strings(events.publishes));
+  await materializeBlueprintTestContract(moduleRoot, resolved.blueprint);
   writeYaml(moduleRoot, manifestPath, manifest);
   writeYaml(moduleRoot, path.join(moduleRoot, "module.blueprint.yaml"), resolved.blueprint);
   await fs.writeFile(path.join(moduleRoot, "docs", "blueprint-boundary.md"), renderBoundaryDocument(resolved.blueprint), "utf8");
@@ -210,6 +212,7 @@ async function alignScaffoldEvents(moduleRoot: string, publishedEvents: string[]
 
 async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject): Promise<void> {
   const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+  const requestedRepresentation = String(object(blueprint.privacy)?.default_max_representation ?? "metadata");
   const registryPath = path.join(moduleRoot, "workflows", "index.yaml");
   const registry = parseYaml(moduleRoot, registryPath);
   const current = object(registry.workflows) ?? {};
@@ -229,6 +232,21 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
       network: workflow.requires_network === true ? "required" : "not-required",
       codex: workflow.requires_ai === true ? "required" : "not-required",
     };
+    generated.steps = (Array.isArray(generated.steps) ? generated.steps : []).map((raw) => {
+      const step = object(raw);
+      if (!step || (step.uses !== "core.validate-capture" && step.uses !== "core.parse-structured-document")) return raw;
+      return { ...step, with: { ...(object(step.with) ?? {}), read: { representation: requestedRepresentation } } };
+    });
+    if (workflow.trigger === "schedule") {
+      const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
+      generated.steps = steps.map((step) => step.uses === "core.build-operation-plan" ? {
+        ...step,
+        with: {
+          output: "summarize", output_schema: "record", target: "{instance.content_root}/Summaries/{schedule.iso_week}.md",
+          template: "templates/record.md", idempotency_key: `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{schedule.iso_week}`, summary: `Create ${id}`,
+        },
+      } : step);
+    }
     const relative = `${id}/v1.0.0.yaml`;
     writeYaml(moduleRoot, path.join(moduleRoot, "workflows", id, "v1.0.0.yaml"), generated);
     nextRegistry[id] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative } };
@@ -257,6 +275,29 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     };
   });
   writeYaml(moduleRoot, path.join(moduleRoot, "jobs", "jobs.yaml"), { jobs: jobEntries });
+}
+
+async function materializeBlueprintTestContract(moduleRoot: string, blueprint: JsonObject): Promise<void> {
+  const moduleInfo = object(blueprint.module)!;
+  const moduleId = String(moduleInfo.id);
+  const displayName = String(moduleInfo.display_name);
+  const workflows = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
+  const jobs = Array.isArray(blueprint.jobs) ? blueprint.jobs.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
+  const events = object(blueprint.events)!;
+  const firstJob = jobs[0];
+  const firstScheduled = workflows.find((workflow) => workflow.trigger === "schedule");
+  const weeklyOutput = `20-Workspace/${displayName}/sample-instance/Summaries/2026-W32.md`;
+  const record = (id: string, title: string): JsonObject => ({ id, type: `${moduleId}-record`, schema_id: "record", schema_version: 1, module_version: "0.1.0", instance_id: "sample-instance", title, source_refs: [], created: "2026-08-09T18:00:00Z", updated: "2026-08-09T18:00:00Z" });
+  const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
+  const contract = parseYaml(moduleRoot, contractPath);
+  const scenarios = object(contract.scenarios)!;
+  scenarios.periodic_job = firstJob && firstScheduled ? { enabled: true, job_id: `${moduleId}.${String(firstJob.id)}.sample-instance`, scheduled_at: "2026-08-09T10:00:00Z", expected_output: weeklyOutput, codex_output: record(`${moduleId}-weekly-2026-W32`, "2026-W32 Weekly Summary") } : { enabled: false };
+  const publishes = strings(events.publishes);
+  scenarios.event_publication = publishes.length ? { enabled: true, event_type: publishes[0]! } : { enabled: false };
+  scenarios.event_consumption = strings(events.subscribes).length ? (scenarios.event_consumption ?? { enabled: false }) : { enabled: false };
+  scenarios.pdf_policy = strings(blueprint.inputs).includes("pdf") ? { enabled: true, partial_expected: "review" } : { enabled: false };
+  scenarios.partial_pdf_execution = { enabled: false };
+  writeYaml(moduleRoot, contractPath, contract);
 }
 
 function renderBoundaryDocument(blueprint: JsonObject): string {

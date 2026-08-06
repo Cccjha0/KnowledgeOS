@@ -1,0 +1,66 @@
+{
+  "report_version": 1,
+  "blueprint_version": 1,
+  "module_id": "course",
+  "checks": [
+    {
+      "code": "BLUEPRINT_SCHEMA_VALID",
+      "status": "pass",
+      "message": "Blueprint v1 schema passed.",
+      "path": "course.blueprint.yaml"
+    },
+    {
+      "code": "CAPABILITY_PACKS_RESOLVED",
+      "status": "pass",
+      "message": "Resolved 8 Capability Packs.",
+      "path": "capability_packs"
+    },
+    {
+      "code": "INPUT_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "markdown uses markdown-frontmatter@1.0.0.",
+      "path": "inputs"
+    },
+    {
+      "code": "INPUT_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "pdf uses pdf-sidecar@1.0.0.",
+      "path": "inputs"
+    },
+    {
+      "code": "INPUT_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "pptx uses pptx-openxml@1.0.0.",
+      "path": "inputs"
+    },
+    {
+      "code": "BASE_TEMPLATE_COMPATIBLE",
+      "status": "pass",
+      "message": "standard-workflow is compatible with workflow.",
+      "path": "base_template"
+    }
+  ],
+  "resolved_capability_packs": [
+    "capture-processing",
+    "attachment-processing",
+    "structured-entity",
+    "deadline-tracking",
+    "periodic-summary",
+    "event-publishing",
+    "high-privacy",
+    "immutable-user-content"
+  ],
+  "resolved_capabilities": [
+    "capture-processing",
+    "attachment-management",
+    "metadata-enrichment",
+    "review-items",
+    "periodic-summary",
+    "event-publishing"
+  ],
+  "required_components": {
+    "status-machine": "^1.0.0",
+    "periodic-rollup": "^1.0.0"
+  },
+  "overall": "PASS"
+}
