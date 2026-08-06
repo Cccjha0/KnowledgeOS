@@ -486,6 +486,66 @@ class TaskDetailsModal extends Modal {
   }
 }
 
+class LegacyAccessPolicyMigrationModal extends Modal {
+  constructor(app, plugin, onChanged) {
+    super(app); this.plugin = plugin; this.onChanged = onChanged; this.preview = null; this.reviewed = new Set(); this.loading = false;
+  }
+  async onOpen() { await this.loadPreview(); }
+  shell() {
+    const root = this.contentEl; root.empty(); root.addClass("knowledgeos-lifecycle-modal"); root.addClass("knowledgeos-access-migration-modal");
+    root.createEl("h2", { text: "迁移旧访问策略" });
+    return root.createDiv({ cls: "knowledgeos-modal-body" });
+  }
+  async loadPreview() {
+    if (this.loading) return; this.loading = true;
+    const body = this.shell(); this.contentEl.setAttr("aria-busy", "true"); renderLoadingSkeleton(body, "正在扫描旧 read_level 文件…");
+    const response = await this.plugin.client.invoke("migrateLegacyAccessPolicies", { action: "preview" });
+    this.loading = false; this.contentEl.setAttr("aria-busy", "false");
+    if (!response.ok) { renderRecoverableError(body, "无法创建迁移预览", response.error, () => this.loadPreview()); return; }
+    this.preview = response.data; this.renderPreview();
+  }
+  renderPreview() {
+    const body = this.shell(); const candidates = Array.isArray(this.preview?.candidates) ? this.preview.candidates : [];
+    body.createEl("p", { cls: "knowledgeos-modal-intro", text: "迁移会将旧的 read_level 拆分为隐私敏感度和允许读取范围。扫描本身不会修改任何文件。" });
+    if (!candidates.length) {
+      const empty = body.createDiv({ cls: "knowledgeos-modal-empty" }); empty.createEl("strong", { text: "没有待迁移的旧访问策略" }); empty.createDiv({ text: "当前 Vault 没有发现 legacy read_level 文件或附件 Sidecar。" });
+      const close = body.createEl("button", { text: "关闭" }); close.onclick = () => this.close(); return;
+    }
+    const sensitive = candidates.filter((candidate) => candidate.requires_review);
+    const facts = body.createEl("dl", { cls: "knowledgeos-modal-facts" });
+    this.fact(facts, "待迁移", candidates.length); this.fact(facts, "需要逐项确认", sensitive.length); this.fact(facts, "可自动迁移", candidates.filter((candidate) => candidate.migratable).length);
+    if (sensitive.length) {
+      const review = body.createEl("section", { cls: "knowledgeos-modal-section" }); review.createEl("h4", { text: "敏感目录需要确认" });
+      review.createDiv({ cls: "knowledgeos-modal-row-description", text: "Journal、Private、Medical、Identity 等目录默认迁移为「高度敏感 / 仅元数据」。确认每一项后才能应用迁移。" });
+      const list = review.createDiv({ cls: "knowledgeos-modal-list" });
+      for (const candidate of sensitive) {
+        const row = list.createEl("label", { cls: "knowledgeos-modal-row knowledgeos-access-migration-review" });
+        const check = row.createEl("input", { type: "checkbox" }); check.checked = this.reviewed.has(candidate.path);
+        check.onchange = () => { if (check.checked) this.reviewed.add(candidate.path); else this.reviewed.delete(candidate.path); apply.disabled = this.reviewed.size !== sensitive.length; };
+        row.createSpan({ text: candidate.path }); row.createDiv({ cls: "knowledgeos-modal-row-meta", text: "迁移后：高度敏感 · 仅元数据" });
+      }
+    }
+    const disclosure = body.createEl("details", { cls: "knowledgeos-modal-disclosure" }); disclosure.createEl("summary", { text: `查看全部候选文件（${candidates.length}）` });
+    const candidateList = disclosure.createDiv({ cls: "knowledgeos-modal-list" });
+    for (const candidate of candidates) {
+      const row = candidateList.createDiv({ cls: "knowledgeos-modal-row" }); row.createEl("strong", { text: candidate.path });
+      row.createDiv({ cls: "knowledgeos-modal-row-meta", text: `${candidate.kind === "sidecar" ? "附件 Sidecar" : "Markdown"} · ${candidate.requires_review ? "需确认" : "可迁移"}` });
+    }
+    const status = markLiveRegion(body.createDiv({ cls: "knowledgeos-modal-submit-state" }));
+    const actions = body.createDiv({ cls: "knowledgeos-modal-actions" });
+    const apply = actions.createEl("button", { cls: "mod-cta", text: "应用迁移" }); apply.disabled = this.reviewed.size !== sensitive.length;
+    apply.onclick = async () => {
+      if (!window.confirm(`将更新 ${candidates.length} 个旧访问策略。系统会先创建 Git 快照，并保留可撤销备份。是否继续？`)) return;
+      apply.disabled = true; status.setText("正在创建快照并迁移访问策略…");
+      const response = await this.plugin.client.invoke("migrateLegacyAccessPolicies", { action: "apply", preview_id: this.preview.migration_id, reviewed_paths: [...this.reviewed], confirm: true });
+      if (!response.ok) { status.addClass("is-error"); status.setText(response.error?.message || "迁移失败"); apply.disabled = false; return; }
+      this.plugin.notify(`已迁移 ${response.data.changed} 个旧访问策略`); this.close(); await this.onChanged();
+    };
+    const cancel = actions.createEl("button", { text: "取消" }); cancel.onclick = () => this.close();
+  }
+  fact(root, label, value) { const item = root.createDiv({ cls: "knowledgeos-modal-fact" }); item.createEl("dt", { text: label }); item.createEl("dd", { text: String(value) }); }
+}
+
 class SystemCenterView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -980,15 +1040,32 @@ class SystemCenterView extends ItemView {
       ["来源与证据", quality.provenance, [["missing", "缺少来源"], ["conflicts", "来源冲突"], ["unavailable", "来源不可用"]]],
       ["审核负担", quality.reviews, [["pending", "待审核"], ["overdue", "已超期"]]],
       ["链接与归属", quality.links_ownership, [["broken_links", "失效链接"], ["orphan_files", "孤立文件"], ["unowned_files", "未归类文件"]]],
-      ["数据结构", quality.schemas_migrations, [["outdated", "待迁移"], ["invalid", "格式异常"]]],
+      ["数据结构", quality.schemas_migrations, [["outdated", "待迁移"], ["invalid", "格式异常"], ["legacy_access_policy.remaining", "旧访问策略"]]],
       ["AI 质量", quality.ai_quality, []],
       ["审计历史", { count: (quality.audit_history || []).length }, [["count", "审计次数"]]],
     ];
     for (const [title, data, fields] of panels) {
       const details = section.createEl("details", { cls: "knowledgeos-system-disclosure knowledgeos-quality-panel" });
-      const total = fields.reduce((sum, [key]) => sum + (Number(data?.[key]) || 0), 0);
+      const valueAt = (source, key) => key.split(".").reduce((value, segment) => value && typeof value === "object" ? value[segment] : undefined, source);
+      const total = fields.reduce((sum, [key]) => sum + (Number(valueAt(data, key)) || 0), 0);
       details.createEl("summary", { text: `${title}${total ? ` · ${total}` : ""}` });
-      if (fields.length) details.createDiv({ cls: "knowledgeos-system-section-summary knowledgeos-quality-summary", text: fields.map(([key, label]) => `${label} ${data?.[key] ?? 0}`).join(" · ") });
+      if (fields.length) details.createDiv({ cls: "knowledgeos-system-section-summary knowledgeos-quality-summary", text: fields.map(([key, label]) => `${label} ${valueAt(data, key) ?? 0}`).join(" · ") });
+      if (title === "数据结构" && data?.legacy_access_policy) {
+        const migration = data.legacy_access_policy;
+        const actionRow = details.createDiv({ cls: "knowledgeos-system-row-actions" });
+        const migrate = actionRow.createEl("button", { text: Number(migration.remaining || 0) ? "迁移旧访问策略" : "查看迁移状态" });
+        migrate.onclick = () => new LegacyAccessPolicyMigrationModal(this.app, this.plugin, () => this.refresh()).open();
+        if (migration.last_migration_status === "applied" && migration.last_preview_id) {
+          const undo = actionRow.createEl("button", { cls: "mod-warning", text: "撤销上次迁移" });
+          undo.onclick = async () => {
+            if (!window.confirm("将恢复上次迁移前保存的访问策略。是否继续？")) return;
+            undo.disabled = true;
+            const response = await this.plugin.client.invoke("migrateLegacyAccessPolicies", { action: "rollback", preview_id: migration.last_preview_id, confirm: true });
+            if (!response.ok) this.plugin.notify(response.error?.message || "撤销迁移失败", { error: true }); else this.plugin.notify(`已恢复 ${response.data.restored} 个旧访问策略`);
+            await this.refresh();
+          };
+        }
+      }
       const issues = (data?.items || data?.anomalies || []).slice(0, 20);
       if (!issues.length) details.createDiv({ cls: "knowledgeos-system-disclosure-empty", text: title === "审计历史" ? "尚无审计记录。" : "当前没有相关问题。" });
       const list = issues.length ? details.createDiv({ cls: "knowledgeos-system-list" }) : null;

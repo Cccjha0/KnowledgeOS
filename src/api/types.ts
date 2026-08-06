@@ -46,6 +46,7 @@ export type CommandApiMethod =
   | "updateAssetAccessPolicy"
   | "classifyInboxAttachment"
   | "reviewPartialInboxExtraction"
+  | "migrateLegacyAccessPolicies"
   | "backfillQualityMetadata";
 
 export interface CommandApiRequest extends JsonObject {
@@ -129,6 +130,14 @@ export interface ClassifyInboxAttachmentParams {
 export interface ReviewPartialInboxExtractionParams {
   item_id: string;
   decision: "approve-extracted-text" | "keep-waiting";
+}
+
+/** Preview, explicitly apply, or undo the one-time legacy read_level policy migration. */
+export interface LegacyAccessPolicyMigrationParams {
+  action: "preview" | "apply" | "rollback";
+  preview_id?: string;
+  reviewed_paths?: string[];
+  confirm?: boolean;
 }
 
 export interface GetRunDetailsParams {

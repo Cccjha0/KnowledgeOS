@@ -588,6 +588,9 @@
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-actions { align-items: center; border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-top: var(--size-4-5); padding-top: var(--size-4-3); }
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-disabled-reason { color: var(--text-muted); flex: 1 1 12rem; font-size: var(--font-ui-smaller); }
 :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) :is(button, summary):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review { align-items: start; display: grid; gap: var(--size-4-2); grid-template-columns: auto minmax(0, 1fr); cursor: pointer; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review input { margin-top: .2rem; }
+.knowledgeos-access-migration-modal .knowledgeos-access-migration-review .knowledgeos-modal-row-meta { grid-column: 2; }
 @container knowledgeos-modal (max-width: 40rem) {
   :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-facts { grid-template-columns: minmax(0, 1fr); }
   :is(.knowledgeos-run-modal, .knowledgeos-lifecycle-modal, .knowledgeos-rollback-modal) .knowledgeos-modal-title-row,

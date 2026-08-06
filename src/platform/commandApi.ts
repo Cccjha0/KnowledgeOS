@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
+import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
 import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
@@ -36,6 +36,7 @@ import { QualityRepository } from "../quality/repository.js";
 import { applyQualityBackfill, previewQualityBackfill } from "../quality/backfill.js";
 import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsidianCoordination.js";
 import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
+import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -329,6 +330,13 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return snapshot;
   }
   if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
+  if (method === "migrateLegacyAccessPolicies") {
+    const migration = params as unknown as LegacyAccessPolicyMigrationParams;
+    if (migration.action === "preview") return previewLegacyAccessPolicyMigration(vaultRoot);
+    if (migration.action === "apply") return applyLegacyAccessPolicyMigration(vaultRoot, migration);
+    if (migration.action === "rollback") return rollbackLegacyAccessPolicyMigration(vaultRoot, String(migration.preview_id ?? ""), migration.confirm === true);
+    throw new PkbError("INVALID_REQUEST", "action must be preview, apply, or rollback.");
+  }
   if (method === "getFieldProvenance") return getFieldProvenance(vaultRoot, stringParam(params, "target"), stringParam(params, "field"));
   if (method === "updateAssetAccessPolicy") {
     const capturePath = stringParam(params, "capture_path");
