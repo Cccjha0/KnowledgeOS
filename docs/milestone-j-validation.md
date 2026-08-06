@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | J01 Blueprint Schema | complete | `core/schemas/module-blueprint.schema.json`, five validated examples |
 | J02 Capability Pack Registry | complete | dependency, conflict, Adapter, and Component resolution |
-| J03 Deterministic Scaffolder | complete | Blueprint validate/create/scaffold CLI commands |
+| J03 Deterministic Scaffolder | complete | Blueprint validate/create/scaffold CLI commands and semantic entity/workflow materialisation |
 | J04 Module Builder Skill | complete | project-local validated Skill and references |
 | J05 Blueprint Compliance | complete | runtime Manifest, privacy, Workflow, Job, Event, and input checks |
 | J06 Module Test strengthening | complete for current declared capabilities | source-specific ambiguity, business-effect idempotency, resource, Job, Event, PDF, lifecycle, Prompt-contract, and migration gates |
@@ -14,6 +14,7 @@
 | J08 Obsidian Wizard | implemented; visual verification pending | native Modal, Core preview, explicit-confirm generation |
 | J09 Course challenge | automated pass | Course Blueprint plus executable Capture, periodic Job, Event, PDF policy, and lifecycle contract |
 | J10 unfamiliar-user test | pending external participant | protocol below |
+| J13 User module workspace | complete | Vault-owned `Module Development`, `Packages`, `Installed`, and `Official` roots; local packages survive official configuration sync |
 
 ## Course challenge feedback
 
@@ -23,7 +24,7 @@ The first generated Course module did not pass its executable contract. The chal
 2. The weekly fixture used UTC 18:00 while the Job was defined as 18:00 in the instance timezone. Fixtures now evaluate the correct UTC instant for Asia/Shanghai.
 3. The fixture expected the registry-local Job ID, while Runtime materializes an instance-qualified Job ID. Generated fixtures now assert the actual instance Job.
 
-After these corrections, the official Course module passed the focused executable test in a disposable Vault. This is evidence for Builder plumbing, not evidence that the experimental Course business model is production-complete.
+After these corrections, the Course Blueprint materialised and passed the focused executable test in a disposable Vault. This is evidence for Builder plumbing, not evidence that the experimental Course business model is production-complete.
 
 ## Unfamiliar-user test protocol
 
@@ -60,6 +61,7 @@ J10 passes only if the participant completes the workflow without Core changes, 
 - Verify Module Wizard in Obsidian default light and dark themes.
 - Verify the Modal in a narrow desktop window.
 - Verify validation failure, duplicate module, disconnected Core, and successful generation states visually.
+- Verify the generated Vault workspace can be validated, tested, packaged, installed, and rolled back without editing Engine source files.
 - Run the unfamiliar-user protocol and feed every friction point back into the Blueprint Schema, Capability Packs, Skill, scaffold, or validation messages.
 
 Until these checks are recorded, Milestone J must not be described as fully accepted.

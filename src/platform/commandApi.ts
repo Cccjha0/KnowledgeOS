@@ -288,7 +288,15 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
-    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => scaffoldModuleFromBlueprint(ENGINE_ROOT, file)) as Promise<JsonValue>;
+    const moduleId = typeof blueprint.module === "object" && blueprint.module && !Array.isArray(blueprint.module) && typeof (blueprint.module as JsonObject).id === "string"
+      ? String((blueprint.module as JsonObject).id) : null;
+    if (!moduleId) throw new PkbError("INVALID_REQUEST", "blueprint.module.id is required.");
+    const modulesRoot = path.join(vaultRoot, "90-System", "Module Development");
+    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, async (file) => ({
+      ...await scaffoldModuleFromBlueprint(ENGINE_ROOT, file, { modulesRoot }),
+      workspace_path: `90-System/Module Development/${moduleId}`,
+      next_state: "implementation-required",
+    })) as Promise<JsonValue>;
   }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";

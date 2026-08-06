@@ -228,8 +228,8 @@ async function seedDocuments(vault: string, rawSeeds: JsonValue | undefined): Pr
  * Codex is intentionally replaced with the fixture's schema-valid output: this
  * tests Core routing, plans, idempotency and lifecycle without needing a model.
  */
-export async function testModule(engineRoot: string, moduleId: string, options: { writeReport?: boolean } = {}): Promise<ModuleTestReport> {
-  const moduleRoot = path.join(engineRoot, "modules", moduleId);
+export async function testModule(engineRoot: string, moduleId: string, options: { writeReport?: boolean; moduleRoot?: string } = {}): Promise<ModuleTestReport> {
+  const moduleRoot = options.moduleRoot ?? path.join(engineRoot, "modules", moduleId);
   const staticValidation = await validateModule(engineRoot, moduleRoot);
   const checks: ModuleTestCheck[] = [];
   const manifest = parseYaml(engineRoot, path.join(moduleRoot, "module.yaml"));
@@ -267,7 +267,9 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-module-test-${moduleId}-`));
   try {
     await initializeVault(vault, "disabled");
-    await writeJsonAtomic(path.join(vault, "90-System", "Modules", "installed.json"), { schema_version: 1, modules: [{ id: moduleId, version: String(manifest.version), status: "enabled" }] });
+    const installedPath = `90-System/Modules/Installed/${moduleId}/${String(manifest.version)}`;
+    await fs.cp(moduleRoot, path.join(vault, ...installedPath.split("/")), { recursive: true });
+    await writeJsonAtomic(path.join(vault, "90-System", "Modules", "installed.json"), { schema_version: 1, modules: [{ id: moduleId, version: String(manifest.version), installed_path: installedPath, status: "enabled" }] });
     await createInstance(vault, {
       module_id: moduleId, instance_id: instanceId, display_name: requiredString(fixtureInstance.display_name, "fixture display_name"),
       fields: fixtureFields(manifest, fixtureInstance),

@@ -9,7 +9,8 @@ import { readJson } from "../core/files.js";
 import type { JsonObject, Operation } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { installModulePackage, packModule, rollbackModulePackage } from "../modules/packageManager.js";
+import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "../modules/packageManager.js";
+import { syncInstalledConfiguration } from "../platform/configuration.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
@@ -68,6 +69,19 @@ test("Command API previews a Module Blueprint without creating source files", as
     assert.equal((response.data as JsonObject).scaffold_template, "minimal-config");
     assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Command API creates a Blueprint module in the Vault development workspace, not Engine source", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-workspace-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).workspace_path, "90-System/Module Development/media-library");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "media-library", "module.yaml")).then(() => true), true);
+    assert.equal(await fs.stat(path.join(SOURCE_ROOT, "modules", "media-library", "module.yaml")).then(() => true).catch(() => false), false);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -268,20 +282,21 @@ test("local package install, upgrade and rollback preserve an exact module lock"
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-vault-"));
   try {
     await initializeVault(vault, "disabled");
-    const root = path.join(engine, "modules", "package-sample");
-    await createModuleScaffold(engine, "package-sample", "minimal-config");
+    const workspace = path.join(engine, "user-workspace");
+    await createModuleScaffold(engine, "package-sample", "minimal-config", "package-sample", { modulesRoot: workspace });
+    const root = path.join(workspace, "package-sample");
     const manifest = parseYaml(root, path.join(root, "module.yaml"));
     manifest.maturity = "beta"; manifest.status = "enabled";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const firstPackage = path.join(engine, "package-sample-0.1.0.pkb-module");
-    await packModule(engine, "package-sample", firstPackage);
+    await packModuleDirectory(engine, root, firstPackage);
     const installed = await installModulePackage(engine, vault, firstPackage, { enable: true });
     assert.equal(installed.status, "installed");
 
     manifest.version = "0.2.0";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const secondPackage = path.join(engine, "package-sample-0.2.0.pkb-module");
-    await packModule(engine, "package-sample", secondPackage);
+    await packModuleDirectory(engine, root, secondPackage);
     const upgraded = await installModulePackage(engine, vault, secondPackage, { enable: true, upgrade: true });
     assert.equal(upgraded.previous_version, "0.1.0");
     const rolledBack = await rollbackModulePackage(engine, vault, "package-sample");
@@ -289,6 +304,10 @@ test("local package install, upgrade and rollback preserve an exact module lock"
     const lock = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
     assert.equal(lock.modules["package-sample"]?.version, "0.1.0");
     assert.equal(typeof lock.modules["package-sample"]?.checksum, "string");
+    assert.equal(String(lock.modules["package-sample"]?.installed_path).startsWith("90-System/Modules/Installed/"), true);
+    await syncInstalledConfiguration(vault);
+    const preserved = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
+    assert.equal(preserved.modules["package-sample"]?.version, "0.1.0", "Engine sync must preserve a Vault-installed user module.");
   } finally {
     await fs.rm(engine, { recursive: true, force: true });
     await fs.rm(vault, { recursive: true, force: true });

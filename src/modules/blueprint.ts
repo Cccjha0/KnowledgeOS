@@ -272,13 +272,15 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   }
 }
 
-export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintPath: string): Promise<JsonObject> {
+export interface BlueprintScaffoldOptions { modulesRoot?: string; }
+
+export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintPath: string, options: BlueprintScaffoldOptions = {}): Promise<JsonObject> {
   const resolved = await validateModuleBlueprint(engineRoot, blueprintPath);
   if (resolved.report.overall === "FAIL") throw new PkbError("BLUEPRINT_INVALID", "Module Blueprint failed validation.", resolved.report);
   const moduleInfo = object(resolved.blueprint.module)!;
   const moduleId = String(moduleInfo.id);
   const displayName = String(moduleInfo.display_name);
-  const result = await createModuleScaffold(engineRoot, moduleId, resolved.scaffoldTemplate, displayName);
+  const result = await createModuleScaffold(engineRoot, moduleId, resolved.scaffoldTemplate, displayName, options);
   const moduleRoot = result.module_root;
   const manifestPath = path.join(moduleRoot, "module.yaml");
   const manifest = parseYaml(moduleRoot, manifestPath);

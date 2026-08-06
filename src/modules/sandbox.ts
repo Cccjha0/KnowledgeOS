@@ -2,8 +2,8 @@ import type { JsonObject } from "../core/types.js";
 import { testModule } from "./testRunner.js";
 
 /** Execute a module's fixture contract in the disposable Vault owned by Module Test. */
-export async function runModuleSandbox(engineRoot: string, moduleId: string): Promise<JsonObject> {
-  const report = await testModule(engineRoot, moduleId, { writeReport: false });
+export async function runModuleSandbox(engineRoot: string, moduleId: string, options: { moduleRoot?: string } = {}): Promise<JsonObject> {
+  const report = await testModule(engineRoot, moduleId, { writeReport: false, ...options });
   return {
     sandbox_version: 1,
     module_id: moduleId,
