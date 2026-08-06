@@ -213,7 +213,13 @@ export async function ingestAsset(vaultRoot: string, sourcePath: string, options
   const requestedSensitivity = options.sensitivityClass ?? options.readLevel;
   const explicitSensitivity = requestedSensitivity ?? (typeof persistedPolicy?.sensitivity_class === "number" ? persistedPolicy.sensitivity_class : 0);
   const hasExplicitPolicy = options.sensitivityClass !== undefined || options.maxRepresentation !== undefined || options.classificationState !== undefined;
-  const policy: DocumentAccessPolicy = hasExplicitPolicy
+  // A user-confirmed policy always wins over a module Inbox default on later
+  // materialization. Otherwise an Inbox refresh could silently undo the
+  // privacy choice that unblocked the task.
+  const hasUserConfirmedPolicy = persistedPolicy?.classification_state === "classified" && persistedPolicy.policy_source === "explicit";
+  const policy: DocumentAccessPolicy = hasUserConfirmedPolicy
+    ? persistedPolicy!
+    : hasExplicitPolicy
     ? {
         sensitivity_class: assertSensitivityClass(explicitSensitivity, "capture sensitivity_class"),
         max_representation: assertRepresentationLevel(options.maxRepresentation ?? defaultMaxRepresentation(assertSensitivityClass(explicitSensitivity, "capture sensitivity_class")), "capture access_policy.max_representation"),

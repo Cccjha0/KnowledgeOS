@@ -44,6 +44,7 @@ export type CommandApiMethod =
   | "runQualityAudit"
   | "getFieldProvenance"
   | "updateAssetAccessPolicy"
+  | "classifyInboxAttachment"
   | "backfillQualityMetadata";
 
 export interface CommandApiRequest extends JsonObject {
@@ -114,6 +115,13 @@ export interface ProcessInboxItemParams {
 export interface ProcessInboxBatchParams {
   item_ids: string[];
   mode: "high-confidence";
+}
+
+/** User-confirmed policy plus a managed resume for a blocked Inbox attachment. */
+export interface ClassifyInboxAttachmentParams {
+  item_id: string;
+  sensitivity_class: 0 | 1 | 2 | 3;
+  max_representation: "metadata" | "summary" | "full" | "sensitive-original";
 }
 
 export interface GetRunDetailsParams {

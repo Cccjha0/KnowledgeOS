@@ -193,6 +193,31 @@ test("unclassified non-Markdown Inbox attachments wait for user classification b
     assert.equal(envelope.classification_state, "unclassified");
     assert.equal(envelope.access_policy.max_representation, "metadata");
     repository.close();
+
+    const inbox = await invokeCommandApi({ vaultRoot: vault, requestId: "INBOX-CLASSIFY-VIEW", method: "getInboxCenterSnapshot", params: {} });
+    const inboxData = inbox.data as { inbox?: { items?: Array<{ item_id: string; required_user_action?: string; attachment_classification?: { capture_path?: string; classification_state?: string; requested_representation?: string } }> } };
+    const view = (inboxData.inbox?.items ?? [])
+      .find((candidate) => candidate.item_id === String(task?.payload.item_id));
+    assert.equal(view?.required_user_action, "classify-attachment");
+    assert.equal(view?.attachment_classification?.capture_path, ingestion.capture_path);
+    assert.equal(view?.attachment_classification?.classification_state, "unclassified");
+    assert.equal(view?.attachment_classification?.requested_representation, "full");
+
+    const classified = await invokeCommandApi({
+      vaultRoot: vault,
+      requestId: "INBOX-CLASSIFY-001",
+      method: "classifyInboxAttachment",
+      params: { item_id: String(task?.payload.item_id), sensitivity_class: 1, max_representation: "full" },
+    });
+    assert.equal(classified.ok, true, JSON.stringify(classified.error));
+    assert.equal((classified.data as { task_id?: string }).task_id, task?.task_id, "Classification must resume the same business task.");
+    const updated = await readCaptureEnvelope(vault, ingestion.capture_path!);
+    assert.equal(updated.classification_state, "classified");
+    assert.equal(updated.sensitivity_class, 1);
+    assert.equal(updated.access_policy.max_representation, "full");
+    const repositoryAfter = await RuntimeRepository.open(vault);
+    assert.equal(repositoryAfter.getTask(task!.task_id)?.status, "queued");
+    repositoryAfter.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

@@ -12,6 +12,7 @@ import type { RepresentationLevel } from "../core/readLevels.js";
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 export type InboxItemState = "pending" | "processing" | "waiting-for-user" | "waiting-for-ai" | "failed" | "empty" | "processed" | "deferred" | "ignored" | "unmanaged";
+export type InboxRequiredUserAction = "select-route" | "classify-attachment" | "review-partial-extraction" | "close-open-file" | "resolve-review";
 
 export interface InboxStateRecord extends JsonObject {
   schema_version: 1;
@@ -59,6 +60,9 @@ export interface InboxItemView extends JsonObject {
   review_after: string | null;
   task_id: string | null;
   available_actions: string[];
+  required_user_action: InboxRequiredUserAction | null;
+  /** Structured data for a user action; never infer privacy state from an error string. */
+  attachment_classification: JsonObject | null;
 }
 
 export interface InboxListing extends JsonObject {
@@ -210,6 +214,13 @@ async function inspectItem(
   const interrupted = state === "processing";
   if (interrupted) state = "failed";
   if (state === "deferred" && stored?.review_after && Date.parse(stored.review_after) <= Date.now()) state = requiresAi ? "waiting-for-ai" : "pending";
+  const requestedAction = typeof storedResult?.required_user_action === "string" && ["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"].includes(storedResult.required_user_action)
+    ? storedResult.required_user_action as InboxRequiredUserAction
+    : null;
+  const requiredUserAction: InboxRequiredUserAction | null = state !== "waiting-for-user" ? null
+    : blockedByOpenEditor ? "close-open-file"
+      : requestedAction ?? (!suggestedModule ? "select-route" : null);
+  const attachmentClassification = object(storedResult?.attachment_classification);
   return {
     item_id: id, path: vaultPath, filename: path.basename(absolute), title: emptySource ? `空白副本 · ${path.basename(absolute)}` : typeof data.title === "string" ? data.title : path.basename(absolute),
     extension, size: stat.size, created_at: stat.birthtime.toISOString(), modified_at: stat.mtime.toISOString(), lifecycle_revision: lifecycleRevision,
@@ -225,6 +236,8 @@ async function inspectItem(
     error: emptySource ? "此文件没有可处理的正文内容。它可能是归档后被重新创建的同名空白副本；请移至恢复区或手动补充内容。" : interrupted ? "Previous processing was interrupted; explicit retry is required." : stored?.error ?? null, review_after: stored?.review_after ?? null,
     task_id: reintroducedAfterProcessing ? null : stored?.task_id ?? null,
     available_actions: availableActions(state, blockedByOpenEditor),
+    required_user_action: requiredUserAction,
+    attachment_classification: attachmentClassification,
   };
 }
 

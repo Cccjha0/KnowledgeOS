@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { COMMAND_API_VERSION, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
+import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type UserFacingError } from "../api/types.js";
 import { parseMarkdown } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
@@ -16,7 +16,7 @@ import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
-import { materializeInboxAiTasks, processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
+import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -527,6 +527,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "processInboxItem") return processInboxItem(vaultRoot, params as unknown as ProcessInboxItemParams);
   if (method === "processInboxBatch") return processInboxBatch(vaultRoot, params as unknown as ProcessInboxBatchParams);
+  if (method === "classifyInboxAttachment") return classifyInboxAttachment(vaultRoot, params as unknown as ClassifyInboxAttachmentParams);
   if (method === "manageModule") return manageModule(vaultRoot, params as unknown as ManageModuleParams);
   if (method === "createInstance") return createInstance(vaultRoot, params as unknown as CreateInstanceParams);
   if (method === "manageInstance") return manageInstance(vaultRoot, params as unknown as ManageInstanceParams);
