@@ -27,4 +27,6 @@ scenarios:
       schema_version: 1
   event_consumption: { enabled: false }
   event_publication: { enabled: true, event_type: reading-log.record-created }
+  pdf_policy: { enabled: true, partial_expected: allow }
+  partial_pdf_execution: { enabled: true }
   migration_apply: { enabled: false, rollback: false }

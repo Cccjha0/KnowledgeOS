@@ -197,7 +197,16 @@ function validateInboxRoleContracts(manifest: JsonObject, checks: ModuleValidati
   checks.push(check("contracts", "INBOX_ROLE_CONTRACTS_VALID", "pass", "Inbox asset roles and their entrypoints were checked.", "module.yaml"));
 }
 
-async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, moduleType: string, checks: ModuleValidationCheck[]): Promise<void> {
+function enabledScenario(scenarios: JsonObject, name: string): boolean {
+  const scenario = object(scenarios[name]);
+  return Boolean(scenario && scenario.enabled !== false);
+}
+
+function acceptedInputFormats(manifest: JsonObject): Set<string> {
+  return new Set(Array.isArray(manifest.accepted_inputs) ? manifest.accepted_inputs.filter((value): value is string => typeof value === "string") : []);
+}
+
+async function validateExecutableFixtureContract(moduleRoot: string, maturity: ModuleMaturity, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   if (maturity !== "beta" && maturity !== "stable") return;
   const contractPath = path.join(moduleRoot, "fixtures", "sample-instance", "module-test.yaml");
   if (!(await exists(contractPath))) {
@@ -208,9 +217,20 @@ async function validateExecutableFixtureContract(moduleRoot: string, maturity: M
   try { scenarios = object(parseYaml(moduleRoot, contractPath).scenarios) ?? {}; }
   catch (error) { checks.push(check("behavior", "MODULE_TEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "fixtures/sample-instance/module-test.yaml", true)); return; }
   const required = ["normal_capture", "ambiguous_capture", "permission_denied", "resource_unavailable", "repeat_execution", "paused_instance", "archived_instance", "prompt_regression"];
-  if (moduleType === "workflow") required.push("periodic_job", "event_consumption");
   const missing = required.filter((name) => !object(scenarios[name]));
   checks.push(check("behavior", missing.length ? "MODULE_TEST_SCENARIOS_MISSING" : "MODULE_TEST_SCENARIOS_VALID", missing.length ? "fail" : "pass", missing.length ? `Missing executable fixture scenarios: ${missing.join(", ")}.` : "Executable fixture contract declares all required scenarios.", "fixtures/sample-instance/module-test.yaml", missing.length > 0));
+  const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((value): value is string => typeof value === "string") : []);
+  const formats = acceptedInputFormats(manifest);
+  const pdfPolicy = object(manifest.pdf_policy);
+  const requiredEnabled: string[] = [];
+  if (capabilities.has("periodic-summary")) requiredEnabled.push("periodic_job");
+  if (capabilities.has("event-publishing")) requiredEnabled.push("event_publication");
+  if (capabilities.has("event-subscription")) requiredEnabled.push("event_consumption");
+  if (capabilities.has("review-items")) requiredEnabled.push("ambiguous_capture");
+  if (formats.has("pdf")) requiredEnabled.push("pdf_policy");
+  if (pdfPolicy?.partial_policy === "allow") requiredEnabled.push("partial_pdf_execution");
+  const disabled = requiredEnabled.filter((name) => !enabledScenario(scenarios, name));
+  checks.push(check("behavior", disabled.length ? "MODULE_TEST_REQUIRED_SCENARIO_DISABLED" : "MODULE_TEST_CAPABILITY_SCENARIOS_ENABLED", disabled.length ? "fail" : "pass", disabled.length ? `Declared capabilities require enabled executable scenarios: ${disabled.join(", ")}.` : "Every declared dynamic capability has an enabled executable fixture scenario.", "fixtures/sample-instance/module-test.yaml", disabled.length > 0));
   const prompt = object(scenarios.prompt_regression);
   const fixture = typeof prompt?.fixture === "string" ? path.join(moduleRoot, ...prompt.fixture.split("/")) : null;
   let invariants: string[] = [];
@@ -218,13 +238,14 @@ async function validateExecutableFixtureContract(moduleRoot: string, maturity: M
   catch { /* reported by the missing-invariants check below */ }
   const missingInvariants = ["preserve-facts", "uncertainty-preserved", "schema-valid"].filter((name) => !invariants.includes(name));
   if (!invariants.includes("no-invented-values") && !invariants.includes("no-invented-completion")) missingInvariants.push("no-invented-values or no-invented-completion");
-  checks.push(check("prompt-regression", missingInvariants.length ? "PROMPT_INVARIANTS_MISSING" : "PROMPT_INVARIANTS_VALID", missingInvariants.length ? "fail" : "pass", missingInvariants.length ? `Prompt regression fixture is missing: ${missingInvariants.join(", ")}.` : "Prompt regression fixture protects facts, uncertainty, and schema validity.", prompt?.fixture as string ?? "fixtures/sample-instance/module-test.yaml", missingInvariants.length > 0));
+  checks.push(check("prompt-regression", missingInvariants.length ? "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_MISSING" : "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_VALID", missingInvariants.length ? "fail" : "pass", missingInvariants.length ? `Deterministic Prompt Contract fixture is missing: ${missingInvariants.join(", ")}.` : "Deterministic Prompt Contract fixture protects facts, uncertainty, and schema validity; it is not a real-model evaluation.", prompt?.fixture as string ?? "fixtures/sample-instance/module-test.yaml", missingInvariants.length > 0));
   const migrationIndex = path.join(moduleRoot, "migrations", "index.yaml");
   if (await exists(migrationIndex)) {
     const migrations = object(parseYaml(moduleRoot, migrationIndex).migrations) ?? {};
     if (Object.keys(migrations).length) {
       const migration = object(scenarios.migration_apply);
-      checks.push(check("migration", migration?.enabled === true ? "MIGRATION_FIXTURE_DECLARED" : "MIGRATION_FIXTURE_MISSING", migration?.enabled === true ? "pass" : "fail", migration?.enabled === true ? "Migration fixture declares apply/repeat/rollback coverage." : "Module migrations require an enabled migration_apply fixture.", "fixtures/sample-instance/module-test.yaml", migration?.enabled !== true));
+      const migrationReady = migration?.enabled === true && migration.rollback === true;
+      checks.push(check("migration", migrationReady ? "MIGRATION_FIXTURE_DECLARED" : "MIGRATION_FIXTURE_MISSING", migrationReady ? "pass" : "fail", migrationReady ? "Migration fixture declares apply, repeat, and rollback coverage." : "Module migrations require an enabled migration_apply fixture with rollback enabled.", "fixtures/sample-instance/module-test.yaml", !migrationReady));
     }
   }
 }
@@ -293,7 +314,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   }
 
   for (const file of ["README.md", "CHANGELOG.md", "docs/use-case.md"]) checks.push(check("documentation", `DOC_${file.replace(/\W/g, "_").toUpperCase()}`, await exists(path.join(moduleRoot, ...file.split("/"))) ? "pass" : "warning", `${file} ${await exists(path.join(moduleRoot, ...file.split("/"))) ? "exists" : "is missing"}.`, file));
-  await validateExecutableFixtureContract(moduleRoot, maturity, String(manifest.module_type ?? ""), checks);
+  await validateExecutableFixtureContract(moduleRoot, maturity, manifest, checks);
   const failed = checks.filter((item) => item.status === "fail").length;
   const warnings = checks.filter((item) => item.status === "warning").length;
   const critical = checks.filter((item) => item.critical && item.status === "fail").length;

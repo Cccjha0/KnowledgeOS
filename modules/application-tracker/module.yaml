@@ -36,7 +36,6 @@ capabilities:
   - capture-processing
   - metadata-enrichment
   - file-organization
-  - periodic-summary
   - dashboard-items
   - review-items
   - research-request

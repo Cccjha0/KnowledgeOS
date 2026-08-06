@@ -617,6 +617,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             allowedTypes: ["create-file", "update-frontmatter", "append-section", "move-file"],
             allowedTargets: plan.operations.map((operation) => operation.target!).filter(Boolean), requiredReviewId: null, gitSnapshot: snapshot,
           });
+          // Preserve the exact Capture/Task that produced a Review. This is
+          // required both for user explanation and for fixture tests to prove
+          // an ambiguous input created *its own* Review rather than relying on
+          // a Review left by an earlier scenario.
+          for (const review of plan.review_items) {
+            review.origin_task_id = task.task_id;
+            if (typeof task.payload.item_id === "string") review.item_id = task.payload.item_id;
+            if (typeof task.payload.source_file === "string") review.source_file = task.payload.source_file;
+          }
           await writeReviewItems(vaultRoot, plan.review_items);
           if (step.with.record_processed_report === true && typeof prepared.report === "object" && typeof prepared.destination === "string" && typeof prepared.reportHash === "string") {
             const report = object(prepared.report, "MODULE_WORKFLOW_REPORT_MISSING");
