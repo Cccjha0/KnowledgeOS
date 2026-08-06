@@ -200,6 +200,14 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
     for (const job of (jobRegistry.jobs as JsonObject[] | undefined) ?? []) {
       const workflowId = String(job.workflow_id ?? ""); const workflowVersion = String(job.workflow_version ?? ""); const registered = object(workflows?.[workflowId]);
       if (!registered || registered.active_version !== workflowVersion) checks.push(check("contracts", "JOB_WORKFLOW_UNREGISTERED", "fail", `Job ${String(job.id)} references unregistered ${workflowId}@${workflowVersion}.`, String(jobs.registry), true));
+      const trigger = object(job.trigger);
+      if (trigger?.type === "event") {
+        const subscriptionScope = trigger.subscription_scope;
+        const validScope = subscriptionScope === "instance" || subscriptionScope === "module" || subscriptionScope === "global";
+        if (!validScope) checks.push(check("events", "EVENT_SUBSCRIPTION_SCOPE_INVALID", "fail", `Event Job ${String(job.id)} must explicitly declare trigger.subscription_scope as instance, module, or global.`, String(jobs.registry), true));
+        if (subscriptionScope === "instance" && job.scope !== "instance") checks.push(check("events", "EVENT_INSTANCE_SCOPE_JOB_INVALID", "fail", `Event Job ${String(job.id)} uses instance subscription_scope but is not an instance Job.`, String(jobs.registry), true));
+        if (subscriptionScope === "module" && job.scope === "instance") checks.push(check("events", "EVENT_MODULE_SCOPE_JOB_INVALID", "fail", `Event Job ${String(job.id)} uses module subscription_scope and must not target an instance.`, String(jobs.registry), true));
+      }
     }
   }
   const dependencies = object(manifest.dependencies); const components = object(dependencies?.components);

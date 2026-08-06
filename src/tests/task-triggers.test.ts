@@ -10,6 +10,10 @@ import type { JsonObject } from "../core/types.js";
 
 const local: TaskResources = { filesystem: "required", network: "not-required", codex: "not-required", user: "not-required" };
 const base = (id: string, trigger: JsonObject): JobDefinition => ({ job_id: id, source: "core", module: "core", scope: "core", enabled: true, task_type: "core-operation", workflow: "core:test", trigger, resources: local, catch_up: { policy: "none" }, retry: { max_attempts: 2 }, concurrency: { policy: "forbid", key: id }, idempotency: {}, priority: "normal", updated_at: new Date().toISOString() });
+const eventJob = (id: string, module: string, scope: JobDefinition["scope"], subscriptionScope: "instance" | "module" | "global", instanceId: string | null = null): JobDefinition => ({
+  ...base(id, { type: "event", event: "application.updated", subscription_scope: subscriptionScope, ...(instanceId ? { instance_id: instanceId } : {}) }),
+  source: "module", module, scope,
+});
 
 test("startup and event triggers persist tasks and deduplicate the same source", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-triggers-"));
@@ -74,6 +78,68 @@ test("Event payloads retain only minimal identifiers in the Event Store and down
     const task = after.listTasks().find((item) => item.job_id === "core.private-event")!;
     assert.equal(JSON.stringify(task.payload).includes("private journal body"), false);
     assert.equal(JSON.stringify(task.payload).includes("secret-token"), false);
+    after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Event subscriptions keep instance tasks isolated and audit both source and consumer instances", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-scope-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.registerJob(eventJob("application.consume.a", "application-tracker", "instance", "instance", "australia-masters-2027"));
+    repository.registerJob(eventJob("application.consume.b", "application-tracker", "instance", "instance", "uk-masters-2027"));
+    repository.registerJob(eventJob("application.module-audit", "application-tracker", "module", "module"));
+    repository.registerJob(eventJob("other.module-audit", "other-module", "module", "module"));
+    repository.registerJob(eventJob("core.explicit-global-audit", "core", "core", "global"));
+    repository.close();
+
+    const published = await publishRuntimeEvent(vault, {
+      type: "application.updated", event_id: "EVT-application-a", module: "application-tracker", instance_id: "australia-masters-2027", payload: { entity_id: "APP-A" },
+    });
+    assert.equal(published.created.length, 3);
+    const after = await RuntimeRepository.open(vault);
+    const tasks = after.listTasks();
+    const aTask = tasks.find((task) => task.job_id === "application.consume.a")!;
+    assert.equal(aTask.instance_id, "australia-masters-2027");
+    assert.equal(tasks.some((task) => task.job_id === "application.consume.b"), false);
+    assert.equal(tasks.some((task) => task.job_id === "other.module-audit"), false);
+    const moduleTask = tasks.find((task) => task.job_id === "application.module-audit")!;
+    const globalTask = tasks.find((task) => task.job_id === "core.explicit-global-audit")!;
+    for (const task of [aTask, moduleTask, globalTask]) {
+      assert.equal(task.trigger.event_source_instance_id, "australia-masters-2027");
+      assert.equal(task.trigger.event_source_module, "application-tracker");
+      assert.equal(task.payload.event_source_instance_id, "australia-masters-2027");
+    }
+    assert.equal(aTask.trigger.event_consumer_instance_id, "australia-masters-2027");
+    assert.equal(moduleTask.instance_id, null);
+    assert.equal(moduleTask.trigger.event_consumer_instance_id, null);
+    assert.equal(globalTask.instance_id, null);
+    assert.equal(globalTask.trigger.event_subscription_scope, "global");
+    after.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Event replay preserves the original subscription scope instead of crossing into another instance", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-event-scope-replay-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    repository.recordEvent({ event_id: "EVT-application-a-replay", event_type: "application.updated", module: "application-tracker", instance_id: "australia-masters-2027", occurred_at: new Date().toISOString(), fingerprint: "application-a-replay", payload: { entity_id: "APP-A" } });
+    repository.failEvent("EVT-application-a-replay", { code: "EVENT_DISPATCH_FAILED", message: "fixture before ledger" });
+    repository.registerJob(eventJob("application.replay.a", "application-tracker", "instance", "instance", "australia-masters-2027"));
+    repository.registerJob(eventJob("application.replay.b", "application-tracker", "instance", "instance", "uk-masters-2027"));
+    repository.registerJob(eventJob("core.replay.global", "core", "core", "global"));
+    repository.close();
+
+    const replay = await replayRuntimeEvent(vault, "EVT-application-a-replay");
+    assert.equal(replay.created.length, 2);
+    const after = await RuntimeRepository.open(vault);
+    const tasks = after.listTasks();
+    assert.equal(tasks.some((task) => task.job_id === "application.replay.b"), false);
+    const replayTask = tasks.find((task) => task.job_id === "application.replay.a")!;
+    assert.equal(replayTask.instance_id, "australia-masters-2027");
+    assert.equal(replayTask.trigger.event_source_instance_id, "australia-masters-2027");
+    assert.equal(replayTask.trigger.event_consumer_instance_id, "australia-masters-2027");
+    assert.equal(after.listEventDeliveries("EVT-application-a-replay").length, 2);
     after.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

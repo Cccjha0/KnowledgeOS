@@ -51,6 +51,20 @@ test("validation fails before enable when a registered prompt is missing", async
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("validation requires every declared Event Job to state its subscription scope", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "event-scope-check", "minimal-config");
+    const root = path.join(engine, "modules", "event-scope-check");
+    writeYaml(root, path.join(root, "jobs", "jobs.yaml"), {
+      jobs: [{ id: "consume-capture", scope: "module", enabled: true, task_type: "workflow", workflow: "event-scope-check:normalize", workflow_id: "normalize", workflow_version: "1.0.0", trigger: { type: "event", event: "capture.created" } }],
+    });
+    const report = await validateModule(engine, root);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "EVENT_SUBSCRIPTION_SCOPE_INVALID" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("Module SDK allows structured plans but rejects cross-boundary and red operations", () => {
   const sdk = new ModuleSdk({ vaultRoot: "C:/vault", moduleId: "reading-log", moduleVersion: "0.1.0", instanceId: "reading-2026", allowedReadRoots: ["20-Workspace/Reading Log/reading-2026"], ownedWriteRoots: ["20-Workspace/Reading Log/reading-2026"], maxSensitivityClass: 0 });
   const operation: Operation = { operation_id: "OP-001", type: "create-file", target: "20-Workspace/Reading Log/reading-2026/Notes/a.md", risk: "green", confidence: 1, idempotency_key: "reading:a", payload: { format: "text", text: "A" }, requires_review_id: null };
