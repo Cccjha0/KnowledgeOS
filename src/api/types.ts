@@ -49,7 +49,9 @@ export type CommandApiMethod =
   | "migrateLegacyAccessPolicies"
   | "backfillQualityMetadata"
   | "previewModuleBlueprint"
-  | "createModuleFromBlueprint";
+  | "createModuleFromBlueprint"
+  | "getModuleReadiness"
+  | "runModuleReadinessAction";
 
 export interface CommandApiRequest extends JsonObject {
   api_version: typeof COMMAND_API_VERSION;

@@ -63,6 +63,18 @@ node dist/cli.js module install C:\KnowledgeOS\my-vault\90-System\Modules\Packag
 
 Without `--vault`, CLI commands operate on the Engine's official source modules for Engine development only. A generated Vault workspace remains in the `implementation-required` state until it passes validation and tests, is packaged, and is explicitly installed.
 
+## Readiness gates
+
+Core exposes the same resumable delivery flow to the plugin and CLI. The workspace status deliberately records each gate rather than inferring readiness from the existence of generated files:
+
+```text
+draft → blueprint-valid → implementation-required
+      → validating → test-failed | ready-to-package
+      → packaged → installed
+```
+
+Use `pkb module readiness {module_id} --vault {vault}` to inspect the current state. Run one explicit next step with `pkb module readiness-run {module_id} validate|test|sandbox|pack|install --vault {vault}`. The equivalent Command API methods are `getModuleReadiness` and `runModuleReadinessAction`; both return the next legal actions and report paths for a future Module Builder Center.
+
 The generated module stores a normalized copy of the Blueprint and a validation report. To change the design, edit the Blueprint and regenerate in a clean workspace target; do not treat generated files as the design source.
 
 For the current automated and manual acceptance status, see [milestone-j-validation.md](milestone-j-validation.md).

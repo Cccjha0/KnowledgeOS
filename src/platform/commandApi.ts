@@ -40,6 +40,7 @@ import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -297,6 +298,16 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       workspace_path: `90-System/Module Development/${moduleId}`,
       next_state: "implementation-required",
     })) as Promise<JsonValue>;
+  }
+  if (method === "getModuleReadiness") {
+    return getModuleReadiness(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"));
+  }
+  if (method === "runModuleReadinessAction") {
+    const action = typeof params.action === "string" ? params.action : "";
+    if (!(["validate", "test", "sandbox", "pack", "install"] as string[]).includes(action)) {
+      throw new PkbError("INVALID_REQUEST", "action must be validate, test, sandbox, pack, or install.");
+    }
+    return runModuleReadinessAction(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"), action as ModuleReadinessAction, { confirmBreaking: params.confirm_breaking === true });
   }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";

@@ -15,6 +15,7 @@
 | J09 Course challenge | automated pass | Course Blueprint plus executable Capture, periodic Job, Event, PDF policy, and lifecycle contract |
 | J10 unfamiliar-user test | pending external participant | protocol below |
 | J13 User module workspace | complete | Vault-owned `Module Development`, `Packages`, `Installed`, and `Official` roots; local packages survive official configuration sync |
+| J15 Delivery pipeline | Core complete; Module Builder Center pending | resumable readiness state, report paths, and explicit validate/test/sandbox/package/install actions are exposed through CLI and Command API |
 
 ## Course challenge feedback
 

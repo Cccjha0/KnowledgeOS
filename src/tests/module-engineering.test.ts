@@ -85,6 +85,27 @@ test("Command API creates a Blueprint module in the Vault development workspace,
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Module workspace readiness keeps a scaffold separate from validation and installation", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-readiness-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(create.ok, true);
+    const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
+    assert.equal(before.ok, true);
+    assert.equal((before.data as JsonObject).state, "implementation-required");
+    assert.deepEqual((before.data as JsonObject).available_actions, ["validate"]);
+    const validation = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-VALIDATE", method: "runModuleReadinessAction", params: { module_id: "media-library", action: "validate" } });
+    assert.equal(validation.ok, true);
+    const refreshed = (validation.data as JsonObject).readiness as JsonObject;
+    assert.equal(refreshed.state, "implementation-required");
+    const steps = refreshed.steps as JsonObject[];
+    assert.equal(steps.find((step) => step.id === "validation")?.status, "complete");
+    assert.equal((refreshed.available_actions as string[]).includes("test"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Blueprint scaffolding deterministically creates a runtime-valid module", async () => {
   const engine = await temporaryEngine();
   try {

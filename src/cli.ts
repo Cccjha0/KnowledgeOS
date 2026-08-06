@@ -34,6 +34,7 @@ import { installModulePackage, packModuleDirectory, rollbackModulePackage } from
 import { validateModule } from "./modules/validator.js";
 import { testModule } from "./modules/testRunner.js";
 import { runModuleSandbox } from "./modules/sandbox.js";
+import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "./modules/readiness.js";
 import type { ModuleTemplate } from "./modules/types.js";
 
 interface ParsedArgs {
@@ -253,6 +254,18 @@ async function main(): Promise<void> {
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const report = await runModuleSandbox(engineRoot, value, { moduleRoot: await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value) });
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
+  }
+  if (command === "module" && subcommand === "readiness") {
+    if (!value) throw new Error("module readiness requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await getModuleReadiness(engineRoot, parsed.vault, value), null, 2)); return;
+  }
+  if (command === "module" && subcommand === "readiness-run") {
+    if (!value) throw new Error("module readiness-run requires MODULE_ID");
+    const action = parsed.positional[3] as ModuleReadinessAction | undefined;
+    if (!action || !["validate", "test", "sandbox", "pack", "install"].includes(action)) throw new Error("module readiness-run requires validate, test, sandbox, pack, or install.");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await runModuleReadinessAction(engineRoot, parsed.vault, value, action, { confirmBreaking: parsed.confirm }), null, 2)); return;
   }
   if (command === "module" && subcommand === "pack") {
     if (!value) throw new Error("module pack requires MODULE_ID");
