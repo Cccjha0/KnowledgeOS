@@ -121,15 +121,41 @@ export interface PdfUsePolicy {
   partial_policy?: "allow" | "review";
 }
 
+export const DEFAULT_PDF_USE_POLICY: Required<PdfUsePolicy> = {
+  accepted_statuses: ["completed"],
+  partial_policy: "review",
+};
+
+/** Parse only the documented, safe portion of a module PDF policy. */
+export function parsePdfUsePolicy(value: unknown): PdfUsePolicy | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as JsonObject;
+  const accepted = Array.isArray(raw.accepted_statuses)
+    ? raw.accepted_statuses.filter((status): status is PdfExtractionStatus => typeof status === "string" && ["pending", "completed", "partial", "empty", "scanned", "encrypted", "corrupted", "unsupported", "failed"].includes(status))
+    : undefined;
+  const partial = raw.partial_policy === "allow" || raw.partial_policy === "review" ? raw.partial_policy : undefined;
+  return accepted || partial ? { ...(accepted ? { accepted_statuses: accepted } : {}), ...(partial ? { partial_policy: partial } : {}) } : null;
+}
+
+/** The Inbox and Workflow Runner both resolve this complete policy before use. */
+export function effectivePdfUsePolicy(value: unknown): Required<PdfUsePolicy> {
+  const policy = parsePdfUsePolicy(value);
+  return {
+    accepted_statuses: policy?.accepted_statuses ?? DEFAULT_PDF_USE_POLICY.accepted_statuses,
+    partial_policy: policy?.partial_policy ?? DEFAULT_PDF_USE_POLICY.partial_policy,
+  };
+}
+
 /** Resolve a module-declared policy; default safely stops partial extractions. */
 export function pdfExtractionDecision(envelope: CaptureEnvelope, policy: PdfUsePolicy | null = null): { usable: boolean; requires_review: boolean; status: PdfExtractionStatus | null } {
   if (envelope.format !== "pdf") return { usable: true, requires_review: false, status: null };
   const extraction = envelope.metadata.extraction;
   const status = pdfExtractionStatus(envelope);
   const textAvailable = Boolean(extraction && typeof extraction === "object" && !Array.isArray(extraction) && (extraction as JsonObject).text_available === true);
-  const accepted = new Set(policy?.accepted_statuses ?? ["completed"]);
+  const effective = effectivePdfUsePolicy(policy);
+  const accepted = new Set(effective.accepted_statuses);
   if (!status || !textAvailable || !accepted.has(status)) return { usable: false, requires_review: status === "partial", status };
-  if (status === "partial" && policy?.partial_policy !== "allow") return { usable: false, requires_review: true, status };
+  if (status === "partial" && effective.partial_policy !== "allow") return { usable: false, requires_review: true, status };
   return { usable: true, requires_review: false, status };
 }
 

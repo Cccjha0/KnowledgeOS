@@ -121,6 +121,9 @@ export class RuntimeRepository {
   getCheckpoints(): SchedulerCheckpoint[] { return this.call("get-checkpoints"); }
   reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
+  refreshWaitingTask(taskId: string, resources: RuntimeTask["resources"], payload: JsonObject): RuntimeTask {
+    return this.call("refresh-waiting-task", { task_id: taskId, resources, payload });
+  }
   cancelTask(taskId: string): RuntimeTask { return this.call("cancel-task", { task_id: taskId }); }
   setTaskPriority(taskId: string, priority: RuntimeTask["priority"]): RuntimeTask { return this.call("set-priority", { task_id: taskId, priority }); }
   recordEvent(event: JsonObject): { created: boolean; event: JsonObject } { return this.call("record-event", event) as unknown as { created: boolean; event: JsonObject }; }

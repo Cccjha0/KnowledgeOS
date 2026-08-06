@@ -18,7 +18,7 @@ import { runManagedCodexStep } from "../runtime/codexAdapter.js";
 import { createCodexContextWorkspace, type CodexContextBudget, type CodexContextManifest } from "../runtime/codexContext.js";
 import { executeCodexJson, resolveCodexModel, resolveCodexReasoningEffort } from "../runtime/codexCli.js";
 import type { RuntimeHandler, WorkerResult } from "../runtime/worker.js";
-import { pdfExtractionIsUsable, pdfExtractionStatus, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
+import { effectivePdfUsePolicy, pdfExtractionDecision, readCaptureEnvelope, readExtractionCache } from "../core/ingestion.js";
 import { assertRepresentationLevel, assertSensitivityClass, representationFromLegacyReadLevel, representationPermits, requireSafeSummary, resolveDocumentAccessPolicy, type DocumentAccessPolicy, type RepresentationLevel, type SensitivityClass } from "../core/readLevels.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -64,6 +64,7 @@ interface WorkflowState {
   snapshot: string | null;
   codexCalls: number;
   eventIds: string[];
+  pdfDecisions: Map<string, JsonObject>;
   sdk: ModuleSdk;
   codexContexts: CodexContextManifest[];
 }
@@ -305,11 +306,20 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
     if (envelope.source_path !== normalized) throw new PkbError("CAPTURE_ENVELOPE_SOURCE_MISMATCH", "Capture Envelope does not belong to this Inbox source.");
     const policy: DocumentAccessPolicy = { sensitivity_class: envelope.sensitivity_class, classification_state: envelope.classification_state, max_representation: envelope.access_policy.max_representation, policy_source: envelope.policy_source, ...(envelope.legacy_read_level === null ? {} : { legacy_read_level: envelope.legacy_read_level }) };
     assertDocumentReadable(state, normalized, requested, policy);
-    if (!pdfExtractionIsUsable(envelope)) {
-      throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfExtractionStatus(envelope)}. OCR or a text-based PDF is required before this workflow can run.`, {
+    const pdfPolicy = effectivePdfUsePolicy(task.payload.pdf_policy ?? state.resolved.manifest.pdf_policy);
+    const pdfDecision = pdfExtractionDecision(envelope, pdfPolicy);
+    if (envelope.format === "pdf") state.pdfDecisions.set(envelope.source_path, {
+      source_path: envelope.source_path, capture_path: envelope.capture_path, extraction_status: pdfDecision.status,
+      usable: pdfDecision.usable, requires_review: pdfDecision.requires_review, policy: pdfPolicy,
+      policy_source: task.payload.pdf_policy ? String(task.payload.pdf_policy_source ?? "task-payload") : "workflow-resolution",
+    });
+    if (!pdfDecision.usable) {
+      throw new PkbError("CAPTURE_EXTRACTION_UNAVAILABLE", `PDF extraction is ${pdfDecision.status}; this Workflow policy does not permit it without user action.`, {
         source_path: envelope.source_path,
-        extraction_status: pdfExtractionStatus(envelope),
+        extraction_status: pdfDecision.status,
         capture_path: envelope.capture_path,
+        pdf_policy: pdfPolicy,
+        requires_review: pdfDecision.requires_review,
       });
     }
     const extraction = await readExtractionCache(vaultRoot, envelope);
@@ -469,6 +479,7 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
       workflow: { id: state.resolved.workflowId, version: state.resolved.workflowVersion },
       schedule: state.schedule,
       approved_input_files: [primary.path, ...related.map((document) => document.path)],
+      pdf_inputs: [...state.pdfDecisions.values()],
     },
     primary: { source_path: primary.path, content: contextDocumentContent(primary), sensitivity_class: primary.sensitivity_class, requested_representation: primary.requested_representation, representation: primary.representation, policy_source: primary.policy_source },
     related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document), sensitivity_class: document.sensitivity_class, requested_representation: document.requested_representation, representation: document.representation, policy_source: document.policy_source })),
@@ -498,7 +509,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
     const state: WorkflowState = {
       resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance ?? {}], ["schedule", {}]]),
       sourceFiles: new Set(), outputFiles: new Set(), planId: null, snapshot: null, codexCalls: 0,
-      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [], eventIds: [],
+      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [], eventIds: [], pdfDecisions: new Map(),
     };
     state.values.set("schedule", state.schedule);
     const steps = (resolved.workflow.steps as unknown[] ?? []).map((raw) => {
@@ -678,6 +689,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         module_workflow: resolved.workflowId, module_workflow_version: resolved.workflowVersion, steps_executed: steps.length,
         codex_calls: state.codexCalls, files_read: state.sourceFiles.size, files_written: state.outputFiles.size,
         events_published: state.eventIds.length, event_ids: state.eventIds,
+        pdf_inputs: [...state.pdfDecisions.values()],
         codex_contexts: state.codexContexts.map((context) => ({
           version: context.version, primary_input: context.primary_input.source_path,
           related_input_count: context.related_inputs.length, allowed_read_roots: context.allowed_read_roots,

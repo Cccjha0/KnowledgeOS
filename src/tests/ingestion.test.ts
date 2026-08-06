@@ -275,6 +275,9 @@ test("application-tracker holds partial PDFs for user review instead of sending 
     const task = repository.getTask(materialized.created[0]!);
     assert.equal(task?.resources.user, "required");
     assert.equal(task?.resources.codex, "not-required");
+    assert.deepEqual(task?.payload.pdf_policy, { accepted_statuses: ["completed"], partial_policy: "review" });
+    assert.equal(task?.payload.pdf_policy_source, "module-manifest");
+    assert.deepEqual(task?.payload.pdf_extraction_decision, { usable: false, requires_review: true, status: "partial" });
     repository.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

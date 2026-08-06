@@ -666,6 +666,16 @@ def dispatch(command, connection, payload):
             fail("TASK_RETRY_INVALID", f"Task {payload['task_id']} cannot be retried from {row['status']}.")
         connection.execute("UPDATE tasks SET status='queued',updated_at=?,next_retry_at=NULL,defer_until=NULL WHERE task_id=?", (now_iso(), payload["task_id"]))
         connection.commit(); return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
+    if command == "refresh-waiting-task":
+        row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
+        if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
+        if row["status"] not in {"waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "interrupted"}:
+            fail("TASK_REFRESH_INVALID", f"Task {payload['task_id']} cannot refresh its execution snapshot from {row['status']}.")
+        resources = payload.get("resources")
+        task_payload = payload.get("payload")
+        if not isinstance(resources, dict) or not isinstance(task_payload, dict): fail("TASK_REFRESH_INVALID", "resources and payload are required objects.")
+        connection.execute("UPDATE tasks SET resources_json=?,payload_json=?,updated_at=? WHERE task_id=?", (json.dumps(resources), json.dumps(task_payload), now_iso(), payload["task_id"]))
+        connection.commit(); return task_dict(connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone())
     if command == "cancel-task":
         row = connection.execute("SELECT * FROM tasks WHERE task_id=?", (payload["task_id"],)).fetchone()
         if not row: fail("TASK_NOT_FOUND", f"Task {payload['task_id']} was not found.")
