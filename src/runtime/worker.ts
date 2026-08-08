@@ -104,8 +104,9 @@ export async function executeTask(vaultRoot: string, repository: RuntimeReposito
     if (classified.code === "TASK_CANCELLED") {
       return repository.finishRun(run.run_id, { runStatus: "cancelled", taskStatus: "cancelled", error: classified, metrics: { duration_ms: performance.now() - started }, completionReason: "cooperative-cancelled" }).task;
     }
-    if (classified.code === "OBSIDIAN_FILE_OPEN" || classified.code === "CONTEXT_BUDGET_REVIEW_REQUIRED" || classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" || classified.code === "EXTRACTION_CACHE_UNAVAILABLE" || classified.code === "MODULE_READ_DENIED" || classified.code === "DOCUMENT_REPRESENTATION_DENIED" || classified.code === "DOCUMENT_CLASSIFICATION_REQUIRED" || classified.code === "SAFE_SUMMARY_REQUIRED" || classified.code === "MODULE_WORKFLOW_CODEX_DENIED") {
+    if (classified.code === "OBSIDIAN_FILE_OPEN" || classified.code === "CONTEXT_BUDGET_REVIEW_REQUIRED" || classified.code === "MODULE_WORKFLOW_REVIEW_REQUIRED" || classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" || classified.code === "EXTRACTION_CACHE_UNAVAILABLE" || classified.code === "MODULE_READ_DENIED" || classified.code === "DOCUMENT_REPRESENTATION_DENIED" || classified.code === "DOCUMENT_CLASSIFICATION_REQUIRED" || classified.code === "SAFE_SUMMARY_REQUIRED" || classified.code === "MODULE_WORKFLOW_CODEX_DENIED") {
       const waitingReason = classified.code === "OBSIDIAN_FILE_OPEN" ? "obsidian-file-open"
+        : classified.code === "MODULE_WORKFLOW_REVIEW_REQUIRED" ? "workflow-review-required"
         : classified.code === "CAPTURE_EXTRACTION_UNAVAILABLE" ? "capture-extraction-unavailable"
           : classified.code === "EXTRACTION_CACHE_UNAVAILABLE" ? "extraction-cache-unavailable"
             : classified.code === "MODULE_READ_DENIED" ? "sensitivity-denied"

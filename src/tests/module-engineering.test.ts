@@ -172,6 +172,10 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
       assert.equal((transitionStep?.with as JsonObject).proposed_from, "normalize");
       assert.equal((assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "component.state-transition-validation")
         < (assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "core.build-operation-plan"), true);
+      const reviewStep = (assignmentWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.require-review-if");
+      assert.deepEqual((reviewStep?.with as JsonObject).rules, [{ field: "assignment.deadline", condition: "missing-or-conflicting" }]);
+      assert.equal((assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "core.require-review-if")
+        < (assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "core.build-operation-plan"), true);
       const valid = await validateModule(engine, moduleRoot);
     assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
 

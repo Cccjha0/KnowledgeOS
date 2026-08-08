@@ -238,6 +238,7 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     const read = object(workflow.read);
     const operation = object(workflow.operation);
     const prompt = object(workflow.prompt);
+    const reviewWhen = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
     const fieldsPresent = inputEntities.length > 0 && entityIds.includes(outputEntity) && read && operation;
     checks.push(fieldsPresent
       ? check("SEMANTIC_WORKFLOW_CONTRACT_VALID", "pass", `${id} declares inputs, output, read policy, and Operation target.`, `workflows.${id}`)
@@ -248,6 +249,17 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     if (workflow.trigger === "capture") checks.push(roles.length > 0
       ? check("SEMANTIC_CAPTURE_ROLE_DECLARED", "pass", `${id} declares an input role.`, `workflows.${id}.input_roles`)
       : check("SEMANTIC_CAPTURE_ROLE_REQUIRED", "fail", `${id} is capture-triggered and must declare input_roles.`, `workflows.${id}.input_roles`));
+    for (const rule of reviewWhen) {
+      const reference = String(rule.field ?? "");
+      const [entityId, fieldId] = reference.split(".", 2);
+      const entity = entities.find((candidate) => candidate.id === entityId);
+      const fieldExists = Boolean(object(object(entity?.schema)?.fields)?.[fieldId ?? ""]);
+      const condition = String(rule.condition ?? "");
+      const validCondition = ["missing", "conflicting", "missing-or-conflicting", "always"].includes(condition);
+      checks.push(fieldExists && validCondition && entityId === outputEntity
+        ? check("SEMANTIC_REVIEW_WHEN_VALID", "pass", `${id} has an executable review rule for ${reference}.`, `workflows.${id}.review_when`)
+        : check("SEMANTIC_REVIEW_WHEN_INVALID", "fail", `${id} review_when must reference an output Entity field and a supported condition.`, `workflows.${id}.review_when`));
+    }
     if (workflow.trigger === "schedule") {
       checks.push(sources.length > 0
         ? check("SEMANTIC_SCHEDULE_SOURCES_DECLARED", "pass", `${id} declares the source query contract for its scheduled input.`, `workflows.${id}.sources`)
@@ -559,6 +571,16 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
       };
       generated.steps = planIndex < 0 ? [...steps, validation] : [...steps.slice(0, planIndex), validation, ...steps.slice(planIndex)];
     }
+    const reviewWhen = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+    if (semantic && reviewWhen.length && output) {
+      const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+      const planIndex = steps.findIndex((step) => step.uses === "core.build-operation-plan");
+      const ruleStep = {
+        id: `require-${outputEntity}-review`, uses: "core.require-review-if",
+        with: { target: String(output.target), proposed_from: workflow.trigger === "schedule" ? "summarize" : "normalize", rules: reviewWhen.map((rule) => ({ field: String(rule.field), condition: String(rule.condition) })) },
+      };
+      generated.steps = planIndex < 0 ? [...steps, ruleStep] : [...steps.slice(0, planIndex), ruleStep, ...steps.slice(planIndex)];
+    }
     if (workflow.trigger === "schedule" && !semantic) {
       const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
       generated.steps = steps.map((step) => step.uses === "core.build-operation-plan" ? {
@@ -597,6 +619,11 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
   registry.workflows = nextRegistry;
   writeYaml(moduleRoot, registryPath, registry);
   manifest.entry_workflows = { ...(object(manifest.entry_workflows) ?? {}), ...captureEntrypoints };
+  const reviewConditions = Object.fromEntries(declared.flatMap((workflow) => {
+    const rules = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+    return rules.length ? [[String(workflow.id), rules.map((rule) => ({ field: String(rule.field), condition: String(rule.condition) }))]] : [];
+  }));
+  if (Object.keys(reviewConditions).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "review-conditions.yaml"), { workflows: reviewConditions });
 
   const jobs = Array.isArray(blueprint.jobs) ? blueprint.jobs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
   const scheduledWorkflow = declared.find((workflow) => workflow.trigger === "schedule");

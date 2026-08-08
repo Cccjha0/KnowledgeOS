@@ -24,6 +24,14 @@ steps:
   with:
     prompt_id: normalize-lecture
     output_schema: https://pkb.local/schemas/course/lecture.schema.json
+- id: require-lecture-review
+  uses: core.require-review-if
+  with:
+    target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
+    proposed_from: normalize
+    rules:
+    - field: lecture.lecture_date
+      condition: missing-or-conflicting
 - id: plan
   uses: core.build-operation-plan
   with:

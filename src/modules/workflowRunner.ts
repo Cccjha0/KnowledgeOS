@@ -8,7 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import type { JsonObject, JsonValue, OperationPlan } from "../core/types.js";
+import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
@@ -77,6 +77,35 @@ export function operationPlanTypeForRecordMode(mode: string): "create-file" | "u
   if (mode === "update-record") return "update-frontmatter";
   if (mode === "append-record") return "append-section";
   throw new PkbError("MODULE_WORKFLOW_OPERATION_MODE_INVALID", `Unsupported Blueprint operation.type: ${mode}`);
+}
+
+function pendingReviewRequirements(state: WorkflowState): JsonObject[] {
+  return [...state.values.values()].flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const result = value as JsonObject;
+    return result.review_required === true && Array.isArray(result.matches)
+      ? result.matches.filter((match): match is JsonObject => Boolean(match) && typeof match === "object" && !Array.isArray(match)) : [];
+  });
+}
+
+/** A declared missing-field Review may hold an otherwise incomplete AI result
+ * before any Operation is created or executed. It never makes that result
+ * automatically writable. */
+function hasMissingReviewRule(workflow: JsonObject, output: JsonObject): boolean {
+  const declared = Array.isArray(workflow.review_when) ? workflow.review_when : [];
+  const materialized = Array.isArray(workflow.steps) ? workflow.steps.flatMap((raw) => {
+    const step = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as JsonObject : null;
+    const withValue = step?.with && typeof step.with === "object" && !Array.isArray(step.with) ? step.with as JsonObject : null;
+    return step?.uses === "core.require-review-if" && Array.isArray(withValue?.rules) ? withValue.rules : [];
+  }) : [];
+  const rules = declared.length ? declared : materialized;
+  return rules.some((raw) => {
+    const rule = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as JsonObject : null;
+    const condition = rule?.condition;
+    const field = typeof rule?.field === "string" ? rule.field.split(".").at(-1) : null;
+    return field && (condition === "missing" || condition === "missing-or-conflicting")
+      && (output[field] === undefined || output[field] === null || (typeof output[field] === "string" && !output[field].trim()));
+  });
 }
 
 /** Enforces a role's Codex policy at the final execution boundary. */
@@ -613,7 +642,8 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
           return { output: { ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
         }, (output) => {
-          try { validateSchema(vaultRoot, outputSchema, output); return true; } catch { return false; }
+          try { validateSchema(vaultRoot, outputSchema, output); return true; }
+          catch { return Boolean(output && typeof output === "object" && !Array.isArray(output) && hasMissingReviewRule(resolved.workflow, output as JsonObject)); }
         });
         state.values.set(step.id, managed.output);
         state.codexCalls += 1;
@@ -679,7 +709,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const output = outputKey ? object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING") : null;
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
-        validateSchema(vaultRoot, outputSchema, output);
+        try { validateSchema(vaultRoot, outputSchema, output); }
+        catch (error) {
+          if (!hasMissingReviewRule(resolved.workflow, output)) throw error;
+        }
         const target = relative(interpolate(string(step.with.target, "build-operation-plan.target"), state, task), "build-operation-plan.target");
         const operationMode = String(step.with.operation_type ?? "create-record") as RecordOperationMode;
         const operationType = operationPlanTypeForRecordMode(operationMode);
@@ -705,12 +738,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         }
         const templatePath = path.join(resolved.moduleRoot, ...relative(string(step.with.template, "build-operation-plan.template"), "build-operation-plan.template").split("/"));
         const planId = await allocateId(vaultRoot, "PLAN");
+        const reviewRequirements = pendingReviewRequirements(state);
+        const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
+        const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
           summary: typeof step.with.summary === "string" ? interpolate(step.with.summary, state, task) : `Run ${resolved.workflowId}`,
           operations: [{
-            operation_id: "OP-001", type: operationType, target, risk: "green", confidence: 1,
-            idempotency_key: idempotencyKey, requires_review_id: null,
+            operation_id: "OP-001", type: operationType, target, risk: reviewId ? "yellow" : "green", confidence: 1,
+            idempotency_key: idempotencyKey, requires_review_id: reviewId,
             payload: operationMode === "create-record"
               ? { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema }
               : operationMode === "update-record"
@@ -718,7 +754,30 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
                 : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), output), marker: idempotencyKey, actor: "ai" },
           }], review_items: [],
         };
+        if (reviewId) {
+          const primary = reviewRequirements[0]!;
+          const now = new Date().toISOString();
+          const review: ReviewItem = {
+            review_id: reviewId, schema_version: 1, source_module: task.module, instance_id: task.instance_id, target,
+            action: "module-operation", proposed_value: {
+              field: String(primary.field ?? "record"), old_value: primary.current_value ?? null, new_value: output,
+              operation_plan_id: planId, matching_rules: reviewRequirements,
+            }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
+            priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
+            status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
+            evidence: [...state.sourceFiles], created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            resolution: null, origin_task_id: task.task_id,
+            ...(generated ? { generation: generated } : {}),
+          };
+          plan.review_items = [review];
+        }
         await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
+        if (reviewId) {
+          await writeReviewItems(vaultRoot, plan.review_items);
+          throw new PkbError("MODULE_WORKFLOW_REVIEW_REQUIRED", `Workflow ${resolved.workflowId} requires a user Review before writing ${target}.`, {
+            review_id: reviewId, plan_id: planId, matches: reviewRequirements,
+          });
+        }
         const snapshot = await createGitSnapshot(vaultRoot, runId);
         await executeOperationPlan(vaultRoot, plan, { allowedTypes: [operationType], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
         state.planId = planId; state.snapshot = snapshot; state.outputFiles.add(target); state.values.set(step.id, plan);

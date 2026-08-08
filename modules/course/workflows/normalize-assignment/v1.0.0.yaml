@@ -36,6 +36,14 @@ steps:
         planned: [submitted]
         submitted: [graded]
         graded: []
+- id: require-assignment-review
+  uses: core.require-review-if
+  with:
+    target: '{instance.content_root}/Assignments/{task.payload.item_id}.md'
+    proposed_from: normalize
+    rules:
+    - field: assignment.deadline
+      condition: missing-or-conflicting
 - id: plan
   uses: core.build-operation-plan
   with:

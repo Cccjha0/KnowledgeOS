@@ -72,6 +72,16 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
         && transitionWith?.status_field === "status" && transitionWith?.proposed_from === expectedProposedFrom && lifecycleMatches,
       `${id} binds its declared lifecycle to the state-transition validation Component.`, `workflows.${id}.lifecycle`);
     }
+    const reviewWhen = entries(workflow.review_when);
+    if (reviewWhen.length) {
+      const ruleStep = steps.find((step) => step.uses === "core.require-review-if");
+      const ruleWith = object(ruleStep?.with);
+      const expectedRules = reviewWhen.map((rule) => ({ field: String(rule.field), condition: String(rule.condition) }));
+      add("V2_WORKFLOW_REVIEW_RULES_BOUND", Boolean(ruleStep) && ruleWith?.target === output?.target
+        && ruleWith?.proposed_from === (workflow.trigger === "schedule" ? "summarize" : "normalize")
+        && JSON.stringify(ruleWith?.rules) === JSON.stringify(expectedRules),
+      `${id} binds its declared review_when rules to Core's deterministic Review gate.`, `workflows.${id}.review_when`);
+    }
     const blueprintRoles = object(object(blueprint.privacy)?.input_roles) ?? {};
     const runtimeRolePolicies = object(contract?.role_policies) ?? {};
     const workflowRoles = strings(workflow.input_roles);

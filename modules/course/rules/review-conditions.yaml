@@ -1,0 +1,7 @@
+workflows:
+  normalize-lecture:
+    - field: lecture.lecture_date
+      condition: missing-or-conflicting
+  normalize-assignment:
+    - field: assignment.deadline
+      condition: missing-or-conflicting

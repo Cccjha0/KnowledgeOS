@@ -3,6 +3,7 @@ import { prepareDueResearchRequests } from "../components/researchRequestSchedul
 import { prepareLinkReconciliation } from "../components/linkReconciliation.js";
 import { prepareIndexMaterialization, type IndexEntry } from "../components/indexMaterializer.js";
 import { validateStateTransitionForDocument, type StateMachineDefinition } from "../components/stateMachine.js";
+import { evaluateReviewRulesForDocument, type ReviewCondition, type ReviewRule } from "../components/reviewRules.js";
 import { PkbError } from "../core/errors.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import type { RuntimeTask, TaskResources } from "../runtime/domain.js";
@@ -60,6 +61,19 @@ function stateMachine(value: JsonValue | undefined): StateMachineDefinition {
   return { initial: machine.initial, transitions };
 }
 
+function reviewRules(value: JsonValue | undefined): ReviewRule[] {
+  if (!Array.isArray(value) || !value.length) throw new PkbError("REVIEW_RULES_INVALID", "Review rules must be a non-empty array.");
+  return value.map((raw) => {
+    const rule = object(raw, "REVIEW_RULES_INVALID");
+    const field = string(rule.field, "REVIEW_RULE_FIELD_INVALID");
+    const condition = rule.condition;
+    if (condition !== "missing" && condition !== "conflicting" && condition !== "missing-or-conflicting" && condition !== "always") {
+      throw new PkbError("REVIEW_RULE_CONDITION_INVALID", `Unsupported review condition: ${String(condition)}.`);
+    }
+    return { field, condition: condition as ReviewCondition };
+  });
+}
+
 function selectValue(source: JsonValue, dottedPath: string): JsonValue | undefined {
   let current: JsonValue | undefined = source;
   for (const part of dottedPath.split(".")) {
@@ -77,6 +91,14 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
   { id: "core.validate-capture", version: "1.0.0", resources: FILESYSTEM },
   { id: "core.parse-structured-document", version: "1.0.0", resources: FILESYSTEM },
   { id: "core.query-documents", version: "1.0.0", resources: FILESYSTEM },
+  {
+    id: "core.require-review-if", version: "1.0.0", resources: FILESYSTEM,
+    execute: async (context) => {
+      const target = string(context.with.target, "REVIEW_RULE_TARGET_REQUIRED");
+      const proposed = object(context.getValue(string(context.with.proposed_from, "REVIEW_RULE_PROPOSED_FROM_REQUIRED")), "REVIEW_RULE_PROPOSED_INVALID");
+      return await evaluateReviewRulesForDocument({ vaultRoot: context.vaultRoot, target, proposed, rules: reviewRules(context.with.rules) });
+    },
+  },
   { id: "codex.prompt", version: "1.0.0", resources: { filesystem: "required", codex: "required" } },
   {
     id: "component.state-transition-validation", version: "1.0.0", resources: FILESYSTEM, componentId: "status-machine",
