@@ -128,6 +128,14 @@ test("Blueprint scaffolding deterministically creates a runtime-valid module", a
     const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
     assert.deepEqual(manifest.accepted_inputs, ["markdown", "pdf", "pptx"]);
     assert.equal((manifest.inbox as JsonObject).asset_access_policy !== undefined, true);
+    const roles = (manifest.inbox as JsonObject).asset_roles as JsonObject;
+    assert.deepEqual(roles["lecture-material"], {
+      inbox_subpath: "Lectures", asset_access_policy: { sensitivity_class: 1, max_representation: "full" }, entrypoint: "normalize-lecture", allow_codex: true,
+    }, "The Blueprint Inbox role must materialize its route, access policy, and entrypoint.");
+    assert.deepEqual(roles["private-document"], {
+      inbox_subpath: "Private", asset_access_policy: { sensitivity_class: 3, max_representation: "metadata" }, required_user_action: "resolve-review", allow_codex: false,
+    }, "A no-Codex Inbox role must materialize its explicit user continuation.");
+    assert.equal(((manifest.entry_workflows as JsonObject)["normalize-assignment"]), "workflows/normalize-assignment/v1.0.0.yaml");
     const validation = await validateModule(engine, moduleRoot);
     assert.notEqual(validation.overall, "FAIL", validation.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
     assert.equal(validation.checks.filter((item) => item.code.startsWith("BLUEPRINT_")).every((item) => item.status === "pass"), true);
@@ -194,6 +202,16 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
       const valid = await validateModule(engine, moduleRoot);
     assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
 
+    const manifest = parseYaml(moduleRoot, path.join(moduleRoot, "module.yaml"));
+    (((manifest.inbox as JsonObject).asset_roles as JsonObject)["assignment-brief"] as JsonObject).entrypoint = "normalize-lecture";
+    writeYaml(moduleRoot, path.join(moduleRoot, "module.yaml"), manifest);
+    const routeMismatch = await validateModule(engine, moduleRoot);
+    assert.equal(routeMismatch.overall, "FAIL");
+    assert.equal(routeMismatch.checks.some((item) => item.code === "V2_INBOX_ROLE_CONTRACT_BOUND" && item.status === "fail"), true);
+
+    (((manifest.inbox as JsonObject).asset_roles as JsonObject)["assignment-brief"] as JsonObject).entrypoint = "normalize-assignment";
+    writeYaml(moduleRoot, path.join(moduleRoot, "module.yaml"), manifest);
+
     (eventStep!.with as JsonObject).event_type = "course.assignment-created";
     writeYaml(moduleRoot, lectureWorkflowPath, lectureWorkflow);
     const invalid = await validateModule(engine, moduleRoot);
@@ -228,8 +246,8 @@ test("Scheduled Blueprints require an explicit source query contract", async () 
 test("Blueprint roles that deny Codex cannot be bound to an AI Workflow", async () => {
   const blueprintPath = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
   const source = parseYaml(SOURCE_ROOT, blueprintPath);
-  const privacy = source.privacy as JsonObject;
-  const roles = privacy.input_roles as JsonObject;
+  const inbox = source.inbox as JsonObject;
+  const roles = inbox.roles as JsonObject;
   (roles["lecture-material"] as JsonObject).allow_codex = false;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-codex-policy-"));
   try {

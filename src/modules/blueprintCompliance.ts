@@ -9,6 +9,19 @@ function strings(value: JsonValue | undefined): string[] { return Array.isArray(
 function sameSet(left: string[], right: string[]): boolean { return left.length === right.length && left.every((item) => right.includes(item)); }
 
 function entries(value: JsonValue | undefined): JsonObject[] { return Array.isArray(value) ? value.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : []; }
+function blueprintInboxRoles(blueprint: JsonObject): JsonObject {
+  return object(object(blueprint.inbox)?.roles) ?? {};
+}
+function runtimeInboxRoleContract(role: JsonObject | null): JsonObject {
+  const access = object(role?.asset_access_policy) ?? {};
+  return {
+    inbox_subpath: role?.inbox_subpath ?? null,
+    access_policy: { sensitivity_class: access.sensitivity_class ?? null, max_representation: access.max_representation ?? null },
+    ...(typeof role?.entrypoint === "string" ? { entrypoint: role.entrypoint } : {}),
+    ...(typeof role?.required_user_action === "string" ? { required_user_action: role.required_user_action } : {}),
+    allow_codex: role?.allow_codex !== false,
+  };
+}
 function dashboardSectionIds(value: JsonValue | undefined): string[] {
   return Array.isArray(value)
     ? value.map((item) => typeof item === "string" ? item : object(item)?.id).filter((item): item is string => typeof item === "string")
@@ -32,6 +45,26 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
   const ownership = await exists(ownershipPath) ? parseYaml(moduleRoot, ownershipPath) : {};
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
   const entityIds = new Set(entities.map((entity) => String(entity.id)));
+  const declaredInbox = object(blueprint.inbox) ?? {};
+  const declaredRoles = blueprintInboxRoles(blueprint);
+  const runtimeInbox = object(manifest.inbox) ?? {};
+  const runtimeRoles = object(runtimeInbox.asset_roles) ?? {};
+  if (Object.keys(declaredRoles).length) {
+    const expected = Object.fromEntries(Object.entries(declaredRoles).map(([roleId, rawRole]) => {
+      const role = object(rawRole) ?? {};
+      return [roleId, {
+        inbox_subpath: role.inbox_subpath,
+        access_policy: object(role.access_policy) ?? {},
+        ...(typeof role.entrypoint === "string" ? { entrypoint: role.entrypoint } : {}),
+        ...(typeof role.required_user_action === "string" ? { required_user_action: role.required_user_action } : {}),
+        allow_codex: role.allow_codex !== false,
+      }];
+    }));
+    const actual = Object.fromEntries(Object.entries(runtimeRoles).map(([roleId, rawRole]) => [roleId, runtimeInboxRoleContract(object(rawRole))]));
+    add("V2_INBOX_ROLE_CONTRACT_BOUND", runtimeInbox.default_asset_role === declaredInbox.default_asset_role
+      && JSON.stringify(actual) === JSON.stringify(expected),
+    "Runtime Inbox roles exactly materialize Blueprint routing, access, and user-action contracts.", "inbox.roles");
+  }
 
   for (const entity of entities) {
     const id = String(entity.id);
@@ -90,7 +123,9 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
         && JSON.stringify(ruleWith?.rules) === JSON.stringify(expectedRules),
       `${id} binds its declared review_when rules to Core's deterministic Review gate.`, `workflows.${id}.review_when`);
     }
-    const blueprintRoles = object(object(blueprint.privacy)?.input_roles) ?? {};
+    const blueprintRoles = Object.keys(declaredRoles).length
+      ? Object.fromEntries(Object.entries(declaredRoles).map(([roleId, rawRole]) => [roleId, { allow_codex: object(rawRole)?.allow_codex !== false }]))
+      : object(object(blueprint.privacy)?.input_roles) ?? {};
     const runtimeRolePolicies = object(contract?.role_policies) ?? {};
     const workflowRoles = strings(workflow.input_roles);
     add("V2_WORKFLOW_ROLE_CODEX_BOUND", workflowRoles.every((role) => object(runtimeRolePolicies[role])?.allow_codex === (object(blueprintRoles[role])?.allow_codex !== false)),

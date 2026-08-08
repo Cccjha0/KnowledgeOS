@@ -64,6 +64,25 @@ function sourceObjects(workflow: JsonObject): JsonObject[] {
   return Array.isArray(workflow.sources) ? workflow.sources.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
 }
 
+/**
+ * Inbox roles are the v1.1 source of truth for both routing and access.  The
+ * older privacy.input_roles remains readable so existing v1 Blueprints can be
+ * upgraded deliberately instead of losing their access policy at once.
+ */
+function blueprintInputRoles(blueprint: JsonObject): JsonObject {
+  const inboxRoles = object(object(blueprint.inbox)?.roles);
+  if (!inboxRoles) return object(object(blueprint.privacy)?.input_roles) ?? {};
+  return Object.fromEntries(Object.entries(inboxRoles).map(([id, value]) => {
+    const role = object(value) ?? {};
+    const access = object(role.access_policy) ?? {};
+    return [id, {
+      sensitivity_class: access.sensitivity_class ?? null,
+      max_representation: access.max_representation ?? null,
+      allow_codex: role.allow_codex !== false,
+    } as JsonObject];
+  })) as JsonObject;
+}
+
 function representationRank(value: string): number {
   return ["metadata", "summary", "full", "sensitive-original"].indexOf(value);
 }
@@ -171,11 +190,32 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   const review = object(blueprint.review_policy);
   const criticalFields = strings(review?.critical_fields);
   const privacy = object(blueprint.privacy);
-  const inputRoles = object(privacy?.input_roles) ?? {};
+  const inputRoles = blueprintInputRoles(blueprint);
+  const inbox = object(blueprint.inbox);
+  const inboxRoles = object(inbox?.roles) ?? {};
   const workflows = workflowObjects(blueprint);
   const workflowIds = workflows.map((workflow) => String(workflow.id));
   const events = object(blueprint.events);
   const publishedEvents = blueprintEventNames(events?.publishes);
+
+  if (Object.keys(inboxRoles).length) {
+    const defaultRole = String(inbox?.default_asset_role ?? "");
+    checks.push(Object.prototype.hasOwnProperty.call(inboxRoles, defaultRole)
+      ? check("SEMANTIC_INBOX_DEFAULT_ROLE_VALID", "pass", `Default Inbox role ${defaultRole} is declared.`, "inbox.default_asset_role")
+      : check("SEMANTIC_INBOX_DEFAULT_ROLE_INVALID", "fail", "Inbox roles require inbox.default_asset_role to name a declared role.", "inbox.default_asset_role"));
+    for (const [roleId, rawRole] of Object.entries(inboxRoles)) {
+      const role = object(rawRole);
+      const access = object(role?.access_policy);
+      const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : "";
+      const action = typeof role?.required_user_action === "string" ? role.required_user_action : "";
+      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action))
+        ? check("SEMANTIC_INBOX_ROLE_CONTRACT_VALID", "pass", `${roleId} declares path, access policy, and a continuation.`, `inbox.roles.${roleId}`)
+        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and entrypoint or required_user_action.`, `inbox.roles.${roleId}`));
+      if (entrypoint) checks.push(workflowIds.includes(entrypoint)
+        ? check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_VALID", "pass", `${roleId} routes to ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`)
+        : check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_UNKNOWN", "fail", `${roleId} routes to unknown Workflow ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`));
+    }
+  }
 
   for (const entity of entities) {
     const entityId = String(entity.id);
@@ -249,6 +289,13 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     if (workflow.trigger === "capture") checks.push(roles.length > 0
       ? check("SEMANTIC_CAPTURE_ROLE_DECLARED", "pass", `${id} declares an input role.`, `workflows.${id}.input_roles`)
       : check("SEMANTIC_CAPTURE_ROLE_REQUIRED", "fail", `${id} is capture-triggered and must declare input_roles.`, `workflows.${id}.input_roles`));
+    for (const role of roles) {
+      const inboxRole = object(inboxRoles[role]);
+      const routedToWorkflow = inboxRole?.entrypoint === id;
+      checks.push(!Object.keys(inboxRoles).length || routedToWorkflow
+        ? check("SEMANTIC_CAPTURE_ROLE_ROUTED", "pass", `${id} is selected by the Inbox role contract for ${role}.`, `inbox.roles.${role}.entrypoint`)
+        : check("SEMANTIC_CAPTURE_ROLE_UNROUTED", "fail", `${id} uses ${role}, but that Inbox role does not route to this Workflow.`, `inbox.roles.${role}.entrypoint`));
+    }
     for (const rule of reviewWhen) {
       const reference = String(rule.field ?? "");
       const [entityId, fieldId] = reference.split(".", 2);
@@ -340,6 +387,20 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
     allow_global_routing: inbox.global_routing === true,
     asset_access_policy: { sensitivity_class: Number(privacy.default_sensitivity_class), max_representation: String(privacy.default_max_representation) },
   };
+  const roleContracts = object(inbox.roles);
+  if (roleContracts) {
+    (manifest.inbox as JsonObject).default_asset_role = inbox.default_asset_role ?? null;
+    (manifest.inbox as JsonObject).asset_roles = Object.fromEntries(Object.entries(roleContracts).map(([roleId, rawRole]) => {
+      const role = object(rawRole) ?? {};
+      return [roleId, {
+        inbox_subpath: role.inbox_subpath ?? null,
+        asset_access_policy: object(role.access_policy) ?? {},
+        ...(typeof role.entrypoint === "string" ? { entrypoint: role.entrypoint } : {}),
+        ...(typeof role.required_user_action === "string" ? { required_user_action: role.required_user_action } : {}),
+        allow_codex: role.allow_codex !== false,
+      } as JsonObject];
+    })) as JsonObject;
+  }
   manifest.permissions = {
     ...(object(manifest.permissions) ?? {}),
     max_sensitivity_class: Number(privacy.default_sensitivity_class),
@@ -524,7 +585,8 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
   const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
   const semantic = isSemanticBlueprint(blueprint);
   const outputs = blueprintOutputObjects(blueprint);
-  const inputRoles = object(object(blueprint.privacy)?.input_roles) ?? {};
+  const inputRoles = blueprintInputRoles(blueprint);
+  const inboxRoles = object(object(blueprint.inbox)?.roles) ?? {};
   const requestedRepresentation = String(object(blueprint.privacy)?.default_max_representation ?? "metadata");
   const registryPath = path.join(moduleRoot, "workflows", "index.yaml");
   const registry = parseYaml(moduleRoot, registryPath);
@@ -652,6 +714,9 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     writeYaml(moduleRoot, path.join(moduleRoot, "workflows", id, "v1.0.0.yaml"), generated);
     nextRegistry[id] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative } };
     if (workflow.trigger === "capture" && Object.keys(captureEntrypoints).length === 0) captureEntrypoints.capture = `workflows/${relative}`;
+    for (const role of strings(workflow.input_roles)) {
+      if (object(inboxRoles[role])?.entrypoint === id) captureEntrypoints[id] = `workflows/${relative}`;
+    }
   }
   registry.workflows = nextRegistry;
   writeYaml(moduleRoot, registryPath, registry);
