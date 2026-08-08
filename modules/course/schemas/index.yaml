@@ -3,10 +3,6 @@ schemas:
     version: 1
     path: instance.schema.json
     entity_type: instance
-  course:
-    version: 1
-    path: course.schema.json
-    entity_type: course-course
   lecture:
     version: 1
     path: lecture.schema.json

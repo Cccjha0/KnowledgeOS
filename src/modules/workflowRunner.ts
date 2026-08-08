@@ -767,6 +767,8 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
             evidence: [...state.sourceFiles], created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,
+            ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
+            ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),
             ...(generated ? { generation: generated } : {}),
           };
           plan.review_items = [review];
@@ -776,6 +778,8 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           await writeReviewItems(vaultRoot, plan.review_items);
           throw new PkbError("MODULE_WORKFLOW_REVIEW_REQUIRED", `Workflow ${resolved.workflowId} requires a user Review before writing ${target}.`, {
             review_id: reviewId, plan_id: planId, matches: reviewRequirements,
+            ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
+            ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),
           });
         }
         const snapshot = await createGitSnapshot(vaultRoot, runId);

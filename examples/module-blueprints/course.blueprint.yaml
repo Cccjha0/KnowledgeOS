@@ -11,12 +11,6 @@ use_cases:
   primary: [capture lecture material, track assignment deadlines, generate weekly course summaries]
   excluded: [submit assignments, send external email, overwrite user classroom notes]
 entities:
-  - id: course
-    ownership: module
-    schema:
-      fields:
-        course_code: { type: string, required: true }
-        title: { type: string, required: true }
   - id: lecture
     ownership: instance
     schema:

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+- Made Course an instance boundary rather than a duplicate business entity.
+- Moved course code, name, semester, instructor, and timezone into the Course
+  instance contract.
+- Removed the unused `course-course` schema; Lecture, Assignment, and Weekly
+  Summary remain the formal module entities.
+
 ## 0.2.0
 
 - Split Capture into distinct lecture and assignment entities.

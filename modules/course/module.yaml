@@ -1,6 +1,6 @@
 id: course
 name: 课程管理
-version: 0.2.0
+version: 0.3.0
 maturity: experimental
 status: disabled
 description: 管理课程资料、作业、截止日期和课程总结
@@ -9,7 +9,7 @@ engine:
   min_version: 0.9.0-beta
   max_version: 0.x
 data:
-  schema_version: 2
+  schema_version: 3
 module_type: workflow
 capabilities:
 - capture-processing
@@ -68,7 +68,6 @@ entry_workflows:
 schemas:
   registry: schemas/index.yaml
   instance: schemas/instance.schema.json
-  course: schemas/course.schema.json
   lecture: schemas/lecture.schema.json
   assignment: schemas/assignment.schema.json
   weekly-summary: schemas/weekly-summary.schema.json
@@ -110,6 +109,22 @@ instance_form:
   content_root_pattern: 20-Workspace/课程管理/{instance_id}
   inbox_path_pattern: '{content_root}/Inbox'
   fields:
+  - key: course_code
+    label: Course code
+    type: text
+    required: true
+  - key: course_name
+    label: Course name
+    type: text
+    required: true
+  - key: semester
+    label: Semester
+    type: text
+    required: true
+  - key: instructor
+    label: Instructor
+    type: text
+    required: false
   - key: timezone
     label: Timezone
     type: timezone

@@ -3,6 +3,10 @@
 Course is now a semantic Blueprint v1.1 module rather than a generic record
 scaffold. Its declared business boundary is:
 
+Each real course is a Course instance. `course_code`, `course_name`,
+`semester`, `instructor`, and `timezone` live on the instance; the module does
+not create a duplicate Course entity or record.
+
 | Input role | Entry workflow | Entity output | Event |
 | --- | --- | --- | --- |
 | `lecture-material` in `Inbox/Lectures/` | `normalize-lecture` | `course-lecture` in `Lectures/` | `course.lecture-created` |

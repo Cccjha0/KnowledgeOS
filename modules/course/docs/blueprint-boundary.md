@@ -1,5 +1,12 @@
 # 课程管理 Blueprint Boundary
 
+## Instance boundary
+
+One real course is one Course instance. Its `course_code`, `course_name`,
+`semester`, `instructor`, and `timezone` are instance fields. Lecture,
+Assignment, and Weekly Summary are the module's formal entities; there is no
+separate Course record to keep in sync.
+
 ## Primary use cases
 
 - 保存课程讲义
