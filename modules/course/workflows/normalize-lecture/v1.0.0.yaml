@@ -31,6 +31,7 @@ steps:
     output_schema: lecture
     target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
     template: templates/lecture.md
+    operation_type: create-record
     idempotency_key: course:{instance.instance_id}:normalize-lecture:{task.payload.item_id}
     summary: Create lecture from normalized material
 - id: publish-lecture-created

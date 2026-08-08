@@ -69,6 +69,16 @@ interface WorkflowState {
   codexContexts: CodexContextManifest[];
 }
 
+type RecordOperationMode = "create-record" | "update-record" | "append-record";
+
+/** Maps the public Blueprint record contract onto Core's executable operations. */
+export function operationPlanTypeForRecordMode(mode: string): "create-file" | "update-frontmatter" | "append-section" {
+  if (mode === "create-record") return "create-file";
+  if (mode === "update-record") return "update-frontmatter";
+  if (mode === "append-record") return "append-section";
+  throw new PkbError("MODULE_WORKFLOW_OPERATION_MODE_INVALID", `Unsupported Blueprint operation.type: ${mode}`);
+}
+
 function object(value: unknown, code = "MODULE_WORKFLOW_INVALID"): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PkbError(code, "Workflow data must be an object.");
   return value as JsonObject;
@@ -653,11 +663,14 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
         validateSchema(vaultRoot, outputSchema, output);
         const target = relative(interpolate(string(step.with.target, "build-operation-plan.target"), state, task), "build-operation-plan.target");
+        const operationMode = String(step.with.operation_type ?? "create-record") as RecordOperationMode;
+        const operationType = operationPlanTypeForRecordMode(operationMode);
         if (!resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Creating a module document requires an instance.");
         const contentRoot = String(resolved.instance.content_root ?? "");
         if (!target.startsWith(`${contentRoot}/`)) throw new PkbError("MODULE_WRITE_DENIED", `Workflow cannot write ${target}.`);
         const idempotencyKey = interpolate(string(step.with.idempotency_key, "build-operation-plan.idempotency_key"), state, task);
-        if (await exists(fromVaultPath(vaultRoot, target))) {
+        const targetExists = await exists(fromVaultPath(vaultRoot, target));
+        if (operationMode === "create-record" && targetExists) {
           // A process can exit after the transactional write succeeds but before
           // its Task is marked complete. Reuse the durable operation ledger in
           // that narrow recovery window; unrelated user files are never replaced.
@@ -669,20 +682,27 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           state.values.set(step.id, { plan_id: completed.plan_id, recovered: true });
           continue;
         }
+        if (operationMode !== "create-record" && !targetExists) {
+          throw new PkbError("MODULE_WORKFLOW_TARGET_MISSING", `${operationMode} requires an existing target ${target}.`);
+        }
         const templatePath = path.join(resolved.moduleRoot, ...relative(string(step.with.template, "build-operation-plan.template"), "build-operation-plan.template").split("/"));
         const planId = await allocateId(vaultRoot, "PLAN");
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
           summary: typeof step.with.summary === "string" ? interpolate(step.with.summary, state, task) : `Run ${resolved.workflowId}`,
           operations: [{
-            operation_id: "OP-001", type: "create-file", target, risk: "green", confidence: 1,
+            operation_id: "OP-001", type: operationType, target, risk: "green", confidence: 1,
             idempotency_key: idempotencyKey, requires_review_id: null,
-            payload: { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema },
+            payload: operationMode === "create-record"
+              ? { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema }
+              : operationMode === "update-record"
+                ? { patch: output, replace_top_level: Object.keys(output), schema_id: outputSchema, actor: "ai" }
+                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), output), marker: idempotencyKey, actor: "ai" },
           }], review_items: [],
         };
         await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
         const snapshot = await createGitSnapshot(vaultRoot, runId);
-        await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["create-file"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
+        await executeOperationPlan(vaultRoot, plan, { allowedTypes: [operationType], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
         state.planId = planId; state.snapshot = snapshot; state.outputFiles.add(target); state.values.set(step.id, plan);
       }
     }

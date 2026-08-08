@@ -49,6 +49,7 @@ steps:
     output_schema: weekly-summary
     target: '{instance.content_root}/Summaries/{schedule.iso_week}.md'
     template: templates/weekly-summary.md
+    operation_type: create-record
     idempotency_key: course:{instance.instance_id}:generate-weekly-summary:{schedule.iso_week}
     summary: Create generate-weekly-summary
 outputs:

@@ -5,10 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { updateAssetAccessPolicy } from "../core/ingestion.js";
-import type { JsonObject } from "../core/types.js";
+import { executeOperationPlan } from "../core/operationExecutor.js";
+import type { JsonObject, OperationPlan } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
-import { createModuleWorkflowRunner } from "../modules/workflowRunner.js";
+import { createModuleWorkflowRunner, operationPlanTypeForRecordMode } from "../modules/workflowRunner.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -35,6 +36,41 @@ function makePdf(text: string): Buffer {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf, "binary");
 }
+
+test("Blueprint record operation modes map only to executable Core operations", () => {
+  assert.equal(operationPlanTypeForRecordMode("create-record"), "create-file");
+  assert.equal(operationPlanTypeForRecordMode("update-record"), "update-frontmatter");
+  assert.equal(operationPlanTypeForRecordMode("append-record"), "append-section");
+  assert.throws(() => operationPlanTypeForRecordMode("replace-record"), /Unsupported Blueprint operation.type/);
+});
+
+test("update-record and append-record use controlled executable Operations", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-record-operation-modes-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const target = "20-Workspace/Journal/demo/Entries/today.md";
+    const absolute = path.join(vault, ...target.split("/"));
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    writeMarkdown(vault, absolute, { data: { title: "Before", _ownership: { sections: { "AI Updates": "ai-managed" } } }, content: "# Today\n" });
+    const plan = (planId: string, operation: OperationPlan["operations"][number]): OperationPlan => ({
+      plan_id: planId, task_id: "TASK-2026-000901", source_module: "reading-log", instance_id: "demo", summary: "Test record operation mode", operations: [operation], review_items: [],
+    });
+    await executeOperationPlan(vault, plan("PLAN-2026-000901", {
+      operation_id: "OP-001", type: operationPlanTypeForRecordMode("update-record"), target, risk: "green", confidence: 1,
+      idempotency_key: "test:update-record:000901", requires_review_id: null, payload: { patch: { title: "After" }, replace_top_level: ["title"], actor: "ai" },
+    }), { allowedTypes: ["update-frontmatter"], allowedTargets: [target], requiredReviewId: null });
+    const append = plan("PLAN-2026-000902", {
+      operation_id: "OP-001", type: operationPlanTypeForRecordMode("append-record"), target, risk: "green", confidence: 1,
+      idempotency_key: "test:append-record:000902", requires_review_id: null,
+      payload: { section: "AI Updates", content: "Normalized journal entry.", marker: "test:append-record:000902", actor: "ai" },
+    });
+    await executeOperationPlan(vault, append, { allowedTypes: ["append-section"], allowedTargets: [target], requiredReviewId: null });
+    await executeOperationPlan(vault, append, { allowedTypes: ["append-section"], allowedTargets: [target], requiredReviewId: null });
+    const document = parseMarkdown(vault, absolute);
+    assert.equal(document.data.title, "After");
+    assert.equal((document.content.match(/Normalized journal entry\./g) ?? []).length, 1, "Append mode remains idempotent through the Core ledger and section marker.");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
 
 test("a declared experience-log workflow executes through the generic Runner without a platform Handler", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-workflow-runner-"));

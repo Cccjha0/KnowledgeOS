@@ -474,6 +474,8 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     const id = String(workflow.id);
     const outputEntity = String(workflow.output_entity ?? "record");
     const output = outputs.find((item) => item.entity === outputEntity);
+    const operation = object(workflow.operation) ?? {};
+    const operationType = String(operation.type ?? "create-record");
     const representation = String(object(workflow.read)?.representation ?? requestedRepresentation);
     const promptId = String(object(workflow.prompt)?.id ?? (workflow.trigger === "schedule" ? "weekly-summary" : "normalize-record"));
     const publications = Array.isArray(workflow.publishes) ? workflow.publishes.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
@@ -508,10 +510,12 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
         with: {
           output: workflow.trigger === "schedule" ? "summarize" : "normalize",
           output_schema: String(output.schema), target: String(output.target), template: String(output.template),
+          operation_type: operationType,
+          ...(typeof operation.section === "string" ? { section: operation.section } : {}),
           idempotency_key: workflow.trigger === "schedule"
             ? `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{schedule.iso_week}`
             : `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{task.payload.item_id}`,
-          summary: `Create ${outputEntity} from ${id}`,
+          summary: `${operationType === "append-record" ? "Append to" : operationType === "update-record" ? "Update" : "Create"} ${outputEntity} from ${id}`,
         },
       }];
       return [step];

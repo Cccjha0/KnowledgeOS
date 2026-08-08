@@ -31,6 +31,7 @@ steps:
     output_schema: assignment
     target: '{instance.content_root}/Assignments/{task.payload.item_id}.md'
     template: templates/assignment.md
+    operation_type: create-record
     idempotency_key: course:{instance.instance_id}:normalize-assignment:{task.payload.item_id}
     summary: Create assignment from normalized brief
 - id: publish-assignment-created

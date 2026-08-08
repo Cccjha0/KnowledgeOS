@@ -59,6 +59,9 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
     const plan = steps.find((step) => step.uses === "core.build-operation-plan");
     const planWith = object(plan?.with);
     add("V2_WORKFLOW_OUTPUT_BOUND", Boolean(output) && planWith?.output_schema === output?.schema && planWith?.target === output?.target && planWith?.template === output?.template, `${id} binds its declared output Schema, target, and template.`, `workflows.${id}.operation`);
+    const declaredOperation = object(workflow.operation);
+    add("V2_WORKFLOW_OPERATION_MODE_BOUND", Boolean(declaredOperation) && planWith?.operation_type === declaredOperation?.type,
+      `${id} passes its declared ${String(declaredOperation?.type ?? "record")} mode into the runtime Operation Plan builder.`, `workflows.${id}.operation.type`);
     const publications = entries(workflow.publishes);
     const actualEvents = steps.filter((step) => step.uses === "core.publish-event").map((step) => String(object(step.with)?.event_type ?? ""));
     add("V2_WORKFLOW_EVENTS_BOUND", sameSet(actualEvents, publications.map((publication) => String(publication.event))), `${id} publishes only its explicitly declared Events.`, `workflows.${id}.publishes`);

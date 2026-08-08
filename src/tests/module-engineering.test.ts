@@ -160,6 +160,8 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     assert.deepEqual(querySteps.map((step) => (step.with as JsonObject).schema), ["lecture", "assignment"]);
     assert.deepEqual(querySteps.map((step) => ((step.with as JsonObject).time_window as JsonObject).unit), ["week", "on-or-after"]);
     assert.equal(summarySteps.findIndex((step) => step.uses === "core.query-documents") < summarySteps.findIndex((step) => step.uses === "codex.prompt"), true);
+    const planStep = summarySteps.find((step) => step.uses === "core.build-operation-plan");
+    assert.equal((planStep?.with as JsonObject).operation_type, "create-record", "The Blueprint operation mode must reach the runtime plan builder.");
     const valid = await validateModule(engine, moduleRoot);
     assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
 
