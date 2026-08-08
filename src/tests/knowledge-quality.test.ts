@@ -158,6 +158,23 @@ test("quality audit creates deduplicated actionable issues and Today only surfac
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Blueprint-generated Quality Policies drive provenance and freshness audits for Course fields", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-course-quality-contract-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const record = path.join(vault, "20-Workspace", "课程管理", "demo", "Assignments", "essay.md");
+    writeMarkdown(vault, record, { data: {
+      source_module: "course", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.2.0-beta", instance_id: "demo",
+      id: "ASSIGN-2026-000001", title: "Essay", source_refs: [], created: "2026-07-01T00:00:00Z", updated: "2026-07-01T00:00:00Z", safe_summary: "Essay", deadline: "2026-08-01T00:00:00Z", status: "planned",
+      _field_meta: { deadline: { evidence_refs: [], verification: { last_verified: "2026-07-20T00:00:00Z" } } },
+    }, content: "# Essay\n" });
+    await runQualityAudit(vault, "weekly", { now: "2026-08-01T00:00:00Z" });
+    const repository = await QualityRepository.open(vault); const issues = repository.listIssues(); repository.close();
+    assert.equal(issues.some((item) => item.module === "course" && item.issue_type === "missing-provenance" && item.target.field === "deadline" && item.severity === "high"), true);
+    assert.equal(issues.some((item) => item.module === "course" && item.issue_type === "stale-critical-field" && item.target.field === "deadline" && item.severity === "high"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("quality audit infers module ownership, honors frontmatter links, and suppresses duplicate research followups", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-application-contract-"));
   try {

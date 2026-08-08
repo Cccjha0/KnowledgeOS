@@ -438,6 +438,27 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   reviewPolicy.critical_fields = strings(object(blueprint.review_policy)?.critical_fields);
   reviewPolicy.critical_field_action = "review-required";
   writeYaml(moduleRoot, path.join(moduleRoot, "rules", "review-policy.yaml"), reviewPolicy);
+  const qualityFields: JsonObject = {};
+  for (const entity of entities) {
+    const entityId = String(entity.id);
+    for (const [fieldId, raw] of Object.entries(object(object(entity.schema)?.fields) ?? {})) {
+      const field = object(raw) ?? {};
+      const contract: JsonObject = {};
+      if (field.critical === true) contract.critical = true;
+      if (field.provenance_required === true) contract.provenance = "required";
+      if (typeof field.freshness_days === "number") contract.verification_interval_days = field.freshness_days;
+      if (Object.keys(contract).length) qualityFields[`${entityId}.${fieldId}`] = contract;
+    }
+  }
+  const qualityPolicy: JsonObject = {
+    critical_fields: Object.entries(qualityFields).filter(([, field]) => object(field)?.critical === true).map(([field]) => field),
+    provenance_required: Object.entries(qualityFields).filter(([, field]) => object(field)?.provenance === "required").map(([field]) => field),
+    freshness: {}, field_policies: qualityFields,
+    ownership: {}, audits: ["stale-fields", "missing-provenance", "schema-version", "instance-task"], orphan_exempt_entity_types: [],
+    default_verification_interval_days: 30,
+  };
+  writeYaml(moduleRoot, path.join(moduleRoot, "rules", "quality-policy.yaml"), qualityPolicy);
+  manifest.quality = { policy: "rules/quality-policy.yaml" };
   writeYaml(moduleRoot, path.join(moduleRoot, "rules", "ownership.yaml"), {
     user_original_content_mutable: object(blueprint.privacy)?.user_original_content_mutable === true,
     generated_entities: entityIdsForOwnership(entities),

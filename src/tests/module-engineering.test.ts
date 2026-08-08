@@ -145,9 +145,13 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
     const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
     const moduleRoot = String(generated.module_root);
-    const schemas = parseYaml(moduleRoot, path.join(moduleRoot, "schemas", "index.yaml"));
-    assert.equal(Boolean((schemas.schemas as JsonObject).lecture), true);
-    assert.equal(Boolean((schemas.schemas as JsonObject).assignment), true);
+      const schemas = parseYaml(moduleRoot, path.join(moduleRoot, "schemas", "index.yaml"));
+      assert.equal(Boolean((schemas.schemas as JsonObject).lecture), true);
+      assert.equal(Boolean((schemas.schemas as JsonObject).assignment), true);
+      const qualityPolicy = parseYaml(moduleRoot, path.join(moduleRoot, "rules", "quality-policy.yaml"));
+      assert.deepEqual((qualityPolicy.field_policies as JsonObject)["assignment.deadline"], {
+        critical: true, provenance: "required", verification_interval_days: 7,
+      }, "Blueprint provenance_required and freshness_days must materialize into a Quality Policy.");
     const lectureWorkflowPath = path.join(moduleRoot, "workflows", "normalize-lecture", "v1.0.0.yaml");
     const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
     const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");

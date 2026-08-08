@@ -20,6 +20,9 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
   const prompts = object(parseYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml")).prompts) ?? {};
   const workflowRegistry = object(parseYaml(moduleRoot, path.join(moduleRoot, "workflows", "index.yaml")).workflows) ?? {};
   const reviewPolicy = parseYaml(moduleRoot, path.join(moduleRoot, "rules", "review-policy.yaml"));
+  const qualityDescriptor = object(manifest.quality);
+  const qualityPath = typeof qualityDescriptor?.policy === "string" ? path.join(moduleRoot, ...qualityDescriptor.policy.split("/")) : null;
+  const qualityPolicy = qualityPath && await exists(qualityPath) ? parseYaml(moduleRoot, qualityPath) : null;
   const ownershipPath = path.join(moduleRoot, "rules", "ownership.yaml");
   const ownership = await exists(ownershipPath) ? parseYaml(moduleRoot, ownershipPath) : {};
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
@@ -94,6 +97,15 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
   const declaredCritical = Array.isArray(reviewPolicy.critical_fields) ? reviewPolicy.critical_fields.filter((field): field is string => typeof field === "string") : [];
   const expectedCritical = entities.flatMap((entity) => Object.entries(object(object(entity.schema)?.fields) ?? {}).flatMap(([field, raw]) => object(raw)?.critical === true ? [`${String(entity.id)}.${field}`] : []));
   add("V2_CRITICAL_REVIEW_BOUND", sameSet(declaredCritical, expectedCritical), "Critical Entity fields and runtime Review Policy agree.", "rules/review-policy.yaml");
+  const expectedQuality = Object.fromEntries(entities.flatMap((entity) => Object.entries(object(object(entity.schema)?.fields) ?? {}).flatMap(([fieldId, raw]) => {
+    const field = object(raw) ?? {}; const value: JsonObject = {};
+    if (field.critical === true) value.critical = true;
+    if (field.provenance_required === true) value.provenance = "required";
+    if (typeof field.freshness_days === "number") value.verification_interval_days = field.freshness_days;
+    return Object.keys(value).length ? [[`${String(entity.id)}.${fieldId}`, value]] : [];
+  })));
+  add("V2_QUALITY_POLICY_BOUND", Boolean(qualityPolicy) && JSON.stringify(object(qualityPolicy?.field_policies) ?? {}) === JSON.stringify(expectedQuality),
+    "Blueprint field quality requirements are materialized into the runtime Quality Policy.", "rules/quality-policy.yaml");
   const expectedImmutable = object(blueprint.privacy)?.user_original_content_mutable === true;
   add("V2_IMMUTABLE_CONTENT_BOUND", ownership.user_original_content_mutable === expectedImmutable && (expectedImmutable || Array.isArray(ownership.forbidden_operations)), "Runtime ownership policy enforces the Blueprint original-content policy.", "rules/ownership.yaml");
   add("V2_DASHBOARD_BOUND", sameSet(Array.isArray(dashboard.items) ? dashboard.items.filter((item): item is string => typeof item === "string") : [], strings(object(blueprint.dashboard)?.sections)), "Runtime Dashboard materializes Blueprint sections.", "dashboard/provider.yaml");

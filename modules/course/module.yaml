@@ -80,6 +80,9 @@ rules:
   paths: rules/paths.yaml
   review: rules/review-policy.yaml
   permissions: rules/permissions.yaml
+
+quality:
+  policy: rules/quality-policy.yaml
 dashboard:
   provider: dashboard/provider.yaml
 jobs:
