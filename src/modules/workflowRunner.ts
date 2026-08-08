@@ -79,6 +79,23 @@ export function operationPlanTypeForRecordMode(mode: string): "create-file" | "u
   throw new PkbError("MODULE_WORKFLOW_OPERATION_MODE_INVALID", `Unsupported Blueprint operation.type: ${mode}`);
 }
 
+/** Enforces a role's Codex policy at the final execution boundary. */
+export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: JsonObject, workflowContract: JsonObject | null): void {
+  const roleId = typeof taskPayload.asset_role === "string" ? taskPayload.asset_role : null;
+  if (!roleId) return;
+  const contractRoles = object(workflowContract?.role_policies);
+  const contractRole = object(contractRoles?.[roleId]);
+  const inboxRoles = object(object(manifest.inbox)?.asset_roles);
+  const manifestRole = object(inboxRoles?.[roleId]);
+  if (contractRole?.allow_codex === false || manifestRole?.allow_codex === false) {
+    throw new PkbError("MODULE_WORKFLOW_CODEX_DENIED", `Asset role ${roleId} does not permit Codex for this Workflow.`, {
+      asset_role: roleId,
+      contract_allow_codex: contractRole?.allow_codex ?? null,
+      manifest_allow_codex: manifestRole?.allow_codex ?? null,
+    });
+  }
+}
+
 function object(value: unknown, code = "MODULE_WORKFLOW_INVALID"): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PkbError(code, "Workflow data must be an object.");
   return value as JsonObject;
@@ -562,6 +579,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       } else if (step.uses === "core.query-documents") {
         state.values.set(step.id, await queryDocuments(vaultRoot, state, task, step.with));
       } else if (step.uses === "codex.prompt") {
+        assertCodexRolePermitted(task.payload, resolved.manifest, object(resolved.workflow.blueprint_contract));
         const prompt = promptEntry(resolved.moduleRoot, resolved.manifest, string(step.with.prompt_id, "codex.prompt.prompt_id"));
         const outputSchema = typeof step.with.output_schema === "string" ? schemaId(resolved.moduleRoot, resolved.manifest, step.with.output_schema) : prompt.schema;
         if (typeof step.with.skip_if_valid_schema === "string") {

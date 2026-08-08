@@ -49,6 +49,8 @@ blueprint_contract:
   trigger: capture
   input_entities: [capture]
   input_roles: [assignment-brief]
+  role_policies:
+    assignment-brief: { allow_codex: true }
   output_entity: assignment
   read: { representation: full }
   prompt_id: normalize-assignment

@@ -42,18 +42,21 @@ inbox:
         sensitivity_class: 1
         max_representation: full
       entrypoint: normalize-lecture
+      allow_codex: true
     assignment-brief:
       inbox_subpath: Assignments
       asset_access_policy:
         sensitivity_class: 2
         max_representation: full
       entrypoint: normalize-assignment
+      allow_codex: true
     private-document:
       inbox_subpath: Private
       asset_access_policy:
         sensitivity_class: 3
         max_representation: metadata
       required_user_action: resolve-review
+      allow_codex: false
 routing:
   matcher: workflows/classify/v1.0.0.yaml
   auto_route_threshold: 0.85

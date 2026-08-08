@@ -269,6 +269,9 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
       checks.push(policy && representationRank(requested) <= representationRank(allowed)
         ? check("SEMANTIC_ROLE_READ_POLICY_VALID", "pass", `${id} read policy is allowed for ${role}.`, `workflows.${id}.read`)
         : check("SEMANTIC_ROLE_READ_POLICY_DENIED", "fail", `${id} requests ${requested} for ${role}, but no compatible input role policy exists.`, `workflows.${id}.read`));
+      if (workflow.requires_ai === true) checks.push(policy?.allow_codex !== false
+        ? check("SEMANTIC_ROLE_CODEX_ALLOWED", "pass", `${id} may use Codex for ${role}.`, `workflows.${id}.input_roles`)
+        : check("SEMANTIC_ROLE_CODEX_DENIED", "fail", `${id} requires AI but ${role} explicitly sets allow_codex: false.`, `workflows.${id}.input_roles`));
     }
     const publishes = Array.isArray(workflow.publishes) ? workflow.publishes.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
     for (const publication of publishes) {
@@ -460,6 +463,7 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
   const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
   const semantic = isSemanticBlueprint(blueprint);
   const outputs = blueprintOutputObjects(blueprint);
+  const inputRoles = object(object(blueprint.privacy)?.input_roles) ?? {};
   const requestedRepresentation = String(object(blueprint.privacy)?.default_max_representation ?? "metadata");
   const registryPath = path.join(moduleRoot, "workflows", "index.yaml");
   const registry = parseYaml(moduleRoot, registryPath);
@@ -490,7 +494,9 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     if (semantic) {
       const blueprintContract: JsonObject = {
       trigger: String(workflow.trigger ?? ""),
-        input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles), sources: sourceObjects(workflow), output_entity: outputEntity,
+        input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles),
+        role_policies: Object.fromEntries(strings(workflow.input_roles).map((role) => [role, { allow_codex: object(inputRoles[role])?.allow_codex !== false }])),
+        sources: sourceObjects(workflow), output_entity: outputEntity,
       read: { representation }, prompt_id: promptId,
       operation: object(workflow.operation) ?? {}, publishes: publications.map((publication) => ({ event: String(publication.event), payload: object(publication.payload) ?? {} })),
       };

@@ -49,6 +49,8 @@ blueprint_contract:
   trigger: capture
   input_entities: [capture]
   input_roles: [lecture-material]
+  role_policies:
+    lecture-material: { allow_codex: true }
   output_entity: lecture
   read: { representation: full }
   prompt_id: normalize-lecture

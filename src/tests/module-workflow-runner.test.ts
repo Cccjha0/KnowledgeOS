@@ -9,7 +9,7 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, OperationPlan } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { createInstance } from "../platform/lifecycleWorkflow.js";
-import { createModuleWorkflowRunner, operationPlanTypeForRecordMode } from "../modules/workflowRunner.js";
+import { assertCodexRolePermitted, createModuleWorkflowRunner, operationPlanTypeForRecordMode } from "../modules/workflowRunner.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
@@ -42,6 +42,24 @@ test("Blueprint record operation modes map only to executable Core operations", 
   assert.equal(operationPlanTypeForRecordMode("update-record"), "update-frontmatter");
   assert.equal(operationPlanTypeForRecordMode("append-record"), "append-section");
   assert.throws(() => operationPlanTypeForRecordMode("replace-record"), /Unsupported Blueprint operation.type/);
+});
+
+test("Codex is denied at runtime when either role policy forbids it", () => {
+  assert.throws(() => assertCodexRolePermitted(
+    { asset_role: "private-diary" },
+    { inbox: { asset_roles: { "private-diary": { allow_codex: false } } } },
+    { role_policies: { "private-diary": { allow_codex: true } } },
+  ), /does not permit Codex/);
+  assert.throws(() => assertCodexRolePermitted(
+    { asset_role: "private-diary" },
+    { inbox: { asset_roles: { "private-diary": { allow_codex: true } } } },
+    { role_policies: { "private-diary": { allow_codex: false } } },
+  ), /does not permit Codex/);
+  assert.doesNotThrow(() => assertCodexRolePermitted(
+    { asset_role: "lecture-material" },
+    { inbox: { asset_roles: { "lecture-material": { allow_codex: true } } } },
+    { role_policies: { "lecture-material": { allow_codex: true } } },
+  ));
 });
 
 test("update-record and append-record use controlled executable Operations", async () => {

@@ -225,6 +225,9 @@
                 "type": "string",
                 "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
               },
+              "allow_codex": {
+                "type": "boolean"
+              },
               "required_user_action": {
                 "type": "string",
                 "enum": ["resolve-review"]

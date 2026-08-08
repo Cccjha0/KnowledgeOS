@@ -170,6 +170,14 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     const invalid = await validateModule(engine, moduleRoot);
     assert.equal(invalid.overall, "FAIL");
     assert.equal(invalid.checks.some((item) => item.code === "V2_WORKFLOW_EVENTS_BOUND" && item.status === "fail"), true);
+
+    (eventStep!.with as JsonObject).event_type = "course.lecture-created";
+    const contract = lectureWorkflow.blueprint_contract as JsonObject;
+    ((contract.role_policies as JsonObject)["lecture-material"] as JsonObject).allow_codex = false;
+    writeYaml(moduleRoot, lectureWorkflowPath, lectureWorkflow);
+    const roleMismatch = await validateModule(engine, moduleRoot);
+    assert.equal(roleMismatch.overall, "FAIL");
+    assert.equal(roleMismatch.checks.some((item) => item.code === "V2_WORKFLOW_ROLE_CODEX_BOUND" && item.status === "fail"), true);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
@@ -185,6 +193,22 @@ test("Scheduled Blueprints require an explicit source query contract", async () 
     const { report } = await validateModuleBlueprint(SOURCE_ROOT, invalidPath);
     assert.equal(report.overall, "FAIL");
     assert.equal(report.checks.some((item) => item.code === "SEMANTIC_SCHEDULE_SOURCES_REQUIRED" && item.status === "fail"), true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test("Blueprint roles that deny Codex cannot be bound to an AI Workflow", async () => {
+  const blueprintPath = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+  const source = parseYaml(SOURCE_ROOT, blueprintPath);
+  const privacy = source.privacy as JsonObject;
+  const roles = privacy.input_roles as JsonObject;
+  (roles["lecture-material"] as JsonObject).allow_codex = false;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-codex-policy-"));
+  try {
+    const invalidPath = path.join(directory, "course.blueprint.yaml");
+    writeYaml(directory, invalidPath, source);
+    const { report } = await validateModuleBlueprint(SOURCE_ROOT, invalidPath);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "SEMANTIC_ROLE_CODEX_DENIED" && item.status === "fail"), true);
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
