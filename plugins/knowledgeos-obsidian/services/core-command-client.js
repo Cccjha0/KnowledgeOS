@@ -17,7 +17,7 @@ class CoreCommandClient {
     this.pending = new Map();
   }
 
-  invoke(method, params = {}, requestId = null) {
+  invoke(method, params = {}, requestId = null, options = {}) {
     if (!this.settings.coreCliPath || !this.settings.vaultPath) {
       return Promise.resolve({ ok: false, state: "failed", error: { message: "尚未配置 Core CLI 或 Vault 路径。", impact: "Today 暂时无法刷新，已有 Markdown 数据不受影响。", recovery_actions: ["打开 KnowledgeOS 设置并填写路径"] } });
     }
@@ -26,7 +26,7 @@ class CoreCommandClient {
       return new Promise((resolve) => {
         const timeout = setTimeout(() => {
           this.resolvePending(requestId, this.failure("Core API request timed out."));
-        }, this.requestTimeoutMs);
+        }, Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : this.requestTimeoutMs);
         this.pending.set(requestId, { resolve, timeout });
         try {
           this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params })}\n`, (error) => {

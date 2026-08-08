@@ -3,149 +3,286 @@ function createModuleBuilderViews(deps) {
 
   class ModuleBuilderModal extends Modal {
     constructor(app, plugin) {
-      super(app); this.plugin = plugin; this.preview = null; this.busy = false; this.readiness = null; this.readinessError = null;
-      this.form = { id: "", name: "", description: "", primary: "", excluded: "自动删除文件\n自动发送外部消息", inputs: "markdown", sensitivity: "1", representation: "full", critical: "", weekly: false };
+      super(app);
+      this.plugin = plugin;
+      this.mode = "guided";
+      this.busy = false;
+      this.preview = null;
+      this.guided = null;
+      this.readiness = null;
+      this.readinessError = null;
+      this.form = {
+        id: "", name: "", description: "", primary: "", excluded: "Automatically delete files\nAutomatically send external messages",
+        inputs: "markdown", sensitivity: "1", representation: "full", critical: "", weekly: false,
+      };
+      this.guidedBrief = "";
+      this.expertBlueprint = "";
+      this.confirmedQuestions = new Set();
     }
+
     onOpen() { this.render(); }
+
     render() {
-      const root = this.contentEl; root.empty(); root.addClass("knowledgeos-module-builder-modal");
+      const root = this.contentEl;
+      root.empty();
+      root.addClass("knowledgeos-module-builder-modal");
       if (this.readiness) { this.renderReadiness(root); return; }
-      root.createEl("h2", { text: "创建 KnowledgeOS 模块" });
-      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "先描述用途和权限边界。Core 会验证 Blueprint；只有确认后才生成模块文件。" });
+      root.createEl("h2", { text: "Create a KnowledgeOS module" });
+      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "Describe the use case first. KnowledgeOS checks the extension boundary and permissions before it creates any module files." });
+      this.renderModePicker(root);
+      if (this.mode === "guided") this.renderGuided(root);
+      if (this.mode === "quick") this.renderQuick(root);
+      if (this.mode === "expert") this.renderExpert(root);
+    }
+
+    renderModePicker(root) {
+      const picker = root.createDiv({ cls: "knowledgeos-builder-modes", attr: { role: "tablist", "aria-label": "Module builder mode" } });
+      const modes = [
+        ["guided", "Guided", "Describe what you need; the Module Builder contract proposes the right extension."],
+        ["quick", "Quick", "Create a small record-oriented module from a concise form."],
+        ["expert", "Expert", "Paste a Blueprint v1.1 you already designed."],
+      ];
+      for (const [id, label, description] of modes) {
+        const button = picker.createEl("button", { text: label, cls: this.mode === id ? "is-selected" : "", attr: { type: "button", role: "tab", "aria-selected": String(this.mode === id), "aria-label": description } });
+        button.disabled = this.busy;
+        button.onclick = () => { this.mode = id; this.preview = null; this.render(); };
+      }
+    }
+
+    renderGuided(root) {
+      const section = root.createEl("section", { cls: "knowledgeos-builder-guided" });
+      section.createEl("h3", { text: "Start with the daily use case" });
+      section.createEl("p", { cls: "knowledgeos-builder-intro", text: "Include the normal input, expected output, who owns the data, and anything that must not happen. The analysis runs in a restricted planning workspace and never creates files automatically." });
+      new Setting(section).setName("What do you want to manage?").setDesc("For example: “Turn lecture slides and assignment briefs into a weekly course workspace, without modifying original files.”")
+        .addTextArea((control) => control.setValue(this.guidedBrief).setPlaceholder("Describe the problem, normal input, output, and exclusions.").onChange((value) => {
+          this.guidedBrief = value;
+          this.guided = null;
+          this.preview = null;
+        }));
+      if (this.guided) this.renderGuidedResult(section);
+      this.renderState(section);
+      const actions = section.createDiv({ cls: "knowledgeos-builder-actions" });
+      const analyze = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Analyzing…" : "Analyze requirement" });
+      analyze.disabled = this.busy || this.guidedBrief.trim().length < 20;
+      analyze.onclick = () => this.analyzeGuided();
+      const close = actions.createEl("button", { text: "Cancel" });
+      close.disabled = this.busy; close.onclick = () => this.close();
+    }
+
+    renderGuidedResult(root) {
+      const result = this.guided;
+      const boundary = result.boundary || {};
+      const section = root.createEl("section", { cls: `knowledgeos-builder-preview boundary-${boundary.kind || "unknown"}` });
+      section.createEl("h3", { text: this.boundaryLabel(boundary.kind) });
+      section.createEl("p", { text: result.summary || "The requirement was analyzed." });
+      section.createEl("p", { text: boundary.rationale || "" });
+      const exclusions = Array.isArray(boundary.exclusions) ? boundary.exclusions : [];
+      if (exclusions.length) {
+        section.createEl("strong", { text: "Explicitly excluded" });
+        const list = section.createEl("ul");
+        exclusions.forEach((item) => list.createEl("li", { text: item }));
+      }
+      if (result.capability_gap) {
+        section.createEl("strong", { text: "Capability gap" });
+        section.createEl("p", { text: result.capability_gap.requested_behavior || "The current platform needs a generic capability before this can be scaffolded." });
+        return;
+      }
+      const items = Array.isArray(result.questions) ? result.questions : [];
+      if (items.length) {
+        section.createEl("strong", { text: "Confirm high-impact choices" });
+        section.createEl("p", { text: "These choices are not added silently. Confirm each one before continuing to Blueprint validation." });
+        const choices = section.createDiv({ cls: "knowledgeos-builder-confirmations" });
+        for (const item of items) {
+          const label = choices.createEl("label", { cls: "knowledgeos-builder-confirmation" });
+          const input = label.createEl("input", { type: "checkbox" });
+          input.checked = this.confirmedQuestions.has(item.id);
+          input.onchange = () => {
+            if (input.checked) this.confirmedQuestions.add(item.id); else this.confirmedQuestions.delete(item.id);
+            this.render();
+          };
+          const content = label.createDiv();
+          content.createEl("strong", { text: item.question });
+          content.createEl("span", { text: item.impact });
+        }
+      }
+      if (result.proposed_blueprint) {
+        const report = result.blueprint_preview?.report;
+        section.createEl("strong", { text: report?.overall === "PASS" ? "Blueprint is ready for review" : "Blueprint needs revision" });
+        if (report?.overall !== "PASS") {
+          const failures = (report?.checks || []).filter((item) => item.status !== "pass");
+          const list = section.createEl("ul");
+          failures.forEach((item) => list.createEl("li", { text: item.message }));
+        } else {
+          section.createEl("p", { text: `Template: ${result.blueprint_preview.scaffold_template}. Capability Packs: ${(report.resolved_capability_packs || []).join(", ") || "none"}.` });
+        }
+        const details = section.createEl("details");
+        details.createEl("summary", { text: "Review Blueprint JSON" });
+        details.createEl("pre", { text: JSON.stringify(result.proposed_blueprint, null, 2) });
+        const actions = section.createDiv({ cls: "knowledgeos-builder-actions" });
+        const canCreate = report?.overall === "PASS" && items.every((item) => this.confirmedQuestions.has(item.id));
+        const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Creating…" : "Confirm and create module" });
+        create.disabled = this.busy || !canCreate;
+        create.onclick = () => this.create(result.proposed_blueprint);
+        if (!canCreate && report?.overall === "PASS") actions.createEl("span", { cls: "knowledgeos-builder-action-hint", text: "Confirm the required choices above before creating this module." });
+      }
+    }
+
+    renderQuick(root) {
       const form = root.createDiv({ cls: "knowledgeos-builder-form" });
-      this.text(form, "模块 ID", "小写英文和连字符，例如 reading-list", "id");
-      this.text(form, "显示名称", "用户看到的模块名称", "name");
-      this.text(form, "用途", "这个模块解决什么问题", "description");
-      this.area(form, "主要使用场景", "每行一个日常场景", "primary");
-      this.area(form, "明确不做", "每行一个排除项", "excluded");
-      this.text(form, "输入格式", "逗号分隔，例如 markdown,pdf,pptx", "inputs");
-      this.text(form, "关键字段", "逗号分隔；这些字段必须审核", "critical");
-      new Setting(form).setName("隐私等级").setDesc("0 公开，1 普通，2 敏感，3 高度敏感").addDropdown((control) => {
-        for (const [value, label] of [["0", "公开"], ["1", "普通"], ["2", "敏感"], ["3", "高度敏感"]]) control.addOption(value, label);
+      form.createEl("h3", { text: "Quick record module" });
+      form.createEl("p", { cls: "knowledgeos-builder-intro", text: "Use this for a small, record-oriented module. Use Guided when you are unsure whether this should be a module, component, pack, or instance." });
+      this.text(form, "Module ID", "Lowercase letters, numbers, and hyphens; for example reading-list.", "id");
+      this.text(form, "Display name", "The name shown to users.", "name");
+      this.text(form, "Purpose", "What problem does this module solve?", "description");
+      this.area(form, "Primary use cases", "One daily use case per line.", "primary");
+      this.area(form, "Explicit exclusions", "One thing this module must not do per line.", "excluded");
+      this.text(form, "Input formats", "Comma-separated, for example markdown,pdf,pptx.", "inputs");
+      this.text(form, "Critical fields", "Comma-separated fields that always need review.", "critical");
+      new Setting(form).setName("Sensitivity class").setDesc("0 public, 1 ordinary, 2 sensitive, 3 highly sensitive.").addDropdown((control) => {
+        [["0", "Public"], ["1", "Ordinary"], ["2", "Sensitive"], ["3", "Highly sensitive"]].forEach(([value, label]) => control.addOption(value, label));
         control.setValue(this.form.sensitivity).onChange((value) => { this.form.sensitivity = value; this.invalidate(); });
       });
-      new Setting(form).setName("允许读取").setDesc("Workflow 实际可以读取的最大内容范围").addDropdown((control) => {
-        for (const [value, label] of [["metadata", "仅元数据"], ["summary", "安全摘要"], ["full", "全文"], ["sensitive-original", "敏感原文"]]) control.addOption(value, label);
+      new Setting(form).setName("Maximum representation").setDesc("The most content a workflow may request.").addDropdown((control) => {
+        [["metadata", "Metadata only"], ["summary", "Safe summary"], ["full", "Full text"], ["sensitive-original", "Sensitive original"]].forEach(([value, label]) => control.addOption(value, label));
         control.setValue(this.form.representation).onChange((value) => { this.form.representation = value; this.invalidate(); });
       });
-      new Setting(form).setName("周期总结").setDesc("每周创建一次受管总结任务").addToggle((control) => control.setValue(this.form.weekly).onChange((value) => { this.form.weekly = value; this.invalidate(); }));
-
-      this.stateEl = root.createDiv({ cls: "knowledgeos-builder-state", attr: { role: "status", "aria-live": "polite" } });
-      if (this.preview) this.renderPreview(root);
+      new Setting(form).setName("Weekly summary").setDesc("Create one managed summary task each week.").addToggle((control) => control.setValue(this.form.weekly).onChange((value) => { this.form.weekly = value; this.invalidate(); }));
+      if (this.preview) this.renderBlueprintPreview(root, this.blueprint());
+      this.renderState(root);
       const actions = root.createDiv({ cls: "knowledgeos-builder-actions" });
-      const preview = actions.createEl("button", { text: this.busy ? "正在验证…" : "验证设计" });
-      preview.disabled = this.busy; preview.onclick = () => this.validate();
-      const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "请稍候…" : "确认并生成" });
-      create.disabled = this.busy || this.preview?.report?.overall !== "PASS"; create.onclick = () => this.create();
-      const close = actions.createEl("button", { text: "取消" }); close.disabled = this.busy; close.onclick = () => this.close();
+      const preview = actions.createEl("button", { text: this.busy ? "Validating…" : "Validate design" });
+      preview.disabled = this.busy; preview.onclick = () => this.validate(this.blueprint());
+      const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Please wait…" : "Confirm and create" });
+      create.disabled = this.busy || this.preview?.report?.overall !== "PASS"; create.onclick = () => this.create(this.blueprint());
+      const close = actions.createEl("button", { text: "Cancel" }); close.disabled = this.busy; close.onclick = () => this.close();
     }
-    text(parent, name, description, key) {
-      new Setting(parent).setName(name).setDesc(description).addText((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); }));
+
+    renderExpert(root) {
+      const section = root.createEl("section", { cls: "knowledgeos-builder-expert" });
+      section.createEl("h3", { text: "Blueprint v1.1" });
+      section.createEl("p", { cls: "knowledgeos-builder-intro", text: "Paste a complete JSON Blueprint. It is validated before any files are generated." });
+      new Setting(section).setName("Blueprint JSON").setDesc("Use Expert mode only when you already know the platform contract.")
+        .addTextArea((control) => control.setValue(this.expertBlueprint).setPlaceholder("{\n  \"blueprint_version\": 1.1\n}").onChange((value) => { this.expertBlueprint = value; this.invalidate(); }));
+      let blueprint = null;
+      let parseError = null;
+      if (this.expertBlueprint.trim()) {
+        try { blueprint = JSON.parse(this.expertBlueprint); } catch { parseError = "Blueprint JSON is not valid yet."; }
+      }
+      if (parseError) section.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: parseError });
+      if (this.preview && blueprint) this.renderBlueprintPreview(section, blueprint);
+      this.renderState(section);
+      const actions = section.createDiv({ cls: "knowledgeos-builder-actions" });
+      const preview = actions.createEl("button", { text: this.busy ? "Validating…" : "Validate Blueprint" });
+      preview.disabled = this.busy || !blueprint; preview.onclick = () => this.validate(blueprint);
+      const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Creating…" : "Confirm and create" });
+      create.disabled = this.busy || !blueprint || this.preview?.report?.overall !== "PASS"; create.onclick = () => this.create(blueprint);
+      const close = actions.createEl("button", { text: "Cancel" }); close.disabled = this.busy; close.onclick = () => this.close();
     }
-    area(parent, name, description, key) {
-      new Setting(parent).setName(name).setDesc(description).addTextArea((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); }));
+
+    renderState(root) {
+      if (!this.preview?.error) return;
+      root.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: this.preview.error.message || "The Core could not complete this request." });
     }
+
+    text(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addText((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
+    area(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addTextArea((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
     invalidate() { if (this.preview) { this.preview = null; this.render(); } }
     lines(value, separator = /\r?\n/) { return String(value || "").split(separator).map((item) => item.trim()).filter(Boolean); }
+
     blueprint() {
-      const inputs = this.lines(this.form.inputs, /[,，]/); const attachments = inputs.some((item) => ["pdf", "pptx", "image"].includes(item));
+      const inputs = this.lines(this.form.inputs, /[,，]/);
+      const attachments = inputs.some((item) => ["pdf", "pptx", "image"].includes(item));
       const packs = ["capture-processing", "structured-entity", "immutable-user-content", ...(attachments ? ["attachment-processing"] : []), ...(this.form.weekly ? ["periodic-summary"] : [])];
       return {
-        blueprint_version: 1, base_template: this.form.weekly ? "standard-workflow" : "minimal-config", capability_packs: packs,
+        blueprint_version: 1.1, base_template: this.form.weekly ? "standard-workflow" : "minimal-config", capability_packs: packs,
         module: { id: this.form.id.trim(), display_name: this.form.name.trim(), description: this.form.description.trim(), intended_users: ["knowledgeos-user"] },
         module_class: { type: this.form.weekly ? "workflow" : "configuration", complexity: this.form.weekly ? "standard" : "minimal" },
         use_cases: { primary: this.lines(this.form.primary), excluded: this.lines(this.form.excluded) },
         entities: [{ id: "knowledge-record", ownership: "instance" }], inputs, outputs: ["knowledge-record"],
         inbox: { module_level: true, instance_level: true, global_routing: true },
         privacy: { default_sensitivity_class: Number(this.form.sensitivity), default_max_representation: this.form.representation, network_allowed: false, user_original_content_mutable: false },
-        workflows: [{ id: "normalize-record", trigger: "capture", requires_ai: true }, ...(this.form.weekly ? [{ id: "weekly-summary", trigger: "schedule", requires_ai: true }] : [])],
+        workflows: [{ id: "normalize-record", trigger: "capture", requires_ai: true }, ...(this.form.weekly ? [{ id: "weekly-summary", trigger: "schedule", requires_ai: true, sources: [{ entity: "knowledge-record", window: "current-week", date_field: "created" }] }] : [])],
         review_policy: { critical_fields: this.lines(this.form.critical, /[,，]/), ambiguous_input: "review", destructive_operations: "forbidden" },
-        jobs: this.form.weekly ? [{ id: "weekly-summary", schedule: "weekly", catch_up: "latest" }] : [], events: { publishes: [], subscribes: [] },
-        dashboard: { sections: ["recent-records", "waiting-reviews"] },
+        jobs: this.form.weekly ? [{ id: "weekly-summary", schedule: "weekly", catch_up: "latest", workflow_id: "weekly-summary" }] : [], events: { publishes: [], subscribes: [] }, dashboard: { sections: ["recent-records", "waiting-reviews"] },
         testing: { normal_input: "required", ambiguous_input: "required", repeat_execution: "required", permission_denied: "required", paused_instance: "required", archived_instance: "required", prompt_regression: "required", periodic_job: this.form.weekly ? "required" : "not-applicable", event_publication: "not-applicable", event_consumption: "not-applicable", migration: "not-applicable", attachment_policy: attachments ? "required" : "not-applicable" },
       };
     }
-    async validate() {
+
+    async analyzeGuided() {
+      this.busy = true; this.preview = null; this.guided = null; this.confirmedQuestions.clear(); this.render();
+      const response = await this.plugin.client.invoke("analyzeModuleRequirement", {
+        brief: this.guidedBrief,
+        codex_model: this.plugin.settings.codexModel,
+        codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      }, null, { timeoutMs: 130_000 });
+      this.busy = false;
+      if (!response.ok) this.preview = { error: response.error };
+      else this.guided = response.data;
+      this.render();
+    }
+
+    async validate(blueprint) {
       this.busy = true; this.preview = null; this.render();
-      const response = await this.plugin.client.invoke("previewModuleBlueprint", { blueprint: this.blueprint() });
+      const response = await this.plugin.client.invoke("previewModuleBlueprint", { blueprint });
+      this.busy = false; this.preview = response.ok ? response.data : { error: response.error }; this.render();
+    }
+
+    renderBlueprintPreview(root, blueprint) {
+      const section = root.createEl("section", { cls: "knowledgeos-builder-preview" });
+      if (this.preview.error) { section.createEl("strong", { text: "Could not validate Blueprint" }); section.createEl("p", { text: this.preview.error.message || "Core returned an error." }); return; }
+      const report = this.preview.report;
+      section.createEl("h3", { text: report.overall === "PASS" ? "Blueprint is ready" : "Blueprint needs revision" });
+      section.createEl("p", { text: `Template: ${this.preview.scaffold_template}. Capability Packs: ${(report.resolved_capability_packs || []).join(", ") || "none"}.` });
+      const failed = (report.checks || []).filter((item) => item.status !== "pass");
+      if (failed.length) { const list = section.createEl("ul"); failed.forEach((item) => list.createEl("li", { text: item.message })); }
+      const details = section.createEl("details"); details.createEl("summary", { text: "Review Blueprint JSON" }); details.createEl("pre", { text: JSON.stringify(blueprint, null, 2) });
+    }
+
+    boundaryLabel(kind) { return ({ module: "Module recommended", component: "Component recommended", "configuration-pack": "Configuration Pack recommended", instance: "Instance recommended", "capability-gap": "Capability gap found" })[kind] || "Boundary decision"; }
+    actionLabel(action) { return ({ validate: "Run validation", test: "Run module tests", sandbox: "Run isolated sandbox", pack: "Package module", install: "Install module" })[action] || action; }
+    stateLabel(state) { return ({ draft: "Draft", "implementation-required": "Implementation required", "test-failed": "Needs fixes", "ready-to-package": "Ready to package", installed: "Installed" })[state] || state; }
+    stepLabel(step) { return ({ blueprint: "Blueprint", scaffold: "Scaffold", validation: "Validation", test: "Module tests", sandbox: "Isolated sandbox", package: "Package", installation: "Installation" })[step] || step; }
+
+    async create(blueprint) {
+      this.busy = true; this.render();
+      const response = await this.plugin.client.invoke("createModuleFromBlueprint", { blueprint, confirm: true });
       this.busy = false;
       if (!response.ok) { this.preview = { error: response.error }; this.render(); return; }
-      this.preview = response.data; this.render();
+      const readiness = await this.plugin.client.invoke("getModuleReadiness", { module_id: response.data.module_id });
+      if (!readiness.ok) { this.preview = { error: readiness.error }; this.render(); return; }
+      this.readiness = readiness.data;
+      new Notice(`Module ${response.data.module_id} was created in the development workspace.`);
+      this.render();
     }
-    renderPreview(root) {
-      const section = root.createEl("section", { cls: "knowledgeos-builder-preview" });
-      if (this.preview.error) { section.createEl("strong", { text: "无法验证设计" }); section.createEl("p", { text: this.preview.error.message || "Core 返回错误。" }); return; }
-      const report = this.preview.report; section.createEl("h3", { text: report.overall === "PASS" ? "设计可以生成" : "设计需要修改" });
-      section.createEl("p", { text: `基础模板：${this.preview.scaffold_template} · Capability Packs：${(report.resolved_capability_packs || []).join("、")}` });
-      const failed = (report.checks || []).filter((item) => item.status !== "pass");
-      if (failed.length) { const list = section.createEl("ul"); for (const item of failed) list.createEl("li", { text: item.message }); }
-      const details = section.createEl("details"); details.createEl("summary", { text: "查看 Blueprint JSON" }); details.createEl("pre", { text: JSON.stringify(this.blueprint(), null, 2) });
-    }
-    actionLabel(action) {
-      return ({ validate: "运行校验", test: "运行模块测试", sandbox: "运行隔离沙箱", pack: "打包模块", install: "安装模块" })[action] || action;
-    }
-    stateLabel(state) {
-      return ({ draft: "草稿", "implementation-required": "需要完成实现", "test-failed": "需要修复", "ready-to-package": "可以打包", installed: "已安装" })[state] || state;
-    }
-    stepLabel(step) {
-      return ({ blueprint: "Blueprint", scaffold: "脚手架", validation: "校验", test: "模块测试", sandbox: "隔离沙箱", package: "模块包", installation: "安装" })[step] || step;
-    }
+
     async refreshReadiness() {
       if (!this.readiness?.module_id) return;
       this.busy = true; this.readinessError = null; this.render();
       const response = await this.plugin.client.invoke("getModuleReadiness", { module_id: this.readiness.module_id });
-      this.busy = false;
-      if (!response.ok) this.readinessError = response.error;
-      else this.readiness = response.data;
-      this.render();
+      this.busy = false; if (!response.ok) this.readinessError = response.error; else this.readiness = response.data; this.render();
     }
+
     async runReadinessAction(action) {
       if (!this.readiness?.module_id || this.busy) return;
       this.busy = true; this.readinessError = null; this.render();
       const response = await this.plugin.client.invoke("runModuleReadinessAction", { module_id: this.readiness.module_id, action });
-      this.busy = false;
-      if (!response.ok) this.readinessError = response.error;
-      else this.readiness = response.data.readiness;
-      this.render();
+      this.busy = false; if (!response.ok) this.readinessError = response.error; else this.readiness = response.data.readiness; this.render();
     }
+
     renderReadiness(root) {
-      root.createEl("h2", { text: "模块交付状态" });
+      root.createEl("h2", { text: "Module readiness" });
       const summary = root.createDiv({ cls: "knowledgeos-builder-readiness-summary" });
-      summary.createEl("strong", { text: this.readiness.module_id });
-      summary.createEl("span", { cls: `knowledgeos-builder-readiness-state state-${this.readiness.state}`, text: this.stateLabel(this.readiness.state) });
-      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "模块仍位于开发工作区。只有完成校验、测试、沙箱、打包和明确安装后，才会在此 Vault 中启用。" });
-      const workspace = root.createEl("p", { cls: "knowledgeos-builder-workspace" });
-      workspace.createEl("span", { text: "工作区：" }); workspace.createEl("code", { text: this.readiness.workspace_path || "—" });
+      summary.createEl("strong", { text: this.readiness.module_id }); summary.createEl("span", { cls: `knowledgeos-builder-readiness-state state-${this.readiness.state}`, text: this.stateLabel(this.readiness.state) });
+      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "The module remains in the development workspace until validation, tests, sandboxing, packaging, and explicit installation are complete." });
+      const workspace = root.createEl("p", { cls: "knowledgeos-builder-workspace" }); workspace.createEl("span", { text: "Workspace: " }); workspace.createEl("code", { text: this.readiness.workspace_path || "—" });
       const list = root.createEl("ol", { cls: "knowledgeos-builder-readiness-list" });
-      for (const step of this.readiness.steps || []) {
-        const row = list.createEl("li", { cls: `knowledgeos-builder-readiness-step is-${step.status}` });
-        const heading = row.createDiv({ cls: "knowledgeos-builder-readiness-heading" });
-        heading.createEl("strong", { text: this.stepLabel(step.id) });
-        heading.createEl("span", { text: step.status === "complete" ? "已完成" : step.status === "failed" ? "需要处理" : "未完成" });
-        row.createEl("div", { cls: "knowledgeos-builder-readiness-message", text: step.message });
-      }
-      if (this.readinessError) root.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: this.readinessError.message || "无法更新模块状态。" });
-      else if (this.busy) root.createEl("div", { cls: "knowledgeos-builder-state", attr: { role: "status", "aria-live": "polite" }, text: "正在执行下一步，请保持此窗口打开。" });
-      const actions = root.createDiv({ cls: "knowledgeos-builder-actions" });
-      const next = (this.readiness.available_actions || [])[0];
-      if (next) {
-        const button = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "正在处理…" : this.actionLabel(next) });
-        button.disabled = this.busy; button.onclick = () => this.runReadinessAction(next);
-      }
-      const refresh = actions.createEl("button", { text: "刷新状态" }); refresh.disabled = this.busy; refresh.onclick = () => this.refreshReadiness();
-      const close = actions.createEl("button", { text: "完成" }); close.disabled = this.busy; close.onclick = () => this.close();
-    }
-    async create() {
-      if (this.preview?.report?.overall !== "PASS") return;
-      this.busy = true; this.render();
-      const response = await this.plugin.client.invoke("createModuleFromBlueprint", { blueprint: this.blueprint(), confirm: true });
-      this.busy = false;
-      if (!response.ok) { this.preview = { error: response.error }; this.render(); return; }
-      this.readinessError = null;
-      const readiness = await this.plugin.client.invoke("getModuleReadiness", { module_id: response.data.module_id });
-      if (!readiness.ok) { this.preview = { error: readiness.error }; this.render(); return; }
-      this.readiness = readiness.data;
-      new Notice(`模块 ${response.data.module_id} 已创建到开发工作区。`); this.render();
+      for (const step of this.readiness.steps || []) { const row = list.createEl("li", { cls: `knowledgeos-builder-readiness-step is-${step.status}` }); const heading = row.createDiv({ cls: "knowledgeos-builder-readiness-heading" }); heading.createEl("strong", { text: this.stepLabel(step.id) }); heading.createEl("span", { text: step.status === "complete" ? "Complete" : step.status === "failed" ? "Needs attention" : "Not complete" }); row.createEl("div", { cls: "knowledgeos-builder-readiness-message", text: step.message }); }
+      if (this.readinessError) root.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: this.readinessError.message || "Could not refresh module status." });
+      else if (this.busy) root.createEl("div", { cls: "knowledgeos-builder-state", attr: { role: "status", "aria-live": "polite" }, text: "Working on the next readiness step…" });
+      const actions = root.createDiv({ cls: "knowledgeos-builder-actions" }); const next = (this.readiness.available_actions || [])[0];
+      if (next) { const button = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Working…" : this.actionLabel(next) }); button.disabled = this.busy; button.onclick = () => this.runReadinessAction(next); }
+      const refresh = actions.createEl("button", { text: "Refresh status" }); refresh.disabled = this.busy; refresh.onclick = () => this.refreshReadiness();
+      const close = actions.createEl("button", { text: "Done" }); close.disabled = this.busy; close.onclick = () => this.close();
     }
   }
   return { ModuleBuilderModal };

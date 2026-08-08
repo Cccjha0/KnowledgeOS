@@ -667,6 +667,19 @@
 .knowledgeos-module-builder-modal > h2 { margin-bottom: var(--size-4-1); }
 .knowledgeos-module-builder-modal .knowledgeos-builder-intro { color: var(--text-muted); line-height: 1.5; margin: 0 0 var(--size-4-4); max-width: 62ch; }
 .knowledgeos-module-builder-modal .knowledgeos-builder-form { border-top: 1px solid var(--background-modifier-border); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-modes { display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin: 0 0 var(--size-4-4); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-modes button { background: var(--background-secondary); color: var(--text-muted); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-modes button.is-selected { background: var(--interactive-accent); color: var(--text-on-accent); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-guided > h3,
+.knowledgeos-module-builder-modal .knowledgeos-builder-expert > h3,
+.knowledgeos-module-builder-modal .knowledgeos-builder-form > h3 { font-size: var(--font-ui-medium); margin: 0 0 var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmations { border-top: 1px solid var(--background-modifier-border); margin-top: var(--size-4-2); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmation { align-items: start; border-bottom: 1px solid var(--background-modifier-border); cursor: pointer; display: grid; gap: var(--size-4-2); grid-template-columns: auto minmax(0, 1fr); padding: var(--size-4-2) 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmation input { margin-top: .25rem; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmation strong,
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmation span { display: block; overflow-wrap: anywhere; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-confirmation span,
+.knowledgeos-module-builder-modal .knowledgeos-builder-action-hint { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.5; }
 .knowledgeos-module-builder-modal .setting-item { align-items: flex-start; }
 .knowledgeos-module-builder-modal textarea { min-height: 5rem; resize: vertical; width: min(26rem, 100%); }
 .knowledgeos-module-builder-modal input[type="text"] { width: min(26rem, 100%); }
@@ -698,4 +711,6 @@
   .knowledgeos-module-builder-modal .knowledgeos-builder-actions { align-items: stretch; flex-direction: column; }
   .knowledgeos-module-builder-modal .knowledgeos-builder-actions button { width: 100%; }
   .knowledgeos-module-builder-modal .knowledgeos-builder-readiness-heading { align-items: flex-start; flex-direction: column; gap: var(--size-4-1); }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .knowledgeos-module-builder-modal .knowledgeos-builder-modes button { min-width: 0; }
 }

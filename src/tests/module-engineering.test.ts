@@ -14,6 +14,7 @@ import { syncInstalledConfiguration } from "../platform/configuration.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { analyzeGuidedModuleRequirement, normalizeGuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
@@ -95,6 +96,29 @@ test("Command API previews a Module Blueprint without creating source files", as
     assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Guided Module Builder preserves the extension boundary and never exposes an unvalidated proposal", async () => {
+  const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
+  const result = await analyzeGuidedModuleRequirement({
+    brief: "Organize course lectures and assignment briefs into a separate course workspace with weekly summaries.",
+    execute: async () => ({
+      stderr: "",
+      output: {
+        boundary: { kind: "module", rationale: "Course work has its own entities and lifecycle.", exclusions: ["Do not edit the original slides."] },
+        summary: "A course module is appropriate.",
+        questions: [{ id: "course-full-text", category: "content-access", question: "Allow full lecture text?", impact: "The selected content is provided to Codex." }],
+        proposed_blueprint: blueprint,
+        capability_gap: null,
+      },
+    }),
+  });
+  assert.equal(result.boundary.kind, "module");
+  assert.equal(result.questions[0]?.id, "course-full-text");
+  assert.equal((result.proposed_blueprint as JsonObject).blueprint_version, 1.1);
+  assert.throws(() => normalizeGuidedBuilderAnalysis("A long enough requirement for a component.", {
+    boundary: { kind: "component", rationale: "shared", exclusions: [] }, summary: "shared", questions: [], proposed_blueprint: blueprint, capability_gap: null,
+  }), /Only a module decision/);
 });
 
 test("Command API creates a Blueprint module in the Vault development workspace, not Engine source", async () => {
