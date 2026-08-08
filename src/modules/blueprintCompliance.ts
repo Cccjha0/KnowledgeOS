@@ -9,6 +9,11 @@ function strings(value: JsonValue | undefined): string[] { return Array.isArray(
 function sameSet(left: string[], right: string[]): boolean { return left.length === right.length && left.every((item) => right.includes(item)); }
 
 function entries(value: JsonValue | undefined): JsonObject[] { return Array.isArray(value) ? value.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : []; }
+function dashboardSectionIds(value: JsonValue | undefined): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => typeof item === "string" ? item : object(item)?.id).filter((item): item is string => typeof item === "string")
+    : [];
+}
 function registryPath(moduleRoot: string, entry: JsonObject | null): string | null { return typeof entry?.path === "string" ? path.join(moduleRoot, "workflows", ...entry.path.replace(/^workflows\//, "").split("/")) : null; }
 
 async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject, checks: BlueprintCheck[]): Promise<void> {
@@ -108,7 +113,7 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
     "Blueprint field quality requirements are materialized into the runtime Quality Policy.", "rules/quality-policy.yaml");
   const expectedImmutable = object(blueprint.privacy)?.user_original_content_mutable === true;
   add("V2_IMMUTABLE_CONTENT_BOUND", ownership.user_original_content_mutable === expectedImmutable && (expectedImmutable || Array.isArray(ownership.forbidden_operations)), "Runtime ownership policy enforces the Blueprint original-content policy.", "rules/ownership.yaml");
-  add("V2_DASHBOARD_BOUND", sameSet(Array.isArray(dashboard.items) ? dashboard.items.filter((item): item is string => typeof item === "string") : [], strings(object(blueprint.dashboard)?.sections)), "Runtime Dashboard materializes Blueprint sections.", "dashboard/provider.yaml");
+  add("V2_DASHBOARD_BOUND", sameSet(dashboardSectionIds(dashboard.items), strings(object(blueprint.dashboard)?.sections)), "Runtime Dashboard materializes Blueprint sections as executable provider descriptors.", "dashboard/provider.yaml");
 
   const jobs = entries(blueprint.jobs);
   const jobRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "jobs", "jobs.yaml"));

@@ -474,11 +474,27 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   }));
   if (Object.keys(machines).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "state-machines.yaml"), { machines });
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
-  dashboard.items = strings(object(blueprint.dashboard)?.sections);
+  dashboard.items = dashboardProviderItems(strings(object(blueprint.dashboard)?.sections), entities);
+  dashboard.version = "2.0.0";
   writeYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"), dashboard);
 }
 
 function entityIdsForOwnership(entities: JsonObject[]): string[] { return entities.map((entity) => String(entity.id)); }
+
+function dashboardProviderItems(sections: string[], entities: JsonObject[]): JsonObject[] {
+  const entityIds = new Set(entities.map((entity) => String(entity.id)));
+  const items: JsonObject[] = [];
+  for (const section of sections) {
+    if (section === "upcoming-deadlines" && entityIds.has("assignment")) {
+      items.push({ id: section, kind: "due", entity: "assignment", due_field: "deadline", filters: { status: ["planned"] }, window_days: 14, category: "deadline", priority: { overdue: "critical", within_3_days: "high", default: "medium" }, title: "{title}", description: "截止日期：{deadline}", actions: ["open"] });
+    } else if (section === "recent-lectures" && entityIds.has("lecture")) {
+      items.push({ id: section, kind: "recent", entity: "lecture", date_field: "lecture_date", limit: 5, category: "summary", priority: "low", title: "{title}", description: "课程资料日期：{lecture_date}", actions: ["open"] });
+    } else if (section === "waiting-reviews") {
+      items.push({ id: section, kind: "review-summary", category: "status", priority: "high", title: "{count} 项事项等待审核", description: "有 {count} 项等待你的决定。", actions: ["open"] });
+    }
+  }
+  return items;
+}
 
 function sourceQuerySteps(workflow: JsonObject, outputs: JsonObject[], representation: string): JsonObject[] {
   return sourceObjects(workflow).map((source, index) => {

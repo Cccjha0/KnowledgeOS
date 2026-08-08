@@ -1,6 +1,20 @@
 provider_id: reading-log-dashboard
-version: 1.0.0
+version: 2.0.0
 items:
-- inbox
-- waiting-review
-- recent-records
+  - id: recent-records
+    kind: recent
+    entity: record
+    date_field: created
+    limit: 5
+    category: summary
+    priority: low
+    title: "{title}"
+    description: "阅读笔记创建于：{created}"
+    actions: [open]
+  - id: waiting-reviews
+    kind: review-summary
+    category: status
+    priority: high
+    title: "{count} 项阅读事项等待审核"
+    description: "有 {count} 项阅读审核等待你的决定。"
+    actions: [open]

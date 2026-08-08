@@ -84,7 +84,12 @@ export async function createModuleScaffold(engineRoot: string, id: string, templ
   await yaml(root, "rules/reading-policy.yaml", { default_level: template === "integration" ? 1 : 0, allowed_roots: ["{content_root}"] });
   await yaml(root, "rules/review-policy.yaml", { green: ["create-new-record", "add-source-ref"], yellow: ["replace-user-field", "ambiguous-match"], red: ["delete-file", "cross-module-write", "external-side-effect"] });
   await yaml(root, "rules/permissions.yaml", { network: template === "integration", delete: false, cross_module_write: false, arbitrary_scripts: false });
-  await yaml(root, "dashboard/provider.yaml", { provider_id: `${id}-dashboard`, version: "1.0.0", items: ["inbox", "waiting-review", "recent-records"] });
+  await yaml(root, "dashboard/provider.yaml", {
+    provider_id: `${id}-dashboard`, version: "2.0.0", items: [
+      { id: "recent-records", kind: "recent", entity: "record", date_field: "created", limit: 5, category: "summary", priority: "low", title: "{title}", description: "最近创建：{created}", actions: ["open"] },
+      { id: "waiting-reviews", kind: "review-summary", category: "status", priority: "high", title: "{count} 项事项等待审核", description: "有 {count} 项等待你的决定。", actions: ["open"] },
+    ],
+  });
   await yaml(root, "jobs/jobs.yaml", { jobs: template === "workflow" ? [{ id: "weekly-summary", scope: "instance", enabled: true, task_type: "workflow", workflow: `${id}:weekly-summary`, workflow_id: "weekly-summary", workflow_version: "1.0.0", trigger: { type: "weekly", weekday: "Sun", at: "18:00", timezone: "instance" }, resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" }, catch_up: { policy: "aggregate", max_age_days: 21 }, retry: { max_attempts: 3 }, concurrency: { policy: "forbid", key: `${id}:{instance}:weekly-summary` }, priority: "normal" }] : [] });
   await yaml(root, "migrations/index.yaml", { migrations: [] });
   await yaml(root, "fixtures/sample-instance/instance.yaml", { instance_id: "sample-instance", module_id: id, status: "active", display_name: "Sample Instance", content_root: `20-Workspace/${displayName}/sample-instance`, inbox_path: `20-Workspace/${displayName}/sample-instance/Inbox`, timezone: "Asia/Shanghai", created: "2026-01-01T00:00:00Z", updated: "2026-01-01T00:00:00Z" });

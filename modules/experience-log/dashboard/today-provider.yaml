@@ -1,13 +1,30 @@
 provider_id: experience-log-today
-version: 1
+version: 2
 items:
-  - source: experience-entry
-    condition: unprocessed
-    category: action
-    title: 整理今日零散记录
-    actions: [open, run]
-  - source: weekly-summary
-    condition: due
+  - id: recent-daily-logs
+    kind: recent
+    entity: experience-daily-log
+    date_field: date
+    limit: 5
     category: summary
-    title: 生成本周实习总结
-    actions: [open, generate]
+    priority: low
+    title: "实习日报：{date}"
+    description: "已整理 {entry_ids} 条记录。"
+    actions: [open]
+  - id: recent-weekly-summaries
+    kind: recent
+    entity: experience-weekly-summary
+    date_field: created_at
+    limit: 3
+    category: summary
+    priority: low
+    title: "实习周总结：{week}"
+    description: "最近生成的实习周总结。"
+    actions: [open]
+  - id: waiting-reviews
+    kind: review-summary
+    category: status
+    priority: high
+    title: "{count} 项实习事项等待审核"
+    description: "有 {count} 项实习审核等待你的决定。"
+    actions: [open]

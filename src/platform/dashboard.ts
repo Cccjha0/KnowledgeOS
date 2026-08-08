@@ -1,4 +1,3 @@
-import { collectApplicationDashboardItems } from "../application/dashboard.js";
 import { buildTodaySnapshot, writeTodayMarkdown, writeTodayMarkdownWithResult, type TodayWriteResult } from "../core/dashboard.js";
 import type { DashboardItem, TodaySnapshot } from "../core/types.js";
 import { qualityIssueToDashboardItem } from "../quality/presentation.js";
@@ -6,6 +5,7 @@ import { QualityRepository } from "../quality/repository.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { discoverInboxContext, discoverInboxItems, inboxDashboardItem } from "./inboxDiscovery.js";
+import { collectModuleDashboardItems } from "../modules/dashboardProvider.js";
 
 const QUALITY_FIELD_LABELS: Record<string, string> = {
   application_open: "申请开放状态",
@@ -35,10 +35,7 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
   const inboxItemIds = new Set(discoveredInbox.map((item) => item.item_id));
   const items = discoveredInbox
     .filter((item) => !["ignored", "unmanaged", "processed", "deferred"].includes(item.state)).map(inboxDashboardItem);
-  if (enabled.has("application-tracker")) {
-    const activeInstances = new Set(context.instances.map((instance) => String(instance.data.instance_id)));
-    items.push(...(await collectApplicationDashboardItems(vaultRoot)).filter((item) => item.instance_id === null || activeInstances.has(item.instance_id)));
-  }
+  items.push(...await collectModuleDashboardItems(vaultRoot));
   const runtime = await RuntimeRepository.open(vaultRoot);
   try {
     const now = Date.now();
