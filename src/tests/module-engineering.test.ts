@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { parseYaml, writeYaml } from "../core/bridge.js";
-import { readJson } from "../core/files.js";
+import { readJson, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject, Operation } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
@@ -18,8 +18,19 @@ import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
 import { runModuleSandbox } from "../modules/sandbox.js";
+import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+async function writeReadinessEvidence(engineRoot: string, moduleId: string, moduleRoot: string): Promise<void> {
+  const validation = await validateModule(engineRoot, moduleRoot, { writeReport: true });
+  const provenance = await engineProvenance(engineRoot);
+  const environment = { git_commit: provenance.engine_commit, engine_version: provenance.engine_version, module_checksum: await moduleContentChecksum(moduleRoot), fixture_checksum: await fixtureChecksum(moduleRoot), os: "test", node: process.version, python: null };
+  // Package verification is tested here with the persisted evidence contract;
+  // real fixture execution is covered by the dedicated Module Test cases.
+  await writeJsonAtomic(path.join(moduleRoot, "module-test-report.json"), { report_version: 1, module_id: moduleId, module_version: validation.module_version, generated_at: new Date().toISOString(), static_validation: validation, environment, checks: [], overall: "PASS", beta_eligible: true });
+  await writeJsonAtomic(path.join(moduleRoot, "sandbox-report.json"), { sandbox_version: 1, module_id: moduleId, isolation: "temporary-vault", lifecycle: "created-executed-cleaned", overall: "PASS", checks: [], environment });
+}
 
 async function temporaryEngine(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-engine-"));
@@ -377,6 +388,8 @@ test("local package install, upgrade and rollback preserve an exact module lock"
     manifest.maturity = "beta"; manifest.status = "enabled";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const firstPackage = path.join(engine, "package-sample-0.1.0.pkb-module");
+    await assert.rejects(() => packModuleDirectory(engine, root, firstPackage), (error: unknown) => (error as { code?: string }).code === "MODULE_READINESS_STALE");
+    await writeReadinessEvidence(engine, "package-sample", root);
     await packModuleDirectory(engine, root, firstPackage);
     const installed = await installModulePackage(engine, vault, firstPackage, { enable: true });
     assert.equal(installed.status, "installed");
@@ -384,6 +397,8 @@ test("local package install, upgrade and rollback preserve an exact module lock"
     manifest.version = "0.2.0";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const secondPackage = path.join(engine, "package-sample-0.2.0.pkb-module");
+    await assert.rejects(() => packModuleDirectory(engine, root, secondPackage), (error: unknown) => (error as { code?: string }).code === "MODULE_READINESS_STALE");
+    await writeReadinessEvidence(engine, "package-sample", root);
     await packModuleDirectory(engine, root, secondPackage);
     const upgraded = await installModulePackage(engine, vault, secondPackage, { enable: true, upgrade: true });
     assert.equal(upgraded.previous_version, "0.1.0");
@@ -396,6 +411,17 @@ test("local package install, upgrade and rollback preserve an exact module lock"
     await syncInstalledConfiguration(vault);
     const preserved = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
     assert.equal(preserved.modules["package-sample"]?.version, "0.1.0", "Engine sync must preserve a Vault-installed user module.");
+
+    const unsafeRoot = path.join(workspace, "unsafe-package");
+    await createModuleScaffold(engine, "unsafe-package", "minimal-config", "unsafe-package", { modulesRoot: workspace });
+    const unsafeManifest = parseYaml(unsafeRoot, path.join(unsafeRoot, "module.yaml"));
+    unsafeManifest.maturity = "beta"; unsafeManifest.status = "enabled";
+    writeYaml(unsafeRoot, path.join(unsafeRoot, "module.yaml"), unsafeManifest);
+    const unsafePackage = path.join(engine, "unsafe-package-0.1.0.pkb-module");
+    await packModuleDirectory(engine, unsafeRoot, unsafePackage, { developerUnsafe: true });
+    await assert.rejects(() => installModulePackage(engine, vault, unsafePackage, { enable: true }), (error: unknown) => (error as { code?: string }).code === "MODULE_READINESS_UNSAFE_PACKAGE");
+    const unsafeInstalled = await installModulePackage(engine, vault, unsafePackage, { enable: true, developerUnsafe: true });
+    assert.equal(unsafeInstalled.status, "installed");
   } finally {
     await fs.rm(engine, { recursive: true, force: true });
     await fs.rm(vault, { recursive: true, force: true });

@@ -7,7 +7,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
 import { parseMarkdown, parseYaml } from "./core/bridge.js";
-import { exists, toVaultPath } from "./core/files.js";
+import { exists, toVaultPath, writeJsonAtomic } from "./core/files.js";
 import { executeModuleWorkflowNow } from "./modules/directInvocation.js";
 import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
 import { rebuildTodayDashboard } from "./platform/dashboard.js";
@@ -49,6 +49,7 @@ interface ParsedArgs {
   apiInput: Record<string, JsonValue>;
   requestId: string;
   confirm: boolean;
+  developerUnsafe: boolean;
 }
 
 async function moduleSourceRoot(engineRoot: string, vaultRoot: string, vaultExplicit: boolean, moduleId: string): Promise<string> {
@@ -68,6 +69,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   let apiInput: Record<string, JsonValue> = {};
   let requestId = `REQ-${randomUUID()}`;
   let confirm = false;
+  let developerUnsafe = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index]!;
     if (value === "--vault") {
@@ -82,6 +84,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       dryRun = true;
     } else if (value === "--confirm") {
       confirm = true;
+    } else if (value === "--developer-unsafe") {
+      developerUnsafe = true;
     } else if (value === "--git-mode") {
       const next = argv[index + 1];
       if (next !== "initialize" && next !== "existing" && next !== "disabled") {
@@ -140,6 +144,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     apiInput,
     requestId,
     confirm,
+    developerUnsafe,
   };
 }
 
@@ -252,7 +257,9 @@ async function main(): Promise<void> {
   if (command === "module" && subcommand === "sandbox") {
     if (!value) throw new Error("module sandbox requires MODULE_ID");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const report = await runModuleSandbox(engineRoot, value, { moduleRoot: await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value) });
+    const source = await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value);
+    const report = await runModuleSandbox(engineRoot, value, { moduleRoot: source });
+    await writeJsonAtomic(path.join(source, "sandbox-report.json"), report);
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
   }
   if (command === "module" && subcommand === "readiness") {
@@ -273,12 +280,12 @@ async function main(): Promise<void> {
     const source = await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value);
     const manifest = parseYaml(source, path.join(source, "module.yaml"));
     const output = parsed.positional[3] ? path.resolve(parsed.positional[3]!) : parsed.vaultExplicit ? path.join(parsed.vault, "90-System", "Modules", "Packages", value, `${String(manifest.version)}.pkb-module`) : undefined;
-    console.log(JSON.stringify(await packModuleDirectory(engineRoot, source, output), null, 2)); return;
+    console.log(JSON.stringify(await packModuleDirectory(engineRoot, source, output, { developerUnsafe: parsed.developerUnsafe }), null, 2)); return;
   }
   if (command === "module" && ["install", "upgrade"].includes(subcommand ?? "")) {
     if (!value) throw new Error(`module ${subcommand} requires PACKAGE`);
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    console.log(JSON.stringify(await installModulePackage(engineRoot, parsed.vault, path.resolve(value), { enable: true, upgrade: subcommand === "upgrade", confirmBreaking: parsed.confirm }), null, 2)); return;
+    console.log(JSON.stringify(await installModulePackage(engineRoot, parsed.vault, path.resolve(value), { enable: true, upgrade: subcommand === "upgrade", confirmBreaking: parsed.confirm, developerUnsafe: parsed.developerUnsafe }), null, 2)); return;
   }
   if (command === "module" && subcommand === "rollback") {
     if (!value) throw new Error("module rollback requires MODULE_ID");
