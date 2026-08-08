@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CreateInstanceParams, ManageInstanceParams, ManageModuleParams } from "../api/types.js";
 import { parseMarkdown, validateSchema } from "../core/bridge.js";
-import { discoverInstances, discoverModules, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
 import { reconcileLifecycleTasks } from "../runtime/jobRegistry.js";
 import { exists, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
@@ -93,7 +93,7 @@ async function normalizedInstalled(vaultRoot: string): Promise<{ schema_version:
   const stored = await readJson<{ modules?: JsonObject[] }>(file, { modules: [] });
   const byId = new Map((stored.modules ?? []).filter((entry) => typeof entry.id === "string").map((entry) => [String(entry.id), entry]));
   const modules: InstalledModule[] = [];
-  for (const module of await discoverModules(ENGINE_ROOT)) {
+  for (const module of await discoverModulesForVault(ENGINE_ROOT, vaultRoot)) {
     const id = String(module.data.id);
     const previous = byId.get(id);
     modules.push({
@@ -308,7 +308,7 @@ export async function manageInstance(vaultRoot: string, params: ManageInstancePa
   };
   if (params.preview_only) return preview;
   if (requiresConfirmation && params.confirm !== true) throw new PkbError("INSTANCE_CONFIRMATION_REQUIRED", "Archiving with open Inbox or Review items requires confirmation.", preview);
-  const rawModule = (await discoverModules(ENGINE_ROOT)).find((entry) => entry.data.id === instance.data.module_id);
+  const rawModule = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => entry.data.id === instance.data.module_id);
   if (!rawModule) throw new PkbError("MODULE_NOT_FOUND", `Module ${String(instance.data.module_id)} was not found.`);
   const schemaId = await moduleInstanceSchema(rawModule);
   const taskId = await allocateId(vaultRoot, "TASK");

@@ -2,8 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+# A feature-branch push already triggers its PR workflow. Running both events
+# for the same SHA doubles this 8-job matrix and has caused runner setup jobs
+# and long Engine tests to be cancelled under hosted-runner contention.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -14,10 +22,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Each matrix job runs disposable Vault and Python Bridge integration
+      # tests. Keep the full compatibility matrix, but do not compete for all
+      # hosted runners at once.
+      max-parallel: 4
       matrix:
         os: [ubuntu-latest, windows-latest]
         node: ['20', '22']
         python: ['3.11', '3.13']
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

@@ -1,0 +1,61 @@
+workflow_id: normalize-assignment
+workflow_version: 1.0.0
+inputs:
+- capture
+- instance
+resources:
+  filesystem: required
+  network: not-required
+  codex: required
+  user: not-required
+steps:
+- id: validate-capture
+  uses: core.validate-capture
+  with:
+    read:
+      representation: full
+- id: parse-capture
+  uses: core.parse-structured-document
+  with:
+    read:
+      representation: full
+- id: normalize
+  uses: codex.prompt
+  with:
+    prompt_id: normalize-assignment
+    output_schema: https://pkb.local/schemas/course/assignment.schema.json
+- id: plan
+  uses: core.build-operation-plan
+  with:
+    output: normalize
+    output_schema: assignment
+    target: '{instance.content_root}/Assignments/{task.payload.item_id}.md'
+    template: templates/assignment.md
+    idempotency_key: course:{instance.instance_id}:normalize-assignment:{task.payload.item_id}
+    summary: Create assignment from normalized brief
+- id: publish-assignment-created
+  uses: core.publish-event
+  with:
+    event_type: course.assignment-created
+    payload_from: normalize
+    payload_fields:
+      assignment_id: id
+outputs:
+- operation_plan
+- dashboard_items
+- events
+blueprint_contract:
+  trigger: capture
+  input_entities: [capture]
+  input_roles: [assignment-brief]
+  output_entity: assignment
+  read: { representation: full }
+  prompt_id: normalize-assignment
+  operation:
+    type: create-record
+    target: '{instance.content_root}/Assignments/{task.payload.item_id}.md'
+    template: templates/assignment.md
+  publishes:
+  - event: course.assignment-created
+    payload:
+      assignment_id: '{output.id}'

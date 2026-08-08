@@ -9,7 +9,8 @@ import { readJson } from "../core/files.js";
 import type { JsonObject, Operation } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
-import { installModulePackage, packModule, rollbackModulePackage } from "../modules/packageManager.js";
+import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "../modules/packageManager.js";
+import { syncInstalledConfiguration } from "../platform/configuration.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
@@ -71,6 +72,40 @@ test("Command API previews a Module Blueprint without creating source files", as
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Command API creates a Blueprint module in the Vault development workspace, not Engine source", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-workspace-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).workspace_path, "90-System/Module Development/media-library");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "media-library", "module.yaml")).then(() => true), true);
+    assert.equal(await fs.stat(path.join(SOURCE_ROOT, "modules", "media-library", "module.yaml")).then(() => true).catch(() => false), false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Module workspace readiness keeps a scaffold separate from validation and installation", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-readiness-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(create.ok, true);
+    const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
+    assert.equal(before.ok, true);
+    assert.equal((before.data as JsonObject).state, "implementation-required");
+    assert.deepEqual((before.data as JsonObject).available_actions, ["validate"]);
+    const validation = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-VALIDATE", method: "runModuleReadinessAction", params: { module_id: "media-library", action: "validate" } });
+    assert.equal(validation.ok, true);
+    const refreshed = (validation.data as JsonObject).readiness as JsonObject;
+    assert.equal(refreshed.state, "implementation-required");
+    const steps = refreshed.steps as JsonObject[];
+    assert.equal(steps.find((step) => step.id === "validation")?.status, "complete");
+    assert.equal((refreshed.available_actions as string[]).includes("test"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Blueprint scaffolding deterministically creates a runtime-valid module", async () => {
   const engine = await temporaryEngine();
   try {
@@ -101,6 +136,30 @@ test("Blueprint compliance rejects runtime privacy drift", async () => {
     const report = await validateModule(engine, moduleRoot);
     assert.equal(report.overall, "FAIL");
     assert.equal(report.checks.some((item) => item.code === "BLUEPRINT_SENSITIVITY_MATCH" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Workflow Event", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const moduleRoot = String(generated.module_root);
+    const schemas = parseYaml(moduleRoot, path.join(moduleRoot, "schemas", "index.yaml"));
+    assert.equal(Boolean((schemas.schemas as JsonObject).lecture), true);
+    assert.equal(Boolean((schemas.schemas as JsonObject).assignment), true);
+    const lectureWorkflowPath = path.join(moduleRoot, "workflows", "normalize-lecture", "v1.0.0.yaml");
+    const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
+    const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");
+    assert.equal((eventStep?.with as JsonObject).event_type, "course.lecture-created", "Events must follow the declaring Workflow, never array order.");
+    const valid = await validateModule(engine, moduleRoot);
+    assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+
+    (eventStep!.with as JsonObject).event_type = "course.assignment-created";
+    writeYaml(moduleRoot, lectureWorkflowPath, lectureWorkflow);
+    const invalid = await validateModule(engine, moduleRoot);
+    assert.equal(invalid.overall, "FAIL");
+    assert.equal(invalid.checks.some((item) => item.code === "V2_WORKFLOW_EVENTS_BOUND" && item.status === "fail"), true);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
@@ -244,20 +303,21 @@ test("local package install, upgrade and rollback preserve an exact module lock"
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-vault-"));
   try {
     await initializeVault(vault, "disabled");
-    const root = path.join(engine, "modules", "package-sample");
-    await createModuleScaffold(engine, "package-sample", "minimal-config");
+    const workspace = path.join(engine, "user-workspace");
+    await createModuleScaffold(engine, "package-sample", "minimal-config", "package-sample", { modulesRoot: workspace });
+    const root = path.join(workspace, "package-sample");
     const manifest = parseYaml(root, path.join(root, "module.yaml"));
     manifest.maturity = "beta"; manifest.status = "enabled";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const firstPackage = path.join(engine, "package-sample-0.1.0.pkb-module");
-    await packModule(engine, "package-sample", firstPackage);
+    await packModuleDirectory(engine, root, firstPackage);
     const installed = await installModulePackage(engine, vault, firstPackage, { enable: true });
     assert.equal(installed.status, "installed");
 
     manifest.version = "0.2.0";
     writeYaml(root, path.join(root, "module.yaml"), manifest);
     const secondPackage = path.join(engine, "package-sample-0.2.0.pkb-module");
-    await packModule(engine, "package-sample", secondPackage);
+    await packModuleDirectory(engine, root, secondPackage);
     const upgraded = await installModulePackage(engine, vault, secondPackage, { enable: true, upgrade: true });
     assert.equal(upgraded.previous_version, "0.1.0");
     const rolledBack = await rollbackModulePackage(engine, vault, "package-sample");
@@ -265,6 +325,10 @@ test("local package install, upgrade and rollback preserve an exact module lock"
     const lock = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
     assert.equal(lock.modules["package-sample"]?.version, "0.1.0");
     assert.equal(typeof lock.modules["package-sample"]?.checksum, "string");
+    assert.equal(String(lock.modules["package-sample"]?.installed_path).startsWith("90-System/Modules/Installed/"), true);
+    await syncInstalledConfiguration(vault);
+    const preserved = await readJson<{ modules: Record<string, JsonObject> }>(path.join(vault, "90-System", "Modules", "module-lock.json"), { modules: {} });
+    assert.equal(preserved.modules["package-sample"]?.version, "0.1.0", "Engine sync must preserve a Vault-installed user module.");
   } finally {
     await fs.rm(engine, { recursive: true, force: true });
     await fs.rm(vault, { recursive: true, force: true });

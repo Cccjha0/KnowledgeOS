@@ -1,0 +1,22 @@
+capture:
+  path: Assignments/module-test-assignment.md
+  item_id: module-test-assignment
+  content: |
+    # Assignment brief
+
+    Submit the machine learning reflection by 2026-08-14 17:00 UTC.
+  expected_output_suffix: Assignments/module-test-assignment.md
+  codex_output:
+    id: course-test-assignment
+    type: course-assignment
+    schema_id: assignment
+    schema_version: 1
+    module_version: 0.2.0
+    instance_id: sample-instance
+    title: Machine learning reflection
+    source_refs:
+    - 20-Workspace/Course/sample-instance/Inbox/Assignments/module-test-assignment.md
+    created: '2026-08-01T00:00:00Z'
+    updated: '2026-08-01T00:00:00Z'
+    deadline: '2026-08-14T17:00:00Z'
+    status: planned

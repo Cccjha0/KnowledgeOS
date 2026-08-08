@@ -6,8 +6,8 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
-import { parseMarkdown } from "./core/bridge.js";
-import { toVaultPath } from "./core/files.js";
+import { parseMarkdown, parseYaml } from "./core/bridge.js";
+import { exists, toVaultPath } from "./core/files.js";
 import { executeModuleWorkflowNow } from "./modules/directInvocation.js";
 import { decideReview, reconcileReviews, retryReview } from "./platform/reviewWorkflow.js";
 import { rebuildTodayDashboard } from "./platform/dashboard.js";
@@ -30,10 +30,11 @@ import { materializeFieldDueJobs, materializeStartupJobs, replayRuntimeEvent } f
 import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
 import { createModuleScaffold } from "./modules/scaffold.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "./modules/blueprint.js";
-import { installModulePackage, packModule, rollbackModulePackage } from "./modules/packageManager.js";
+import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "./modules/packageManager.js";
 import { validateModule } from "./modules/validator.js";
 import { testModule } from "./modules/testRunner.js";
 import { runModuleSandbox } from "./modules/sandbox.js";
+import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "./modules/readiness.js";
 import type { ModuleTemplate } from "./modules/types.js";
 
 interface ParsedArgs {
@@ -48,6 +49,11 @@ interface ParsedArgs {
   apiInput: Record<string, JsonValue>;
   requestId: string;
   confirm: boolean;
+}
+
+async function moduleSourceRoot(engineRoot: string, vaultRoot: string, vaultExplicit: boolean, moduleId: string): Promise<string> {
+  const workspace = path.join(vaultRoot, "90-System", "Module Development", moduleId);
+  return vaultExplicit && await exists(path.join(workspace, "module.yaml")) ? workspace : path.join(engineRoot, "modules", moduleId);
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -222,37 +228,52 @@ async function main(): Promise<void> {
     const blueprintPath = parsed.positional[3];
     if (!blueprintPath) throw new Error(`module ${subcommand} --from requires BLUEPRINT`);
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    console.log(JSON.stringify(await scaffoldModuleFromBlueprint(engineRoot, path.resolve(blueprintPath)), null, 2)); return;
+    console.log(JSON.stringify(await scaffoldModuleFromBlueprint(engineRoot, path.resolve(blueprintPath), parsed.vaultExplicit ? { modulesRoot: path.join(parsed.vault, "90-System", "Module Development") } : {}), null, 2)); return;
   }
   if (command === "module" && subcommand === "create") {
     if (!value) throw new Error("module create requires MODULE_ID");
     const template = parsed.positional[3] as ModuleTemplate | undefined;
     if (!template) throw new Error("module create requires a template");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    console.log(JSON.stringify(await createModuleScaffold(engineRoot, value, template, parsed.positional[4] ?? value), null, 2)); return;
+    console.log(JSON.stringify(await createModuleScaffold(engineRoot, value, template, parsed.positional[4] ?? value, parsed.vaultExplicit ? { modulesRoot: path.join(parsed.vault, "90-System", "Module Development") } : {}), null, 2)); return;
   }
   if (command === "module" && subcommand === "validate") {
     if (!value) throw new Error(`module ${subcommand} requires MODULE_ID`);
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const report = await validateModule(engineRoot, path.join(engineRoot, "modules", value), { writeReport: true });
+    const report = await validateModule(engineRoot, await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value), { writeReport: true });
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
   }
   if (command === "module" && subcommand === "test") {
     if (!value) throw new Error("module test requires MODULE_ID");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const report = await testModule(engineRoot, value, { writeReport: true });
+    const report = await testModule(engineRoot, value, { writeReport: true, moduleRoot: await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value) });
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
   }
   if (command === "module" && subcommand === "sandbox") {
     if (!value) throw new Error("module sandbox requires MODULE_ID");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const report = await runModuleSandbox(engineRoot, value);
+    const report = await runModuleSandbox(engineRoot, value, { moduleRoot: await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value) });
     console.log(JSON.stringify(report, null, 2)); process.exitCode = report.overall === "FAIL" ? 1 : 0; return;
+  }
+  if (command === "module" && subcommand === "readiness") {
+    if (!value) throw new Error("module readiness requires MODULE_ID");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await getModuleReadiness(engineRoot, parsed.vault, value), null, 2)); return;
+  }
+  if (command === "module" && subcommand === "readiness-run") {
+    if (!value) throw new Error("module readiness-run requires MODULE_ID");
+    const action = parsed.positional[3] as ModuleReadinessAction | undefined;
+    if (!action || !["validate", "test", "sandbox", "pack", "install"].includes(action)) throw new Error("module readiness-run requires validate, test, sandbox, pack, or install.");
+    const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    console.log(JSON.stringify(await runModuleReadinessAction(engineRoot, parsed.vault, value, action, { confirmBreaking: parsed.confirm }), null, 2)); return;
   }
   if (command === "module" && subcommand === "pack") {
     if (!value) throw new Error("module pack requires MODULE_ID");
     const engineRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    console.log(JSON.stringify(await packModule(engineRoot, value, parsed.positional[3] ? path.resolve(parsed.positional[3]!) : undefined), null, 2)); return;
+    const source = await moduleSourceRoot(engineRoot, parsed.vault, parsed.vaultExplicit, value);
+    const manifest = parseYaml(source, path.join(source, "module.yaml"));
+    const output = parsed.positional[3] ? path.resolve(parsed.positional[3]!) : parsed.vaultExplicit ? path.join(parsed.vault, "90-System", "Modules", "Packages", value, `${String(manifest.version)}.pkb-module`) : undefined;
+    console.log(JSON.stringify(await packModuleDirectory(engineRoot, source, output), null, 2)); return;
   }
   if (command === "module" && ["install", "upgrade"].includes(subcommand ?? "")) {
     if (!value) throw new Error(`module ${subcommand} requires PACKAGE`);

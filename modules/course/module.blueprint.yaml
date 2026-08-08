@@ -1,80 +1,109 @@
-blueprint_version: 1
+blueprint_version: 1.1
 base_template: standard-workflow
-capability_packs:
-- attachment-processing
-- deadline-tracking
-- periodic-summary
-- event-publishing
-- high-privacy
-- immutable-user-content
+capability_packs: [attachment-processing, deadline-tracking, periodic-summary, event-publishing, high-privacy, immutable-user-content]
 module:
   id: course
-  display_name: 课程管理
-  description: 管理课程资料、作业、截止日期和课程总结
-  intended_users:
-  - university-student
-module_class:
-  type: workflow
-  complexity: standard
+  display_name: Course
+  description: Manage course materials, lectures, assignments, deadlines, and weekly course summaries.
+  intended_users: [university-student]
+module_class: { type: workflow, complexity: standard }
 use_cases:
-  primary:
-  - 保存课程讲义
-  - 跟踪作业截止日期
-  - 生成每周课程总结
-  excluded:
-  - 自动提交作业
-  - 自动发送邮件
-  - 修改用户原始课堂笔记
+  primary: [capture lecture material, track assignment deadlines, generate weekly course summaries]
+  excluded: [submit assignments, send external email, overwrite user classroom notes]
 entities:
-- id: course
-  ownership: module
-- id: lecture
-  ownership: instance
-- id: assignment
-  ownership: instance
-inputs:
-- markdown
-- pdf
-- pptx
+  - id: course
+    ownership: module
+    schema:
+      fields:
+        course_code: { type: string, required: true }
+        title: { type: string, required: true }
+  - id: lecture
+    ownership: instance
+    schema:
+      fields:
+        lecture_date: { type: date, required: true, provenance_required: true }
+        material_kind: { type: enum, values: [slides, notes, recording], required: true }
+  - id: assignment
+    ownership: instance
+    schema:
+      fields:
+        deadline: { type: datetime, required: true, critical: true, provenance_required: true, freshness_days: 7 }
+        status: { type: enum, values: [planned, submitted, graded], required: true, critical: true }
+    lifecycle:
+      initial: planned
+      transitions:
+        planned: [submitted]
+        submitted: [graded]
+        graded: []
+  - id: weekly-summary
+    ownership: instance
+    schema:
+      fields:
+        week: { type: string, required: true }
+inputs: [markdown, pdf, pptx]
 outputs:
-- lecture-note
-- assignment-record
-- weekly-summary
-inbox:
-  module_level: true
-  instance_level: true
-  global_routing: true
+  - { id: lecture-note, entity: lecture, schema: lecture, template: templates/lecture.md, target: '{instance.content_root}/Lectures/{task.payload.item_id}.md' }
+  - { id: assignment-record, entity: assignment, schema: assignment, template: templates/assignment.md, target: '{instance.content_root}/Assignments/{task.payload.item_id}.md' }
+  - { id: weekly-summary, entity: weekly-summary, schema: weekly-summary, template: templates/weekly-summary.md, target: '{instance.content_root}/Summaries/{schedule.iso_week}.md' }
+inbox: { module_level: true, instance_level: true, global_routing: true }
 privacy:
   default_sensitivity_class: 2
   default_max_representation: full
   network_allowed: false
   user_original_content_mutable: false
+  input_roles:
+    lecture-material: { sensitivity_class: 1, max_representation: full, allow_codex: true }
+    assignment-brief: { sensitivity_class: 2, max_representation: full, allow_codex: true }
 workflows:
-- id: normalize-lecture
-  trigger: capture
-  requires_ai: true
-- id: generate-weekly-summary
-  trigger: schedule
-  requires_ai: true
+  - id: normalize-lecture
+    trigger: capture
+    requires_ai: true
+    input_entities: [capture]
+    input_roles: [lecture-material]
+    output_entity: lecture
+    read: { representation: full }
+    prompt: { id: normalize-lecture }
+    operation: { type: create-record, target: '{instance.content_root}/Lectures/{task.payload.item_id}.md', template: templates/lecture.md }
+    review_when: [{ field: lecture.lecture_date, condition: missing-or-conflicting }]
+    publishes: [{ event: course.lecture-created, payload: { lecture_id: '{output.id}' } }]
+  - id: normalize-assignment
+    trigger: capture
+    requires_ai: true
+    input_entities: [capture]
+    input_roles: [assignment-brief]
+    output_entity: assignment
+    read: { representation: full }
+    prompt: { id: normalize-assignment }
+    operation: { type: create-record, target: '{instance.content_root}/Assignments/{task.payload.item_id}.md', template: templates/assignment.md }
+    review_when: [{ field: assignment.deadline, condition: missing-or-conflicting }]
+    publishes: [{ event: course.assignment-created, payload: { assignment_id: '{output.id}' } }]
+  - id: generate-weekly-summary
+    trigger: schedule
+    requires_ai: true
+    input_entities: [lecture, assignment]
+    output_entity: weekly-summary
+    read: { representation: summary }
+    prompt: { id: generate-weekly-summary }
+    operation: { type: create-record, target: '{instance.content_root}/Summaries/{schedule.iso_week}.md', template: templates/weekly-summary.md }
 review_policy:
-  critical_fields:
-  - assignment.deadline
-  - assignment.submission_status
+  critical_fields: [assignment.deadline, assignment.status]
   ambiguous_input: review
   destructive_operations: forbidden
 jobs:
-- id: weekly-summary
-  schedule: weekly
-  catch_up: latest
+  - id: weekly-summary
+    workflow_id: generate-weekly-summary
+    schedule: weekly
+    at: '18:00'
+    timezone: instance
+    scope: instance
+    catch_up: latest
+    retry: { max_attempts: 3, strategy: exponential }
+    concurrency: { policy: forbid, key: 'course:{instance}:weekly-summary' }
+    max_age_days: 21
 events:
-  publishes:
-  - course.assignment-created
+  publishes: [course.lecture-created, course.assignment-created]
   subscribes: []
-dashboard:
-  sections:
-  - upcoming-deadlines
-  - recent-lectures
-  - waiting-reviews
+dashboard: { sections: [upcoming-deadlines, recent-lectures, waiting-reviews] }
 testing:
   normal_input: required
   ambiguous_input: required

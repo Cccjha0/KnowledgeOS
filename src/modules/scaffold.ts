@@ -38,10 +38,12 @@ function manifest(id: string, name: string, template: ModuleTemplate): JsonObjec
   };
 }
 
-export async function createModuleScaffold(engineRoot: string, id: string, template: ModuleTemplate, displayName = id): Promise<{ module_root: string; files: number }> {
+export interface ModuleScaffoldOptions { modulesRoot?: string; }
+
+export async function createModuleScaffold(engineRoot: string, id: string, template: ModuleTemplate, displayName = id, options: ModuleScaffoldOptions = {}): Promise<{ module_root: string; files: number }> {
   if (!MODULE_ID.test(id)) throw new PkbError("MODULE_ID_INVALID", "module_id must use lowercase kebab-case.");
   if (!["minimal-config", "workflow", "integration"].includes(template)) throw new PkbError("MODULE_TEMPLATE_INVALID", `Unknown module template ${template}.`);
-  const root = path.join(engineRoot, "modules", id);
+  const root = path.join(options.modulesRoot ?? path.join(engineRoot, "modules"), id);
   const publishesEvents = template === "workflow" || template === "integration";
   if (await exists(root)) throw new PkbError("MODULE_EXISTS", `Module ${id} already exists.`);
   await ensureDir(root);

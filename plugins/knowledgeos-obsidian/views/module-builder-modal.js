@@ -3,12 +3,13 @@ function createModuleBuilderViews(deps) {
 
   class ModuleBuilderModal extends Modal {
     constructor(app, plugin) {
-      super(app); this.plugin = plugin; this.preview = null; this.busy = false;
+      super(app); this.plugin = plugin; this.preview = null; this.busy = false; this.readiness = null; this.readinessError = null;
       this.form = { id: "", name: "", description: "", primary: "", excluded: "自动删除文件\n自动发送外部消息", inputs: "markdown", sensitivity: "1", representation: "full", critical: "", weekly: false };
     }
     onOpen() { this.render(); }
     render() {
       const root = this.contentEl; root.empty(); root.addClass("knowledgeos-module-builder-modal");
+      if (this.readiness) { this.renderReadiness(root); return; }
       root.createEl("h2", { text: "创建 KnowledgeOS 模块" });
       root.createEl("p", { cls: "knowledgeos-builder-intro", text: "先描述用途和权限边界。Core 会验证 Blueprint；只有确认后才生成模块文件。" });
       const form = root.createDiv({ cls: "knowledgeos-builder-form" });
@@ -80,13 +81,71 @@ function createModuleBuilderViews(deps) {
       if (failed.length) { const list = section.createEl("ul"); for (const item of failed) list.createEl("li", { text: item.message }); }
       const details = section.createEl("details"); details.createEl("summary", { text: "查看 Blueprint JSON" }); details.createEl("pre", { text: JSON.stringify(this.blueprint(), null, 2) });
     }
+    actionLabel(action) {
+      return ({ validate: "运行校验", test: "运行模块测试", sandbox: "运行隔离沙箱", pack: "打包模块", install: "安装模块" })[action] || action;
+    }
+    stateLabel(state) {
+      return ({ draft: "草稿", "implementation-required": "需要完成实现", "test-failed": "需要修复", "ready-to-package": "可以打包", installed: "已安装" })[state] || state;
+    }
+    stepLabel(step) {
+      return ({ blueprint: "Blueprint", scaffold: "脚手架", validation: "校验", test: "模块测试", sandbox: "隔离沙箱", package: "模块包", installation: "安装" })[step] || step;
+    }
+    async refreshReadiness() {
+      if (!this.readiness?.module_id) return;
+      this.busy = true; this.readinessError = null; this.render();
+      const response = await this.plugin.client.invoke("getModuleReadiness", { module_id: this.readiness.module_id });
+      this.busy = false;
+      if (!response.ok) this.readinessError = response.error;
+      else this.readiness = response.data;
+      this.render();
+    }
+    async runReadinessAction(action) {
+      if (!this.readiness?.module_id || this.busy) return;
+      this.busy = true; this.readinessError = null; this.render();
+      const response = await this.plugin.client.invoke("runModuleReadinessAction", { module_id: this.readiness.module_id, action });
+      this.busy = false;
+      if (!response.ok) this.readinessError = response.error;
+      else this.readiness = response.data.readiness;
+      this.render();
+    }
+    renderReadiness(root) {
+      root.createEl("h2", { text: "模块交付状态" });
+      const summary = root.createDiv({ cls: "knowledgeos-builder-readiness-summary" });
+      summary.createEl("strong", { text: this.readiness.module_id });
+      summary.createEl("span", { cls: `knowledgeos-builder-readiness-state state-${this.readiness.state}`, text: this.stateLabel(this.readiness.state) });
+      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "模块仍位于开发工作区。只有完成校验、测试、沙箱、打包和明确安装后，才会在此 Vault 中启用。" });
+      const workspace = root.createEl("p", { cls: "knowledgeos-builder-workspace" });
+      workspace.createEl("span", { text: "工作区：" }); workspace.createEl("code", { text: this.readiness.workspace_path || "—" });
+      const list = root.createEl("ol", { cls: "knowledgeos-builder-readiness-list" });
+      for (const step of this.readiness.steps || []) {
+        const row = list.createEl("li", { cls: `knowledgeos-builder-readiness-step is-${step.status}` });
+        const heading = row.createDiv({ cls: "knowledgeos-builder-readiness-heading" });
+        heading.createEl("strong", { text: this.stepLabel(step.id) });
+        heading.createEl("span", { text: step.status === "complete" ? "已完成" : step.status === "failed" ? "需要处理" : "未完成" });
+        row.createEl("div", { cls: "knowledgeos-builder-readiness-message", text: step.message });
+      }
+      if (this.readinessError) root.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: this.readinessError.message || "无法更新模块状态。" });
+      else if (this.busy) root.createEl("div", { cls: "knowledgeos-builder-state", attr: { role: "status", "aria-live": "polite" }, text: "正在执行下一步，请保持此窗口打开。" });
+      const actions = root.createDiv({ cls: "knowledgeos-builder-actions" });
+      const next = (this.readiness.available_actions || [])[0];
+      if (next) {
+        const button = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "正在处理…" : this.actionLabel(next) });
+        button.disabled = this.busy; button.onclick = () => this.runReadinessAction(next);
+      }
+      const refresh = actions.createEl("button", { text: "刷新状态" }); refresh.disabled = this.busy; refresh.onclick = () => this.refreshReadiness();
+      const close = actions.createEl("button", { text: "完成" }); close.disabled = this.busy; close.onclick = () => this.close();
+    }
     async create() {
       if (this.preview?.report?.overall !== "PASS") return;
       this.busy = true; this.render();
       const response = await this.plugin.client.invoke("createModuleFromBlueprint", { blueprint: this.blueprint(), confirm: true });
       this.busy = false;
       if (!response.ok) { this.preview = { error: response.error }; this.render(); return; }
-      new Notice(`模块 ${response.data.module_id} 已生成`); this.close();
+      this.readinessError = null;
+      const readiness = await this.plugin.client.invoke("getModuleReadiness", { module_id: response.data.module_id });
+      if (!readiness.ok) { this.preview = { error: readiness.error }; this.render(); return; }
+      this.readiness = readiness.data;
+      new Notice(`模块 ${response.data.module_id} 已创建到开发工作区。`); this.render();
     }
   }
   return { ModuleBuilderModal };

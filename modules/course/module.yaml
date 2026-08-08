@@ -1,6 +1,6 @@
 id: course
 name: 课程管理
-version: 0.1.0
+version: 0.2.0
 maturity: experimental
 status: disabled
 description: 管理课程资料、作业、截止日期和课程总结
@@ -9,7 +9,7 @@ engine:
   min_version: 0.9.0-beta
   max_version: 0.x
 data:
-  schema_version: 1
+  schema_version: 2
 module_type: workflow
 capabilities:
 - capture-processing
@@ -34,16 +34,41 @@ inbox:
   asset_access_policy:
     sensitivity_class: 2
     max_representation: full
+  default_asset_role: lecture-material
+  asset_roles:
+    lecture-material:
+      inbox_subpath: Lectures
+      asset_access_policy:
+        sensitivity_class: 1
+        max_representation: full
+      entrypoint: normalize-lecture
+    assignment-brief:
+      inbox_subpath: Assignments
+      asset_access_policy:
+        sensitivity_class: 2
+        max_representation: full
+      entrypoint: normalize-assignment
+    private-document:
+      inbox_subpath: Private
+      asset_access_policy:
+        sensitivity_class: 3
+        max_representation: metadata
+      required_user_action: resolve-review
 routing:
   matcher: workflows/classify/v1.0.0.yaml
   auto_route_threshold: 0.85
   review_threshold: 0.6
 entry_workflows:
   capture: workflows/normalize-lecture/v1.0.0.yaml
+  normalize-lecture: workflows/normalize-lecture/v1.0.0.yaml
+  normalize-assignment: workflows/normalize-assignment/v1.0.0.yaml
 schemas:
   registry: schemas/index.yaml
   instance: schemas/instance.schema.json
-  record: schemas/record.schema.json
+  course: schemas/course.schema.json
+  lecture: schemas/lecture.schema.json
+  assignment: schemas/assignment.schema.json
+  weekly-summary: schemas/weekly-summary.schema.json
 prompts:
   registry: prompts/index.yaml
 workflows:
@@ -58,6 +83,7 @@ jobs:
   registry: jobs/jobs.yaml
 events:
   publishes:
+  - course.lecture-created
   - course.assignment-created
   subscribes: []
 dependencies:

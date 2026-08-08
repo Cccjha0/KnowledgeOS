@@ -2,11 +2,86 @@ import path from "node:path";
 import { parseYaml } from "../core/bridge.js";
 import { exists } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
-import { validateModuleBlueprint, type BlueprintCheck } from "./blueprint.js";
+import { blueprintEventNames, isSemanticBlueprint, validateModuleBlueprint, type BlueprintCheck } from "./blueprint.js";
 
 function object(value: JsonValue | undefined): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null; }
 function strings(value: JsonValue | undefined): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
 function sameSet(left: string[], right: string[]): boolean { return left.length === right.length && left.every((item) => right.includes(item)); }
+
+function entries(value: JsonValue | undefined): JsonObject[] { return Array.isArray(value) ? value.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : []; }
+function registryPath(moduleRoot: string, entry: JsonObject | null): string | null { return typeof entry?.path === "string" ? path.join(moduleRoot, "workflows", ...entry.path.replace(/^workflows\//, "").split("/")) : null; }
+
+async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject, checks: BlueprintCheck[]): Promise<void> {
+  const add = (code: string, ok: boolean, message: string, itemPath: string): void => { checks.push({ code, status: ok ? "pass" : "fail", message, path: itemPath }); };
+  const entities = entries(blueprint.entities);
+  const outputs = entries(blueprint.outputs);
+  const workflows = entries(blueprint.workflows);
+  const schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, "schemas", "index.yaml")).schemas) ?? {};
+  const prompts = object(parseYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml")).prompts) ?? {};
+  const workflowRegistry = object(parseYaml(moduleRoot, path.join(moduleRoot, "workflows", "index.yaml")).workflows) ?? {};
+  const reviewPolicy = parseYaml(moduleRoot, path.join(moduleRoot, "rules", "review-policy.yaml"));
+  const ownershipPath = path.join(moduleRoot, "rules", "ownership.yaml");
+  const ownership = await exists(ownershipPath) ? parseYaml(moduleRoot, ownershipPath) : {};
+  const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
+  const entityIds = new Set(entities.map((entity) => String(entity.id)));
+
+  for (const entity of entities) {
+    const id = String(entity.id);
+    const schema = object(schemas[id]);
+    const schemaPath = typeof schema?.path === "string" ? path.join(moduleRoot, "schemas", ...schema.path.split("/")) : null;
+    add("V2_ENTITY_SCHEMA_BOUND", Boolean(schemaPath && await exists(schemaPath)), `${id} has a runtime Schema Registry entry.`, `schemas.${id}`);
+  }
+  for (const output of outputs) {
+    const id = String(output.id);
+    const schemaId = String(output.schema);
+    const schema = object(schemas[schemaId]);
+    const template = typeof output.template === "string" ? path.join(moduleRoot, ...String(output.template).split("/")) : null;
+    add("V2_OUTPUT_SCHEMA_TEMPLATE_BOUND", Boolean(schema && template && await exists(template)), `${id} has its Schema and template materialized.`, `outputs.${id}`);
+  }
+  for (const workflow of workflows) {
+    const id = String(workflow.id);
+    const entry = object(workflowRegistry[id]);
+    const file = registryPath(moduleRoot, entry);
+    if (!file || !(await exists(file))) { add("V2_WORKFLOW_RUNTIME_MISSING", false, `${id} has no runtime Workflow file.`, `workflows.${id}`); continue; }
+    const runtime = parseYaml(moduleRoot, file);
+    const contract = object(runtime.blueprint_contract);
+    const contractRead = object(contract?.read);
+    add("V2_WORKFLOW_CONTRACT_BOUND", Boolean(contract)
+      && contract?.trigger === workflow.trigger
+      && contract?.output_entity === workflow.output_entity
+      && contractRead?.representation === object(workflow.read)?.representation,
+    `${id} runtime Workflow matches trigger, output entity, and read policy.`, `workflows.${id}`);
+    const steps = entries(runtime.steps);
+    const promptId = String(object(workflow.prompt)?.id ?? "");
+    const promptStep = steps.find((step) => step.uses === "codex.prompt");
+    add("V2_WORKFLOW_PROMPT_BOUND", workflow.requires_ai !== true || (Boolean(prompts[promptId]) && object(promptStep?.with)?.prompt_id === promptId), `${id} binds its declared Prompt.`, `workflows.${id}.prompt`);
+    const output = outputs.find((item) => item.entity === workflow.output_entity);
+    const plan = steps.find((step) => step.uses === "core.build-operation-plan");
+    const planWith = object(plan?.with);
+    add("V2_WORKFLOW_OUTPUT_BOUND", Boolean(output) && planWith?.output_schema === output?.schema && planWith?.target === output?.target && planWith?.template === output?.template, `${id} binds its declared output Schema, target, and template.`, `workflows.${id}.operation`);
+    const publications = entries(workflow.publishes);
+    const actualEvents = steps.filter((step) => step.uses === "core.publish-event").map((step) => String(object(step.with)?.event_type ?? ""));
+    add("V2_WORKFLOW_EVENTS_BOUND", sameSet(actualEvents, publications.map((publication) => String(publication.event))), `${id} publishes only its explicitly declared Events.`, `workflows.${id}.publishes`);
+  }
+  const declaredCritical = Array.isArray(reviewPolicy.critical_fields) ? reviewPolicy.critical_fields.filter((field): field is string => typeof field === "string") : [];
+  const expectedCritical = entities.flatMap((entity) => Object.entries(object(object(entity.schema)?.fields) ?? {}).flatMap(([field, raw]) => object(raw)?.critical === true ? [`${String(entity.id)}.${field}`] : []));
+  add("V2_CRITICAL_REVIEW_BOUND", sameSet(declaredCritical, expectedCritical), "Critical Entity fields and runtime Review Policy agree.", "rules/review-policy.yaml");
+  const expectedImmutable = object(blueprint.privacy)?.user_original_content_mutable === true;
+  add("V2_IMMUTABLE_CONTENT_BOUND", ownership.user_original_content_mutable === expectedImmutable && (expectedImmutable || Array.isArray(ownership.forbidden_operations)), "Runtime ownership policy enforces the Blueprint original-content policy.", "rules/ownership.yaml");
+  add("V2_DASHBOARD_BOUND", sameSet(Array.isArray(dashboard.items) ? dashboard.items.filter((item): item is string => typeof item === "string") : [], strings(object(blueprint.dashboard)?.sections)), "Runtime Dashboard materializes Blueprint sections.", "dashboard/provider.yaml");
+
+  const jobs = entries(blueprint.jobs);
+  const jobRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "jobs", "jobs.yaml"));
+  const runtimeJobs = entries(jobRegistry.jobs);
+  for (const job of jobs) {
+    const runtime = runtimeJobs.find((item) => item.id === job.id);
+    add("V2_JOB_WORKFLOW_BOUND", Boolean(runtime) && runtime?.workflow_id === job.workflow_id && runtime?.scope === job.scope, `${String(job.id)} binds its declared Workflow and scope.`, `jobs.${String(job.id)}`);
+  }
+  const events = object(blueprint.events);
+  const mapped = workflows.flatMap((workflow) => entries(workflow.publishes).map((publication) => String(publication.event)));
+  add("V2_EVENT_MAPPINGS_COMPLETE", sameSet(blueprintEventNames(events?.publishes), mapped), "Every published Event is explicitly mapped to a Workflow.", "events.publishes");
+  for (const output of outputs) add("V2_OUTPUT_ENTITY_EXISTS", entityIds.has(String(output.entity)), `${String(output.id)} references a declared Entity.`, `outputs.${String(output.id)}`);
+}
 
 export async function validateBlueprintCompliance(engineRoot: string, moduleRoot: string): Promise<JsonObject> {
   const blueprintPath = path.join(moduleRoot, "module.blueprint.yaml");
@@ -39,6 +114,15 @@ export async function validateBlueprintCompliance(engineRoot: string, moduleRoot
   const runtimeJobs = Array.isArray(jobRegistry.jobs) ? jobRegistry.jobs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)).map((item) => String(item.id)) : [];
   const declaredJobs = Array.isArray(blueprint.jobs) ? blueprint.jobs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)).map((item) => String(item.id)) : [];
   add("BLUEPRINT_JOBS_PRESENT", declaredJobs.every((id) => runtimeJobs.includes(id)), "Every Blueprint Job is registered.", "jobs/jobs.yaml");
+  if (isSemanticBlueprint(blueprint)) await semanticRuntimeCompliance(moduleRoot, blueprint, manifest, checks);
   const failed = checks.filter((item) => item.status === "fail").length;
-  return { report_version: 1, module_id: String(moduleInfo.id), blueprint_validation: blueprintReport.overall, overall: failed ? "FAIL" : "PASS", checks };
+  const semanticChecks = checks.filter((item) => item.code.startsWith("V2_"));
+  return {
+    report_version: 2, module_id: String(moduleInfo.id), blueprint_validation: blueprintReport.overall,
+    structural_compliance: checks.some((item) => item.code.startsWith("BLUEPRINT_" ) && item.status === "fail") ? "FAIL" : "PASS",
+    behavioral_compliance: semanticChecks.some((item) => ["V2_WORKFLOW_CONTRACT_BOUND", "V2_WORKFLOW_EVENTS_BOUND", "V2_JOB_WORKFLOW_BOUND"].includes(item.code) && item.status === "fail") ? "FAIL" : "PASS",
+    privacy_compliance: semanticChecks.some((item) => ["V2_IMMUTABLE_CONTENT_BOUND", "V2_CRITICAL_REVIEW_BOUND"].includes(item.code) && item.status === "fail") ? "FAIL" : "PASS",
+    business_semantic_compliance: isSemanticBlueprint(blueprint) ? semanticChecks.some((item) => item.status === "fail") ? "FAIL" : "PASS" : "NOT-APPLICABLE",
+    overall: failed ? "FAIL" : "PASS", checks,
+  };
 }

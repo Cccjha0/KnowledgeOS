@@ -2,6 +2,9 @@ contract_version: 1
 scenarios:
   normal_capture:
     fixture: fixtures/sample-instance/capture-test.yaml
+  additional_captures:
+  - fixture: fixtures/sample-instance/assignment-capture-test.yaml
+    entrypoint: normalize-assignment
   ambiguous_capture:
     fixture: tests/behavior/ambiguous-input.md
     expected: failed
@@ -25,18 +28,19 @@ scenarios:
     expected_output: 20-Workspace/课程管理/sample-instance/Summaries/2026-W32.md
     codex_output:
       id: course-weekly-2026-W32
-      type: course-record
-      schema_id: record
+      type: course-weekly-summary
+      schema_id: weekly-summary
       schema_version: 1
-      module_version: 0.1.0
+      module_version: 0.2.0
       instance_id: sample-instance
       title: 2026-W32 Weekly Summary
       source_refs: []
       created: '2026-08-09T18:00:00Z'
       updated: '2026-08-09T18:00:00Z'
+      week: 2026-W32
   event_publication:
     enabled: true
-    event_type: course.assignment-created
+    event_type: course.lecture-created
   event_consumption:
     enabled: false
   migration_apply:

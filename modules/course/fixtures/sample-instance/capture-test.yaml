@@ -1,4 +1,5 @@
 capture:
+  expected_output_suffix: Lectures/module-test-capture.md
   path: module-test-capture.md
   item_id: module-test-capture
   content: '# Fixture Capture
@@ -9,14 +10,16 @@ capture:
     '
   expected_output: 20-Workspace/课程管理/sample-instance/Records/module-test-capture.md
   codex_output:
-    id: course-test-record
-    type: course-record
-    schema_id: record
+    id: course-test-lecture
+    type: course-lecture
+    schema_id: lecture
     schema_version: 1
-    module_version: 0.1.0
+    module_version: 0.2.0
     instance_id: sample-instance
     title: Fixture Capture
     source_refs:
     - 20-Workspace/课程管理/sample-instance/Inbox/module-test-capture.md
     created: '2026-01-01T00:00:00Z'
     updated: '2026-01-01T00:00:00Z'
+    lecture_date: '2026-01-01'
+    material_kind: slides

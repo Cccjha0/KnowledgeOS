@@ -10,6 +10,7 @@ import { PkbError } from "../core/errors.js";
 import type { JsonObject } from "../core/types.js";
 import type { ModuleLockEntry, ModuleValidationReport } from "./types.js";
 import { validateModule } from "./validator.js";
+import { discoverModules } from "../core/discovery.js";
 
 interface BridgeResult { ok: boolean; sha256?: string; files?: number; message?: string; }
 interface ModuleLock { schema_version: 1; modules: Record<string, ModuleLockEntry>; }
@@ -33,12 +34,12 @@ async function checksumDirectory(root: string): Promise<string> {
   await visit(root); return hash.digest("hex");
 }
 
-export async function packModule(engineRoot: string, moduleId: string, outputPath?: string): Promise<JsonObject> {
-  const source = path.join(engineRoot, "modules", moduleId);
-  if (!(await exists(path.join(source, "module.yaml")))) throw new PkbError("MODULE_NOT_FOUND", `Module ${moduleId} was not found.`);
+export async function packModuleDirectory(engineRoot: string, source: string, outputPath?: string): Promise<JsonObject> {
+  if (!(await exists(path.join(source, "module.yaml")))) throw new PkbError("MODULE_NOT_FOUND", `Module source was not found: ${source}.`);
   const report = await validateModule(engineRoot, source);
-  if (report.overall === "FAIL") throw new PkbError("MODULE_VALIDATION_FAILED", `${moduleId} cannot be packed because validation failed.`, report);
+  if (report.overall === "FAIL") throw new PkbError("MODULE_VALIDATION_FAILED", "Module cannot be packed because validation failed.", report);
   const manifest = parseYaml(source, path.join(source, "module.yaml"));
+  const moduleId = String(manifest.id);
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-module-${moduleId}-`));
   try {
     const staging = path.join(temporary, moduleId); await fs.cp(source, staging, { recursive: true });
@@ -49,6 +50,10 @@ export async function packModule(engineRoot: string, moduleId: string, outputPat
     const result = bridge(engineRoot, "pack", staging, destination);
     return { module_id: moduleId, version: String(manifest.version), package: destination, checksum: `sha256:${String(result.sha256)}`, files: result.files ?? 0, validation: report.overall };
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
+}
+
+export async function packModule(engineRoot: string, moduleId: string, outputPath?: string): Promise<JsonObject> {
+  return packModuleDirectory(engineRoot, path.join(engineRoot, "modules", moduleId), outputPath);
 }
 
 async function loadLock(vaultRoot: string): Promise<ModuleLock> { return readJson(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { schema_version: 1, modules: {} }); }
@@ -67,6 +72,9 @@ export async function installModulePackage(engineRoot: string, vaultRoot: string
     const unpacked = bridge(engineRoot, "unpack", packagePath, temporary);
     const manifest = parseYaml(temporary, path.join(temporary, "module.yaml"));
     const moduleId = String(manifest.id); const version = String(manifest.version);
+    if ((await discoverModules(engineRoot)).some((module) => module.data.id === moduleId)) {
+      throw new PkbError("MODULE_ID_RESERVED", `${moduleId} is an official Engine Module ID and cannot be installed as a user module.`);
+    }
     const metadata = await readJson<PackageMetadata | null>(path.join(temporary, "package-metadata.json"), null);
     if (!metadata || metadata.package_format !== 1 || metadata.module_id !== moduleId || metadata.version !== version) {
       throw new PkbError("MODULE_PACKAGE_METADATA_INVALID", "Package metadata does not match its manifest.");
@@ -85,7 +93,7 @@ export async function installModulePackage(engineRoot: string, vaultRoot: string
       throw new PkbError("MODULE_UPGRADE_CONFIRMATION_REQUIRED", "Permission-expanding upgrades require explicit approval.", { module_id: moduleId, version, expanded_permissions: expandedPermissions });
     }
     const snapshot = await createGitSnapshot(vaultRoot, `module-install-${moduleId}-${version}`);
-    const destination = path.join(vaultRoot, "90-System", "Modules", moduleId, version);
+    const destination = path.join(vaultRoot, "90-System", "Modules", "Installed", moduleId, version);
     if (await exists(destination)) await fs.rm(destination, { recursive: true, force: true });
     await ensureDir(path.dirname(destination)); await fs.cp(temporary, destination, { recursive: true });
     const packages = path.join(vaultRoot, "90-System", "Modules", "Packages", moduleId); await ensureDir(packages);

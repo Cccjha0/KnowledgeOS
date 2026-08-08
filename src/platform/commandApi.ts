@@ -40,6 +40,7 @@ import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -288,7 +289,25 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
-    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => scaffoldModuleFromBlueprint(ENGINE_ROOT, file)) as Promise<JsonValue>;
+    const moduleId = typeof blueprint.module === "object" && blueprint.module && !Array.isArray(blueprint.module) && typeof (blueprint.module as JsonObject).id === "string"
+      ? String((blueprint.module as JsonObject).id) : null;
+    if (!moduleId) throw new PkbError("INVALID_REQUEST", "blueprint.module.id is required.");
+    const modulesRoot = path.join(vaultRoot, "90-System", "Module Development");
+    return withTemporaryBlueprint(vaultRoot, requestId, blueprint, async (file) => ({
+      ...await scaffoldModuleFromBlueprint(ENGINE_ROOT, file, { modulesRoot }),
+      workspace_path: `90-System/Module Development/${moduleId}`,
+      next_state: "implementation-required",
+    })) as Promise<JsonValue>;
+  }
+  if (method === "getModuleReadiness") {
+    return getModuleReadiness(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"));
+  }
+  if (method === "runModuleReadinessAction") {
+    const action = typeof params.action === "string" ? params.action : "";
+    if (!(["validate", "test", "sandbox", "pack", "install"] as string[]).includes(action)) {
+      throw new PkbError("INVALID_REQUEST", "action must be validate, test, sandbox, pack, or install.");
+    }
+    return runModuleReadinessAction(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"), action as ModuleReadinessAction, { confirmBreaking: params.confirm_breaking === true });
   }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";

@@ -33,6 +33,14 @@ function requiredString(value: JsonValue | undefined, label: string): string {
   return value;
 }
 
+async function fixtureExpectedOutput(vaultRoot: string, instanceId: string, capture: JsonObject, label: string): Promise<string> {
+  const suffix = typeof capture.expected_output_suffix === "string" ? capture.expected_output_suffix.trim().replaceAll("\\", "/").replace(/^\/+/, "") : "";
+  if (!suffix) return requiredString(capture.expected_output, `${label}.expected_output`);
+  if (suffix.split("/").includes("..")) throw new PkbError("MODULE_TEST_FIXTURE_INVALID", `${label}.expected_output_suffix must be Vault-relative.`);
+  const instance = await instanceLocation(vaultRoot, instanceId);
+  return `${requiredString(instance.content_root, "instance.content_root")}/${suffix}`;
+}
+
 function lookup(data: JsonObject, dotted: string): JsonValue | undefined {
   let current: JsonValue | undefined = data;
   for (const part of dotted.split(".")) {
@@ -228,8 +236,8 @@ async function seedDocuments(vault: string, rawSeeds: JsonValue | undefined): Pr
  * Codex is intentionally replaced with the fixture's schema-valid output: this
  * tests Core routing, plans, idempotency and lifecycle without needing a model.
  */
-export async function testModule(engineRoot: string, moduleId: string, options: { writeReport?: boolean } = {}): Promise<ModuleTestReport> {
-  const moduleRoot = path.join(engineRoot, "modules", moduleId);
+export async function testModule(engineRoot: string, moduleId: string, options: { writeReport?: boolean; moduleRoot?: string } = {}): Promise<ModuleTestReport> {
+  const moduleRoot = options.moduleRoot ?? path.join(engineRoot, "modules", moduleId);
   const staticValidation = await validateModule(engineRoot, moduleRoot);
   const checks: ModuleTestCheck[] = [];
   const manifest = parseYaml(engineRoot, path.join(moduleRoot, "module.yaml"));
@@ -260,18 +268,20 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
   const capture = object(fixtureCapture.capture, "MODULE_TEST_FIXTURE_INVALID");
   const captureRelative = requiredString(capture.path, "capture.path");
   const captureContent = requiredString(capture.content, "capture.content");
-  const expectedOutput = requiredString(capture.expected_output, "capture.expected_output");
   const codexOutput = object(capture.codex_output, "MODULE_TEST_FIXTURE_INVALID");
   const itemId = typeof capture.item_id === "string" ? capture.item_id : "module-test-capture";
   const instanceId = requiredString(fixtureInstance.instance_id, "fixture instance_id");
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-module-test-${moduleId}-`));
   try {
     await initializeVault(vault, "disabled");
-    await writeJsonAtomic(path.join(vault, "90-System", "Modules", "installed.json"), { schema_version: 1, modules: [{ id: moduleId, version: String(manifest.version), status: "enabled" }] });
+    const installedPath = `90-System/Modules/Installed/${moduleId}/${String(manifest.version)}`;
+    await fs.cp(moduleRoot, path.join(vault, ...installedPath.split("/")), { recursive: true });
+    await writeJsonAtomic(path.join(vault, "90-System", "Modules", "installed.json"), { schema_version: 1, modules: [{ id: moduleId, version: String(manifest.version), installed_path: installedPath, status: "enabled" }] });
     await createInstance(vault, {
       module_id: moduleId, instance_id: instanceId, display_name: requiredString(fixtureInstance.display_name, "fixture display_name"),
       fields: fixtureFields(manifest, fixtureInstance),
     });
+    const expectedOutput = await fixtureExpectedOutput(vault, instanceId, capture, "capture");
     await seedDocuments(vault, capture.seed_documents);
     const sourceFile = `${String((await instanceLocation(vault, instanceId)).inbox_path)}/${captureRelative}`;
     const sourceAbsolute = path.join(vault, ...sourceFile.split("/"));
@@ -298,6 +308,30 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
         task_status: repeat.status,
         first_effects: firstEffects as unknown as JsonObject,
         repeat_effects: repeatEffects as unknown as JsonObject,
+      }));
+    }
+
+    // A workflow module may declare multiple capture entrypoints.  Exercise
+    // each selected business fixture in the same isolated Vault so a generic
+    // default Capture cannot mask an unrunnable entity workflow.
+    const additionalCaptures = Array.isArray(scenarios.additional_captures) ? scenarios.additional_captures : [];
+    for (const raw of additionalCaptures) {
+      const scenario = object(raw as JsonValue, "MODULE_TEST_CONTRACT_INVALID");
+      const fixturePath = requiredString(scenario.fixture, "additional_captures[].fixture");
+      const entrypoint = requiredString(scenario.entrypoint, "additional_captures[].entrypoint");
+      const fixture = object(parseYaml(moduleRoot, path.join(moduleRoot, ...fixturePath.split("/"))), "MODULE_TEST_CAPTURE_FIXTURE_INVALID");
+      const additionalCapture = object(fixture.capture, "MODULE_TEST_CAPTURE_FIXTURE_INVALID");
+      await seedDocuments(vault, additionalCapture.seed_documents);
+      const source = await writeFixtureCapture(vault, String((await instanceLocation(vault, instanceId)).inbox_path), fixture, `additional capture ${entrypoint}`);
+      const additionalItemId = typeof additionalCapture.item_id === "string" ? additionalCapture.item_id : `module-test-${entrypoint}`;
+      const outputPath = await fixtureExpectedOutput(vault, instanceId, additionalCapture, `additional capture ${entrypoint}`);
+      const output = object(additionalCapture.codex_output, "MODULE_TEST_CAPTURE_FIXTURE_INVALID");
+      const task = await executeFixtureTask(vault, moduleId, instanceId, source, additionalItemId, `additional-${entrypoint}`, createModuleWorkflowRunner(async () => ({ output, stderr: "" })), 3, undefined, entrypoint);
+      const passed = task.status === "completed" && await exists(path.join(vault, ...outputPath.split("/")));
+      checks.push(check("capture", passed ? "pass" : "fail", passed
+        ? `Declared Capture entrypoint ${entrypoint} produced its entity output.`
+        : `Declared Capture entrypoint ${entrypoint} did not produce its entity output.`, {
+        entrypoint, task_status: task.status, expected_output: outputPath, error: task.last_error,
       }));
     }
     const ambiguous = object(scenarios.ambiguous_capture, "MODULE_TEST_CONTRACT_INVALID");
@@ -493,7 +527,13 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     }
   } catch (error) {
     checks.push(check("capture", "fail", error instanceof Error ? error.message : String(error)));
-  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+  } finally {
+    // Windows can keep SQLite WAL handles alive briefly after a fully completed
+    // fixture run. Cleanup must never turn a completed acceptance report into
+    // an opaque multi-minute hang; a later temp-directory sweep can remove a
+    // transient locked directory safely.
+    await fs.rm(vault, { recursive: true, force: true, maxRetries: 0, retryDelay: 0 }).catch(() => undefined);
+  }
   return finalize(engineRoot, moduleRoot, fixtureRoot, moduleId, manifest, staticValidation, checks, options);
 }
 
@@ -501,13 +541,13 @@ async function instanceLocation(vaultRoot: string, instanceId: string): Promise<
   return parseYaml(vaultRoot, path.join(vaultRoot, "90-System", "Instances", instanceId, "instance.yaml"));
 }
 
-async function executeFixtureTask(vaultRoot: string, moduleId: string, instanceId: string, sourceFile: string, itemId: string, attempt: string, runner: ReturnType<typeof createModuleWorkflowRunner>, maxAttempts = 3, resources: Record<keyof TaskResources, "available" | "unavailable" | "not-required"> = { filesystem: "available", network: "not-required", codex: "available", user: "available" }) {
+async function executeFixtureTask(vaultRoot: string, moduleId: string, instanceId: string, sourceFile: string, itemId: string, attempt: string, runner: ReturnType<typeof createModuleWorkflowRunner>, maxAttempts = 3, resources: Record<keyof TaskResources, "available" | "unavailable" | "not-required"> = { filesystem: "available", network: "not-required", codex: "available", user: "available" }, entrypoint = "capture") {
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
     const task = repository.createTask({
-      job_id: `${moduleId}.fixture-capture`, module: moduleId, instance_id: instanceId, task_type: "workflow", workflow: `module:${moduleId}:capture`, priority: "high",
+      job_id: `${moduleId}.fixture-${entrypoint}`, module: moduleId, instance_id: instanceId, task_type: "workflow", workflow: `module:${moduleId}:${entrypoint}`, priority: "high",
       resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
-      trigger: { type: "manual", entrypoint: "capture" }, catch_up_policy: "none", idempotency_key: `module-test:${moduleId}:${instanceId}:${itemId}:${attempt}`,
+      trigger: { type: "manual", entrypoint }, catch_up_policy: "none", idempotency_key: `module-test:${moduleId}:${instanceId}:${itemId}:${attempt}:${entrypoint}`,
       max_attempts: maxAttempts, payload: { source_file: sourceFile, item_id: itemId },
     }).task;
     return await executeTask(vaultRoot, repository, task, "module-test-runner", resources, {}, runner);

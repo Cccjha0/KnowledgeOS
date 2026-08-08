@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseValidateYamlBatch, parseYaml, validateSchema } from "./bridge.js";
+import { parseYaml, validateSchema } from "./bridge.js";
 import { exists, readJson } from "./files.js";
 import type { JsonObject } from "./types.js";
 
@@ -38,19 +38,43 @@ export async function discoverModules(engineRoot: string): Promise<DiscoveredDoc
 }
 
 export async function discoverModulesForVault(engineRoot: string, vaultRoot: string): Promise<DiscoveredDocument[]> {
-  const modules = await discoverModules(engineRoot);
-  const installed = await readJson<{ modules?: Array<{ id?: string; status?: string }> }>(
+  const official = await discoverModules(engineRoot);
+  const installed = await readJson<{ modules?: Array<{ id?: string; status?: string; installed_path?: string }> }>(
     path.join(vaultRoot, "90-System", "Modules", "installed.json"), { modules: [] },
   );
-  const statuses = new Map(
-    (installed.modules ?? [])
-      .filter((entry) => typeof entry.id === "string" && ["enabled", "disabled"].includes(entry.status ?? ""))
-      .map((entry) => [entry.id!, entry.status!]),
-  );
-  return modules.map((module) => ({
-    path: module.path,
-    data: { ...module.data, status: statuses.get(String(module.data.id)) ?? (module.data.status === "disabled" ? "disabled" : "enabled") },
-  }));
+  const result = new Map<string, DiscoveredDocument>();
+  const officialById = new Map(official.map((module) => [String(module.data.id), module]));
+  for (const entry of installed.modules ?? []) {
+    if (typeof entry.id !== "string" || !["enabled", "disabled"].includes(entry.status ?? "")) continue;
+    const officialModule = officialById.get(entry.id);
+    // A lifecycle decision is stored before the next configuration sync has
+    // materialized the official module package in the Vault. Preserve that
+    // decision by applying it to the Engine's official manifest meanwhile.
+    // Otherwise a just-disabled module appears enabled until the next sync.
+    if (typeof entry.installed_path !== "string") {
+      if (officialModule) result.set(entry.id, { path: officialModule.path, data: { ...officialModule.data, status: String(entry.status) } });
+      continue;
+    }
+    const relative = entry.installed_path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!relative || relative.split("/").includes("..")) {
+      if (officialModule) result.set(entry.id, { path: officialModule.path, data: { ...officialModule.data, status: String(entry.status) } });
+      continue;
+    }
+    const manifest = path.join(vaultRoot, ...relative.split("/"), "module.yaml");
+    if (!(await exists(manifest))) {
+      if (officialModule) result.set(entry.id, { path: officialModule.path, data: { ...officialModule.data, status: String(entry.status) } });
+      continue;
+    }
+    const data = parseYaml(vaultRoot, manifest);
+    validateSchema(engineRoot, MODULE_SCHEMA, data);
+    result.set(entry.id, { path: manifest, data: { ...data, status: String(entry.status) } });
+  }
+  for (const module of official) {
+    const id = String(module.data.id);
+    if (result.has(id)) continue;
+    result.set(id, { path: module.path, data: { ...module.data, status: module.data.status === "disabled" ? "disabled" : "enabled" } });
+  }
+  return [...result.values()].sort((left, right) => String(left.data.id).localeCompare(String(right.data.id)));
 }
 
 export async function discoverInstances(vaultRoot: string): Promise<DiscoveredDocument[]> {
@@ -67,38 +91,7 @@ export async function discoverInstances(vaultRoot: string): Promise<DiscoveredDo
 }
 
 export async function discoverRoutingContext(engineRoot: string, vaultRoot: string): Promise<RoutingDiscoveryContext> {
-  const modulePaths: string[] = [];
-  for (const directory of await childDirectories(path.join(engineRoot, "modules"))) {
-    const manifest = path.join(directory, "module.yaml");
-    if (await exists(manifest)) modulePaths.push(manifest);
-  }
-  const instancePaths: string[] = [];
-  for (const directory of await childDirectories(path.join(vaultRoot, "90-System", "Instances"))) {
-    const instance = path.join(directory, "instance.yaml");
-    if (await exists(instance)) instancePaths.push(instance);
-  }
-  const documents = parseValidateYamlBatch(vaultRoot, [
-    ...modulePaths.map((manifest) => ({ path: manifest, schema_id: MODULE_SCHEMA })),
-    ...instancePaths.map((instance) => ({ path: instance, schema_id: INSTANCE_SCHEMA })),
-  ]);
-  const installed = await readJson<{ modules?: Array<{ id?: string; status?: string }> }>(
-    path.join(vaultRoot, "90-System", "Modules", "installed.json"), { modules: [] },
-  );
-  const statuses = new Map(
-    (installed.modules ?? [])
-      .filter((entry) => typeof entry.id === "string" && ["enabled", "disabled"].includes(entry.status ?? ""))
-      .map((entry) => [entry.id!, entry.status!]),
-  );
-  const modules = modulePaths.map((manifest, index) => ({
-    path: manifest,
-    data: {
-      ...documents[index]!,
-      status: statuses.get(String(documents[index]!.id)) ?? (documents[index]!.status === "disabled" ? "disabled" : "enabled"),
-    },
-  }));
-  const instances = instancePaths.map((instance, index) => ({
-    path: instance,
-    data: documents[modulePaths.length + index]!,
-  }));
+  const modules = await discoverModulesForVault(engineRoot, vaultRoot);
+  const instances = await discoverInstances(vaultRoot);
   return { modules, instances };
 }

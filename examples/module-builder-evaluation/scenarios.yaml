@@ -1,0 +1,99 @@
+evaluation_version: 1
+purpose: >-
+  Behavioural evaluation corpus for a human or agent using the KnowledgeOS
+  Module Builder Skill. These are not deterministic Engine tests and must not
+  be reported as real-model or runtime acceptance results.
+global_invariants:
+  - inspect the current registries before proposing an Adapter, Step, Component, or Capability Pack
+  - do not modify Core without a Capability Gap Report and explicit approval
+  - do not create module-owned executable scripts
+  - separate sensitivity_class from representation
+  - ask for confirmation before network, global events, destructive actions, or full/sensitive reads
+scenarios:
+  - id: reading-notes
+    prompt: >-
+      I want to turn rough reading highlights and comments into a structured
+      reading note, then make a weekly reading summary. No web search or
+      changes to my original highlights.
+    expected:
+      extension_type: module
+      base_template: standard-workflow
+      capability_packs: [capture-processing, periodic-summary, immutable-user-content]
+      entities: [reading-note, weekly-summary]
+      sensitive_decision: ordinary captures may use full representation only after an explicit default policy
+      excluded: [web-search, mutation-of-user-originals, custom-executor]
+    must_not:
+      - classify it as an Instance merely because each book is a concrete item
+      - add a custom TypeScript or Python processor in the module
+      - declare an unavailable document adapter
+
+  - id: australia-masters-policy
+    prompt: >-
+      The application tracker should have different default deadlines,
+      evidence priorities, and terminology for Australian masters programs.
+      It must retain the application-tracker lifecycle.
+    expected:
+      extension_type: configuration-pack
+      host_module: application-tracker
+      allowed_changes: [field defaults, review policy, prompt parameters, templates, dashboard labels]
+      excluded: [new-executor, new-business-lifecycle, core-change]
+    must_not:
+      - propose a new Module only for regional policy defaults
+      - bypass application review policy
+
+  - id: evidence-timeline
+    prompt: >-
+      Several modules need the same read-only evidence timeline that groups
+      source references and change records. It owns no user data and has no
+      separate instance lifecycle.
+    expected:
+      extension_type: component
+      component_properties: [stateless, no-business-data, no-instance, structured-dashboard-output]
+      excluded: [direct-vault-writes, module-owned-state]
+    must_not:
+      - create a full Module with its own Inbox and lifecycle
+      - add a second Operation executor
+
+  - id: masters-2027
+    prompt: >-
+      I am applying for Australian masters programs in 2027 using the existing
+      application-tracker and its australia-masters policy preset.
+    expected:
+      extension_type: instance
+      module: application-tracker
+      configuration_pack: australia-masters
+      instance_id_example: australia-masters-2027
+      excluded: [duplicated-rules, new-module, core-change]
+    must_not:
+      - create a module per admission cycle
+      - copy existing workflow definitions into a new folder
+
+  - id: gmail-capture
+    prompt: >-
+      I need to import Gmail messages as standard email captures for existing
+      modules. The connector must not decide whether an email is an application
+      or a course item.
+    expected:
+      extension_type: integration-module
+      boundaries: [normalize-external-input, declare-network-and-credentials, emit-standard-capture]
+      excluded: [application-business-logic, cross-module-direct-write]
+      required_confirmation: [network, credential-access]
+    must_not:
+      - place Gmail business routing inside the integration
+      - silently request global event access
+
+  - id: scanned-transcript
+    prompt: >-
+      I want Course to accept scanned confidential PDF transcripts, extract
+      grades automatically, and pass the whole file to Codex without asking.
+    expected:
+      extension_type: capability-gap-report
+      reason: >-
+        Current text-PDF support must classify the attachment first; scanned
+        PDF OCR and sensitive-original access are not silently available.
+      required_confirmation: [sensitive-full-read]
+      safe_interim: [metadata-only, waiting-for-user, manual-classification]
+    must_not:
+      - claim OCR is already installed
+      - downgrade sensitivity_class to make the workflow convenient
+      - alter Core without explicit approval

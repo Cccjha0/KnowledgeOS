@@ -1,4 +1,4 @@
-# Module Blueprint v1
+# Module Blueprint v1.1
 
 `module.blueprint.yaml` is the design source used by Module Builder. `module.yaml` remains the runtime contract consumed by Core.
 
@@ -31,6 +31,50 @@ node dist/cli.js module blueprint validate examples/module-blueprints/course.blu
 node dist/cli.js module create --from examples/module-blueprints/course.blueprint.yaml
 ```
 
-The generated module stores a normalized copy of the Blueprint and a validation report. To change the design, edit the Blueprint and regenerate in a clean module target; do not treat generated files as the design source.
+The Blueprint v1.1 contract is semantic as well as structural: entities declare their lifecycle and schema fields; Workflows declare the entities and representations they consume, their Prompt/output/Review/Operation mappings, and their concrete Event publications; Jobs bind to named Workflows. The Builder rejects generic placeholder mappings for these contracts.
+
+## Vault module workspaces
+
+When a Vault is supplied, Builder commands never create or overwrite an Engine source module. They use a three-stage Vault-owned layout instead:
+
+```text
+90-System/Module Development/{module_id}/
+  Draft produced by Blueprint or scaffold commands. It is not installed or enabled.
+
+90-System/Modules/Packages/{module_id}/{version}.pkb-module
+  Local package built from a completed development workspace.
+
+90-System/Modules/Installed/{module_id}/{version}/
+  Immutable installed package used by the Vault at runtime.
+
+90-System/Modules/Official/{module_id}/{version}/
+  Engine-synchronised official module copies. User packages cannot replace these IDs.
+```
+
+For example:
+
+```powershell
+node dist/cli.js module create --from examples/module-blueprints/course.blueprint.yaml --vault C:\KnowledgeOS\my-vault
+node dist/cli.js module validate course --vault C:\KnowledgeOS\my-vault
+node dist/cli.js module test course --vault C:\KnowledgeOS\my-vault
+node dist/cli.js module pack course --vault C:\KnowledgeOS\my-vault
+node dist/cli.js module install C:\KnowledgeOS\my-vault\90-System\Modules\Packages\course\0.1.0.pkb-module --vault C:\KnowledgeOS\my-vault
+```
+
+Without `--vault`, CLI commands operate on the Engine's official source modules for Engine development only. A generated Vault workspace remains in the `implementation-required` state until it passes validation and tests, is packaged, and is explicitly installed.
+
+## Readiness gates
+
+Core exposes the same resumable delivery flow to the plugin and CLI. The workspace status deliberately records each gate rather than inferring readiness from the existence of generated files:
+
+```text
+draft → blueprint-valid → implementation-required
+      → validating → test-failed | ready-to-package
+      → packaged → installed
+```
+
+Use `pkb module readiness {module_id} --vault {vault}` to inspect the current state. Run one explicit next step with `pkb module readiness-run {module_id} validate|test|sandbox|pack|install --vault {vault}`. The equivalent Command API methods are `getModuleReadiness` and `runModuleReadinessAction`; both return the next legal actions and report paths for a future Module Builder Center.
+
+The generated module stores a normalized copy of the Blueprint and a validation report. To change the design, edit the Blueprint and regenerate in a clean workspace target; do not treat generated files as the design source.
 
 For the current automated and manual acceptance status, see [milestone-j-validation.md](milestone-j-validation.md).

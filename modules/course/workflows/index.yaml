@@ -9,6 +9,11 @@ workflows:
     path: normalize-lecture/v1.0.0.yaml
     versions:
       1.0.0: normalize-lecture/v1.0.0.yaml
+  normalize-assignment:
+    active_version: 1.0.0
+    path: normalize-assignment/v1.0.0.yaml
+    versions:
+      1.0.0: normalize-assignment/v1.0.0.yaml
   generate-weekly-summary:
     active_version: 1.0.0
     path: generate-weekly-summary/v1.0.0.yaml

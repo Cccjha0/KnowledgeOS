@@ -22,23 +22,40 @@ steps:
 - id: normalize
   uses: codex.prompt
   with:
-    prompt_id: normalize-record
-    output_schema: https://pkb.local/schemas/course/record.schema.json
+    prompt_id: normalize-lecture
+    output_schema: https://pkb.local/schemas/course/lecture.schema.json
 - id: plan
   uses: core.build-operation-plan
   with:
     output: normalize
-    output_schema: record
-    target: '{instance.content_root}/Records/{task.payload.item_id}.md'
-    template: templates/record.md
-    idempotency_key: course:{instance.instance_id}:record:{task.payload.item_id}
-    summary: Create a normalized record
-- id: publish-record-created
+    output_schema: lecture
+    target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
+    template: templates/lecture.md
+    idempotency_key: course:{instance.instance_id}:normalize-lecture:{task.payload.item_id}
+    summary: Create lecture from normalized material
+- id: publish-lecture-created
   uses: core.publish-event
   with:
-    event_type: course.assignment-created
+    event_type: course.lecture-created
     payload_from: normalize
+    payload_fields:
+      lecture_id: id
 outputs:
 - operation_plan
 - dashboard_items
 - events
+blueprint_contract:
+  trigger: capture
+  input_entities: [capture]
+  input_roles: [lecture-material]
+  output_entity: lecture
+  read: { representation: full }
+  prompt_id: normalize-lecture
+  operation:
+    type: create-record
+    target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
+    template: templates/lecture.md
+  publishes:
+  - event: course.lecture-created
+    payload:
+      lecture_id: '{output.id}'
