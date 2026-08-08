@@ -160,9 +160,19 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     assert.deepEqual(querySteps.map((step) => (step.with as JsonObject).schema), ["lecture", "assignment"]);
     assert.deepEqual(querySteps.map((step) => ((step.with as JsonObject).time_window as JsonObject).unit), ["week", "on-or-after"]);
     assert.equal(summarySteps.findIndex((step) => step.uses === "core.query-documents") < summarySteps.findIndex((step) => step.uses === "codex.prompt"), true);
-    const planStep = summarySteps.find((step) => step.uses === "core.build-operation-plan");
-    assert.equal((planStep?.with as JsonObject).operation_type, "create-record", "The Blueprint operation mode must reach the runtime plan builder.");
-    const valid = await validateModule(engine, moduleRoot);
+      const planStep = summarySteps.find((step) => step.uses === "core.build-operation-plan");
+      assert.equal((planStep?.with as JsonObject).operation_type, "create-record", "The Blueprint operation mode must reach the runtime plan builder.");
+      const assignmentWorkflowPath = path.join(moduleRoot, "workflows", "normalize-assignment", "v1.0.0.yaml");
+      const assignmentWorkflow = parseYaml(moduleRoot, assignmentWorkflowPath);
+      const transitionStep = (assignmentWorkflow.steps as JsonObject[]).find((step) => step.uses === "component.state-transition-validation");
+      assert.deepEqual((transitionStep?.with as JsonObject).lifecycle, {
+        initial: "planned",
+        transitions: { planned: ["submitted"], submitted: ["graded"], graded: [] },
+      }, "Lifecycle Blueprints must materialize a runtime state-transition guard.");
+      assert.equal((transitionStep?.with as JsonObject).proposed_from, "normalize");
+      assert.equal((assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "component.state-transition-validation")
+        < (assignmentWorkflow.steps as JsonObject[]).findIndex((step) => step.uses === "core.build-operation-plan"), true);
+      const valid = await validateModule(engine, moduleRoot);
     assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
 
     (eventStep!.with as JsonObject).event_type = "course.assignment-created";

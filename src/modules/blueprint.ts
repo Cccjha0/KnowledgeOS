@@ -199,9 +199,12 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     if (lifecycle) {
       const initial = String(lifecycle.initial ?? "");
       const transitions = object(lifecycle.transitions) ?? {};
-      checks.push(initial && Object.prototype.hasOwnProperty.call(transitions, initial)
+      const stateField = object(entity.schema)?.fields && object(object(entity.schema)?.fields)?.status ? "status" : null;
+      const states = new Set(Object.keys(transitions));
+      const transitionsValid = Object.values(transitions).every((targets) => Array.isArray(targets) && targets.every((target) => typeof target === "string" && states.has(target)));
+      checks.push(initial && stateField && Object.prototype.hasOwnProperty.call(transitions, initial) && transitionsValid
         ? check("SEMANTIC_LIFECYCLE_VALID", "pass", `${entityId} lifecycle has an initial state and transitions.`, `entities.${entityId}.lifecycle`)
-        : check("SEMANTIC_LIFECYCLE_INVALID", "fail", `${entityId} lifecycle initial state must be a transition key.`, `entities.${entityId}.lifecycle`));
+        : check("SEMANTIC_LIFECYCLE_INVALID", "fail", `${entityId} lifecycle must use a declared status field, an initial state, and only declared transition targets.`, `entities.${entityId}.lifecycle`));
     }
   }
   for (const fieldRef of criticalFields) {
@@ -428,6 +431,15 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
     generated_entities: entityIdsForOwnership(entities),
     forbidden_operations: object(blueprint.privacy)?.user_original_content_mutable === true ? [] : ["update-user-original", "overwrite-source"],
   });
+  const machines = Object.fromEntries(entities.flatMap((entity) => {
+    const lifecycle = object(entity.lifecycle);
+    return lifecycle ? [[String(entity.id), {
+      status_field: "status",
+      initial: typeof lifecycle.initial === "string" ? lifecycle.initial : "",
+      transitions: object(lifecycle.transitions) ?? {},
+    }]] : [];
+  }));
+  if (Object.keys(machines).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "state-machines.yaml"), { machines });
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
   dashboard.items = strings(object(blueprint.dashboard)?.sections);
   writeYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"), dashboard);
@@ -478,6 +490,7 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     const id = String(workflow.id);
     const outputEntity = String(workflow.output_entity ?? "record");
     const output = outputs.find((item) => item.entity === outputEntity);
+    const lifecycle = object(entityObjects(blueprint).find((entity) => entity.id === outputEntity)?.lifecycle);
     const operation = object(workflow.operation) ?? {};
     const operationType = String(operation.type ?? "create-record");
     const representation = String(object(workflow.read)?.representation ?? requestedRepresentation);
@@ -533,6 +546,18 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
         const promptIndex = steps.findIndex((step) => step.uses === "codex.prompt");
         generated.steps = promptIndex < 0 ? [...queries, ...steps] : [...steps.slice(0, promptIndex), ...queries, ...steps.slice(promptIndex)];
       }
+    }
+    if (semantic && lifecycle && output) {
+      const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+      const planIndex = steps.findIndex((step) => step.uses === "core.build-operation-plan");
+      const validation = {
+        id: `validate-${outputEntity}-transition`, uses: "component.state-transition-validation",
+        with: {
+          target: String(output.target), proposed_from: workflow.trigger === "schedule" ? "summarize" : "normalize", status_field: "status",
+          lifecycle: { initial: typeof lifecycle.initial === "string" ? lifecycle.initial : "", transitions: object(lifecycle.transitions) ?? {} },
+        },
+      };
+      generated.steps = planIndex < 0 ? [...steps, validation] : [...steps.slice(0, planIndex), validation, ...steps.slice(planIndex)];
     }
     if (workflow.trigger === "schedule" && !semantic) {
       const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];

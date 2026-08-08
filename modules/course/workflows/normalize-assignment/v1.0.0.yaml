@@ -24,6 +24,18 @@ steps:
   with:
     prompt_id: normalize-assignment
     output_schema: https://pkb.local/schemas/course/assignment.schema.json
+- id: validate-assignment-transition
+  uses: component.state-transition-validation
+  with:
+    target: '{instance.content_root}/Assignments/{task.payload.item_id}.md'
+    proposed_from: normalize
+    status_field: status
+    lifecycle:
+      initial: planned
+      transitions:
+        planned: [submitted]
+        submitted: [graded]
+        graded: []
 - id: plan
   uses: core.build-operation-plan
   with:

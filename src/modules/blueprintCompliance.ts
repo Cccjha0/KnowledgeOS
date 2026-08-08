@@ -62,6 +62,16 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
     const declaredOperation = object(workflow.operation);
     add("V2_WORKFLOW_OPERATION_MODE_BOUND", Boolean(declaredOperation) && planWith?.operation_type === declaredOperation?.type,
       `${id} passes its declared ${String(declaredOperation?.type ?? "record")} mode into the runtime Operation Plan builder.`, `workflows.${id}.operation.type`);
+    const lifecycle = object(entities.find((entity) => String(entity.id) === String(workflow.output_entity))?.lifecycle);
+    if (lifecycle) {
+      const transitionStep = steps.find((step) => step.uses === "component.state-transition-validation");
+      const transitionWith = object(transitionStep?.with);
+      const expectedProposedFrom = workflow.trigger === "schedule" ? "summarize" : "normalize";
+      const lifecycleMatches = JSON.stringify(transitionWith?.lifecycle) === JSON.stringify({ initial: lifecycle.initial, transitions: lifecycle.transitions });
+      add("V2_WORKFLOW_LIFECYCLE_BOUND", Boolean(transitionStep) && transitionWith?.target === output?.target
+        && transitionWith?.status_field === "status" && transitionWith?.proposed_from === expectedProposedFrom && lifecycleMatches,
+      `${id} binds its declared lifecycle to the state-transition validation Component.`, `workflows.${id}.lifecycle`);
+    }
     const blueprintRoles = object(object(blueprint.privacy)?.input_roles) ?? {};
     const runtimeRolePolicies = object(contract?.role_policies) ?? {};
     const workflowRoles = strings(workflow.input_roles);
