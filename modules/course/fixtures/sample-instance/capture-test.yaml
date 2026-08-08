@@ -21,5 +21,6 @@ capture:
     - 20-Workspace/课程管理/sample-instance/Inbox/module-test-capture.md
     created: '2026-01-01T00:00:00Z'
     updated: '2026-01-01T00:00:00Z'
+    safe_summary: Fixture lecture summary.
     lecture_date: '2026-01-01'
     material_kind: slides

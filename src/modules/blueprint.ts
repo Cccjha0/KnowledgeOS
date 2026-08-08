@@ -60,6 +60,10 @@ function entityObjects(blueprint: JsonObject): JsonObject[] {
   return Array.isArray(blueprint.entities) ? blueprint.entities.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
 }
 
+function sourceObjects(workflow: JsonObject): JsonObject[] {
+  return Array.isArray(workflow.sources) ? workflow.sources.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+}
+
 function representationRank(value: string): number {
   return ["metadata", "summary", "full", "sensitive-original"].indexOf(value);
 }
@@ -225,6 +229,7 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   for (const workflow of workflows) {
     const id = String(workflow.id);
     const inputEntities = strings(workflow.input_entities);
+    const sources = sourceObjects(workflow);
     const outputEntity = String(workflow.output_entity ?? "");
     const roles = strings(workflow.input_roles);
     const read = object(workflow.read);
@@ -240,6 +245,23 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     if (workflow.trigger === "capture") checks.push(roles.length > 0
       ? check("SEMANTIC_CAPTURE_ROLE_DECLARED", "pass", `${id} declares an input role.`, `workflows.${id}.input_roles`)
       : check("SEMANTIC_CAPTURE_ROLE_REQUIRED", "fail", `${id} is capture-triggered and must declare input_roles.`, `workflows.${id}.input_roles`));
+    if (workflow.trigger === "schedule") {
+      checks.push(sources.length > 0
+        ? check("SEMANTIC_SCHEDULE_SOURCES_DECLARED", "pass", `${id} declares the source query contract for its scheduled input.`, `workflows.${id}.sources`)
+        : check("SEMANTIC_SCHEDULE_SOURCES_REQUIRED", "fail", `${id} is scheduled and must declare sources that Core will query before prompting.`, `workflows.${id}.sources`));
+      for (const source of sources) {
+        const entityId = String(source.entity ?? "");
+        const entity = entities.find((candidate) => candidate.id === entityId);
+        const dateField = String(source.date_field ?? "");
+        const fieldExists = Boolean(object(object(entity?.schema)?.fields)?.[dateField]);
+        const outputExists = outputs.some((output) => output.entity === entityId);
+        const window = String(source.window ?? "");
+        const validWindow = ["current-day", "current-week", "active-or-upcoming", "all"].includes(window);
+        checks.push(entity && fieldExists && outputExists && validWindow
+          ? check("SEMANTIC_SCHEDULE_SOURCE_VALID", "pass", `${id} queries ${entityId} using ${window}.`, `workflows.${id}.sources`)
+          : check("SEMANTIC_SCHEDULE_SOURCE_INVALID", "fail", `${id} source ${entityId || "unknown"} must reference an output Entity, declared date field, and supported window.`, `workflows.${id}.sources`));
+      }
+    }
     for (const role of roles) {
       const policy = object(inputRoles[role]);
       const requested = String(read?.representation ?? "metadata");
@@ -343,7 +365,11 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   const manifestSchemas = object(manifest.schemas) ?? {};
   const promptRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml"));
   const prompts = object(promptRegistry.prompts) ?? {};
-  const workflowPrompts = workflowObjects(blueprint).map((workflow) => String(object(workflow.prompt)?.id ?? "")).filter(Boolean);
+  const workflows = workflowObjects(blueprint);
+  const workflowPrompts = workflows.map((workflow) => String(object(workflow.prompt)?.id ?? "")).filter(Boolean);
+  const summarySourceEntities = new Set(workflows
+    .filter((workflow) => String(object(workflow.read)?.representation) === "summary")
+    .flatMap((workflow) => sourceObjects(workflow).map((source) => String(source.entity))));
   const baseRequired = ["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "title", "source_refs", "created", "updated"];
   for (const entity of entities) {
     const entityId = String(entity.id);
@@ -352,8 +378,10 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
       id: { type: "string" }, type: { const: `${moduleId}-${entityId}` }, schema_id: { const: entityId }, schema_version: { const: 1 }, module_version: { type: "string" },
       instance_id: { type: "string" }, title: { type: "string", minLength: 1 }, source_refs: { type: "array", items: { type: "string" } }, generation: { type: ["object", "null"] },
       created: { type: "string", format: "date-time" }, updated: { type: "string", format: "date-time" },
+      // Summary access is opt-in and must not be derived from a document's first paragraph.
+      safe_summary: { type: ["string", "null"] },
     };
-    const required = [...baseRequired];
+    const required = [...baseRequired, ...(summarySourceEntities.has(entityId) ? ["safe_summary"] : [])];
     for (const [fieldId, raw] of Object.entries(declaredFields)) {
       const field = object(raw)!;
       properties[fieldId] = schemaProperty(field);
@@ -370,12 +398,15 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
 
   for (const promptId of workflowPrompts) {
     if (prompts[promptId]) continue;
-    const workflow = workflowObjects(blueprint).find((item) => object(item.prompt)?.id === promptId)!;
+    const workflow = workflows.find((item) => object(item.prompt)?.id === promptId)!;
     const entityId = String(workflow.output_entity);
     const relative = `generated/${promptId}/v1.0.0.md`;
     prompts[promptId] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative }, status: "active" };
     await fs.mkdir(path.dirname(path.join(moduleRoot, "prompts", relative)), { recursive: true });
-    await fs.writeFile(path.join(moduleRoot, "prompts", relative), `---\nprompt_id: ${promptId}\nprompt_version: 1.0.0\nmodule: ${moduleId}\ntask_type: normalization\noutput_schema: https://pkb.local/schemas/${moduleId}/${entityId}.schema.json\nstatus: active\n---\n\nReturn only a valid ${entityId} result. Preserve facts, references, and uncertainty.\n`, "utf8");
+    const safeSummaryInstruction = summarySourceEntities.has(entityId)
+      ? " Include safe_summary: an explicit concise representation safe for later periodic summaries; never derive it from hidden or sensitive text."
+      : "";
+    await fs.writeFile(path.join(moduleRoot, "prompts", relative), `---\nprompt_id: ${promptId}\nprompt_version: 1.0.0\nmodule: ${moduleId}\ntask_type: normalization\noutput_schema: https://pkb.local/schemas/${moduleId}/${entityId}.schema.json\nstatus: active\n---\n\nReturn only a valid ${entityId} result. Preserve facts, references, and uncertainty.${safeSummaryInstruction}\n`, "utf8");
   }
   promptRegistry.prompts = prompts;
   writeYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml"), promptRegistry);
@@ -400,6 +431,30 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
 }
 
 function entityIdsForOwnership(entities: JsonObject[]): string[] { return entities.map((entity) => String(entity.id)); }
+
+function sourceQuerySteps(workflow: JsonObject, outputs: JsonObject[], representation: string): JsonObject[] {
+  return sourceObjects(workflow).map((source, index) => {
+    const entity = String(source.entity);
+    const output = outputs.find((candidate) => candidate.entity === entity);
+    const root = typeof source.root === "string" ? source.root : path.posix.dirname(String(output?.target ?? ""));
+    const window = String(source.window);
+    const timeWindow = window === "all" ? null
+      : window === "current-day" ? { field: String(source.date_field), unit: "day", reference: "{schedule.date}" }
+        : window === "current-week" ? { field: String(source.date_field), unit: "week", reference: "{schedule.iso_week}" }
+          : { field: String(source.date_field), unit: "on-or-after", reference: "{schedule.date}" };
+    return {
+      id: `query-${entity}-${index + 1}`,
+      uses: "core.query-documents",
+      with: {
+        root,
+        filters: { ...(object(source.filters) ?? {}), instance_id: { equals: "{instance.instance_id}" } },
+        time_window: timeWindow,
+        schema: entity,
+        read: { representation },
+      },
+    };
+  });
+}
 
 async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject): Promise<void> {
   const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
@@ -433,7 +488,7 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     if (semantic) {
       const blueprintContract: JsonObject = {
       trigger: String(workflow.trigger ?? ""),
-      input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles), output_entity: outputEntity,
+        input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles), sources: sourceObjects(workflow), output_entity: outputEntity,
       read: { representation }, prompt_id: promptId,
       operation: object(workflow.operation) ?? {}, publishes: publications.map((publication) => ({ event: String(publication.event), payload: object(publication.payload) ?? {} })),
       };
@@ -453,11 +508,22 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
         with: {
           output: workflow.trigger === "schedule" ? "summarize" : "normalize",
           output_schema: String(output.schema), target: String(output.target), template: String(output.template),
-          idempotency_key: `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{task.payload.item_id}`, summary: `Create ${outputEntity} from ${id}`,
+          idempotency_key: workflow.trigger === "schedule"
+            ? `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{schedule.iso_week}`
+            : `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{task.payload.item_id}`,
+          summary: `Create ${outputEntity} from ${id}`,
         },
       }];
       return [step];
     });
+    if (semantic && workflow.trigger !== "capture") {
+      const queries = sourceQuerySteps(workflow, outputs, representation);
+      if (queries.length) {
+        const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+        const promptIndex = steps.findIndex((step) => step.uses === "codex.prompt");
+        generated.steps = promptIndex < 0 ? [...queries, ...steps] : [...steps.slice(0, promptIndex), ...queries, ...steps.slice(promptIndex)];
+      }
+    }
     if (workflow.trigger === "schedule" && !semantic) {
       const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
       generated.steps = steps.map((step) => step.uses === "core.build-operation-plan" ? {

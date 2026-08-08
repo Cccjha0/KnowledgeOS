@@ -151,6 +151,22 @@
           "requires_network": { "type": "boolean", "default": false },
           "input_entities": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } },
           "input_roles": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["entity", "window", "date_field"],
+              "properties": {
+                "entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+                "root": { "type": "string", "minLength": 1 },
+                "window": { "enum": ["current-day", "current-week", "active-or-upcoming", "all"] },
+                "date_field": { "type": "string", "minLength": 1 },
+                "filters": { "type": "object" }
+              }
+            }
+          },
           "output_entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
           "read": { "type": "object", "additionalProperties": false, "required": ["representation"], "properties": { "representation": { "enum": ["metadata", "summary", "full", "sensitive-original"] } } },
           "prompt": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } } },

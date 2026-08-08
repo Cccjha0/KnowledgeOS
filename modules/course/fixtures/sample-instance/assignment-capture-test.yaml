@@ -4,7 +4,7 @@ capture:
   content: |
     # Assignment brief
 
-    Submit the machine learning reflection by 2026-08-14 17:00 UTC.
+    Submit the machine learning reflection by 2026-08-02 17:00 UTC.
   expected_output_suffix: Assignments/module-test-assignment.md
   codex_output:
     id: course-test-assignment
@@ -18,5 +18,6 @@ capture:
     - 20-Workspace/Course/sample-instance/Inbox/Assignments/module-test-assignment.md
     created: '2026-08-01T00:00:00Z'
     updated: '2026-08-01T00:00:00Z'
-    deadline: '2026-08-14T17:00:00Z'
+    safe_summary: Fixture assignment summary.
+    deadline: '2026-08-02T17:00:00Z'
     status: planned

@@ -366,10 +366,11 @@ function matchesTimeWindow(data: JsonObject, settings: JsonObject, state: Workfl
     throw new PkbError("MODULE_QUERY_TIME_MISSING", `${relativePath} is missing a valid ${field} required by this query.`);
   }
   if (unit === "day") return date === reference;
-  if (unit === "week") {
-    const [year, month, day] = date.split("-").map(Number);
-    return isoWeek({ year: year!, month: month!, day: day! }).iso_week === reference;
-  }
+    if (unit === "week") {
+      const [year, month, day] = date.split("-").map(Number);
+      return isoWeek({ year: year!, month: month!, day: day! }).iso_week === reference;
+    }
+    if (unit === "on-or-after") return date >= reference;
   throw new PkbError("MODULE_QUERY_TIME_WINDOW_INVALID", `Unsupported time_window unit ${unit}.`);
 }
 

@@ -412,6 +412,7 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
 
     const periodic = object(scenarios.periodic_job, "MODULE_TEST_CONTRACT_INVALID");
     if (periodic.enabled === true) {
+      await seedDocuments(vault, periodic.seed_documents);
       await registerDeclaredJobs(vault);
       const scheduledAt = new Date(requiredString(periodic.scheduled_at, "periodic_job.scheduled_at"));
       const scheduled = await evaluateScheduler(vault, scheduledAt);
@@ -421,10 +422,33 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       try { periodicTask = scheduled.created.map((taskId) => repository.getTask(taskId)).find((task) => task?.module === moduleId && task.job_id === expectedJobId && task.instance_id === instanceId) ?? null; }
       finally { repository.close(); }
       const periodicOutput = object(periodic.codex_output, "MODULE_TEST_CONTRACT_INVALID");
-      const completed = periodicTask ? await executeExistingTask(vault, periodicTask, createModuleWorkflowRunner(async () => ({ output: periodicOutput, stderr: "" }))) : null;
+      let periodicContextSources: string[] = [];
+      const completed = periodicTask ? await executeExistingTask(vault, periodicTask, createModuleWorkflowRunner(async (options) => {
+        const context = JSON.parse(await fs.readFile(path.join(options.contextRoot, "context-manifest.json"), "utf8")) as { primary_input: { source_path: string }; related_inputs: Array<{ source_path: string }> };
+        periodicContextSources = [context.primary_input.source_path, ...context.related_inputs.map((input) => input.source_path)];
+        return { output: periodicOutput, stderr: "" };
+      })) : null;
       const periodicOutputPath = requiredString(periodic.expected_output, "periodic_job.expected_output");
-      const periodicPassed = completed?.status === "completed" && await exists(path.join(vault, ...periodicOutputPath.split("/")));
-      checks.push(check("periodic", periodicPassed ? "pass" : "fail", periodicPassed ? "The module's declared periodic Job created and completed its own Task." : "The module's declared periodic Job was not created and completed.", { expected_job_id: expectedJobId, created: scheduled.created, task_status: completed?.status ?? null, expected_output: periodicOutputPath }));
+      const expectedContextSources = Array.isArray(periodic.expected_context_sources) ? periodic.expected_context_sources.filter((value): value is string => typeof value === "string") : null;
+      const expectedSourceRefs = Array.isArray(periodic.expected_source_refs) ? periodic.expected_source_refs.filter((value): value is string => typeof value === "string") : null;
+      const outputAbsolute = path.join(vault, ...periodicOutputPath.split("/"));
+      let writtenSourceRefs: string[] | null = null;
+      if (await exists(outputAbsolute)) {
+        try {
+          const sourceRefs = parseMarkdown(vault, outputAbsolute).data.source_refs;
+          writtenSourceRefs = Array.isArray(sourceRefs) ? sourceRefs.filter((value): value is string => typeof value === "string") : [];
+        } catch { writtenSourceRefs = null; }
+      }
+      const contextMatches = !expectedContextSources || JSON.stringify(periodicContextSources) === JSON.stringify(expectedContextSources);
+      const sourceRefsMatch = !expectedSourceRefs || JSON.stringify(writtenSourceRefs) === JSON.stringify(expectedSourceRefs);
+      const periodicPassed = completed?.status === "completed" && await exists(outputAbsolute) && contextMatches && sourceRefsMatch;
+      checks.push(check("periodic", periodicPassed ? "pass" : "fail", periodicPassed
+        ? "The module's declared periodic Job queried its declared sources and completed its own Task."
+        : "The module's declared periodic Job did not create its declared output from the expected source context.", {
+        expected_job_id: expectedJobId, created: scheduled.created, task_status: completed?.status ?? null, expected_output: periodicOutputPath,
+        expected_context_sources: expectedContextSources, actual_context_sources: periodicContextSources,
+        expected_source_refs: expectedSourceRefs, actual_source_refs: writtenSourceRefs,
+      }));
     } else checks.push(check("periodic", "not-applicable", "Module has no periodic Job scenario."));
 
     const event = object(scenarios.event_consumption, "MODULE_TEST_CONTRACT_INVALID");

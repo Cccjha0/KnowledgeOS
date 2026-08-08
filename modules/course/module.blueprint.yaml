@@ -81,6 +81,13 @@ workflows:
     trigger: schedule
     requires_ai: true
     input_entities: [lecture, assignment]
+    sources:
+      - entity: lecture
+        window: current-week
+        date_field: lecture_date
+      - entity: assignment
+        window: active-or-upcoming
+        date_field: deadline
     output_entity: weekly-summary
     read: { representation: summary }
     prompt: { id: generate-weekly-summary }

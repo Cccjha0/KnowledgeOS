@@ -152,6 +152,14 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
     const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");
     assert.equal((eventStep?.with as JsonObject).event_type, "course.lecture-created", "Events must follow the declaring Workflow, never array order.");
+    const summaryWorkflowPath = path.join(moduleRoot, "workflows", "generate-weekly-summary", "v1.0.0.yaml");
+    const summaryWorkflow = parseYaml(moduleRoot, summaryWorkflowPath);
+    const summarySteps = summaryWorkflow.steps as JsonObject[];
+    const querySteps = summarySteps.filter((step) => step.uses === "core.query-documents");
+    assert.equal(querySteps.length, 2, "Scheduled Blueprint sources must materialize into real document queries.");
+    assert.deepEqual(querySteps.map((step) => (step.with as JsonObject).schema), ["lecture", "assignment"]);
+    assert.deepEqual(querySteps.map((step) => ((step.with as JsonObject).time_window as JsonObject).unit), ["week", "on-or-after"]);
+    assert.equal(summarySteps.findIndex((step) => step.uses === "core.query-documents") < summarySteps.findIndex((step) => step.uses === "codex.prompt"), true);
     const valid = await validateModule(engine, moduleRoot);
     assert.notEqual(valid.overall, "FAIL", valid.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
 
@@ -161,6 +169,21 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
     assert.equal(invalid.overall, "FAIL");
     assert.equal(invalid.checks.some((item) => item.code === "V2_WORKFLOW_EVENTS_BOUND" && item.status === "fail"), true);
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
+test("Scheduled Blueprints require an explicit source query contract", async () => {
+  const blueprintPath = path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml");
+  const source = parseYaml(SOURCE_ROOT, blueprintPath);
+  const workflows = source.workflows as JsonObject[];
+  delete workflows.find((workflow) => workflow.id === "generate-weekly-summary")!.sources;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-contract-"));
+  try {
+    const invalidPath = path.join(directory, "course.blueprint.yaml");
+    writeYaml(directory, invalidPath, source);
+    const { report } = await validateModuleBlueprint(SOURCE_ROOT, invalidPath);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "SEMANTIC_SCHEDULE_SOURCES_REQUIRED" && item.status === "fail"), true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
 test("Official Course Blueprint module passes its executable Module Test contract", async () => {

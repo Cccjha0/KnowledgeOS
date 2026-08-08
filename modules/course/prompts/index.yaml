@@ -6,16 +6,18 @@ prompts:
       1.0.0: classify/v1.0.0.md
     status: active
   normalize-lecture:
-    active_version: 1.0.0
-    path: generated/normalize-lecture/v1.0.0.md
+    active_version: 1.1.0
+    path: generated/normalize-lecture/v1.1.0.md
     versions:
       1.0.0: generated/normalize-lecture/v1.0.0.md
+      1.1.0: generated/normalize-lecture/v1.1.0.md
     status: active
   normalize-assignment:
-    active_version: 1.0.0
-    path: generated/normalize-assignment/v1.0.0.md
+    active_version: 1.1.0
+    path: generated/normalize-assignment/v1.1.0.md
     versions:
       1.0.0: generated/normalize-assignment/v1.0.0.md
+      1.1.0: generated/normalize-assignment/v1.1.0.md
     status: active
   generate-weekly-summary:
     active_version: 1.0.0
