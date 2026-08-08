@@ -64,6 +64,28 @@ function sourceObjects(workflow: JsonObject): JsonObject[] {
   return Array.isArray(workflow.sources) ? workflow.sources.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
 }
 
+function subscriptionObjects(value: JsonValue | undefined): JsonObject[] {
+  return Array.isArray(value) ? value.flatMap((item) => {
+    if (typeof item === "string") return [{ event: item }];
+    const subscription = object(item);
+    return subscription ? [subscription] : [];
+  }) : [];
+}
+
+function materializedSubscriptions(value: JsonValue | undefined): JsonValue[] {
+  if (!Array.isArray(value)) return [];
+  return value.reduce<JsonValue[]>((output, item) => {
+    if (typeof item === "string") output.push(item);
+    const subscription = object(item);
+    if (subscription) output.push({
+      event: subscription.event,
+      ...(typeof subscription.scope === "string" ? { scope: subscription.scope } : {}),
+      ...(Array.isArray(subscription.source_modules) ? { source_modules: subscription.source_modules } : {}),
+    } as JsonObject);
+    return output;
+  }, []);
+}
+
 /**
  * Inbox roles are the v1.1 source of truth for both routing and access.  The
  * older privacy.input_roles remains readable so existing v1 Blueprints can be
@@ -197,6 +219,7 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   const workflowIds = workflows.map((workflow) => String(workflow.id));
   const events = object(blueprint.events);
   const publishedEvents = blueprintEventNames(events?.publishes);
+  const subscriptions = subscriptionObjects(events?.subscribes);
 
   if (Object.keys(inboxRoles).length) {
     const defaultRole = String(inbox?.default_asset_role ?? "");
@@ -352,10 +375,24 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   for (const job of jobs) {
     const jobId = String(job.id);
     const workflowId = String(job.workflow_id ?? "");
-    const valid = workflowIds.includes(workflowId) && typeof job.scope === "string" && (job.schedule === "event" || job.schedule === "startup" || (typeof job.timezone === "string" && typeof job.at === "string"));
+    const schedule = String(job.schedule ?? "");
+    const hasClock = typeof job.timezone === "string" && typeof job.at === "string";
+    const scheduleValid = schedule === "daily" ? hasClock
+      : schedule === "weekly" ? hasClock
+        : schedule === "monthly" ? hasClock && Number.isInteger(job.day ?? 1) && Number(job.day ?? 1) >= 1 && Number(job.day ?? 1) <= 31
+          : schedule === "startup" ? (job.dedupe === undefined || job.dedupe === "startup" || (job.dedupe === "daily" && typeof job.timezone === "string"))
+            : schedule === "field-due" ? typeof job.source_root === "string" && !String(job.source_root).includes("{") && typeof job.field === "string" && typeof job.id_field === "string"
+              : schedule === "event" ? typeof job.event === "string" && ["instance", "module", "global"].includes(String(job.subscription_scope))
+                && (job.subscription_scope !== "global" || Array.isArray(job.source_modules) && job.source_modules.length > 0)
+                && subscriptions.some((subscription) => subscription.event === job.event && subscription.scope === job.subscription_scope
+                  && subscription.workflow_id === workflowId
+                  && (job.subscription_scope !== "global" || JSON.stringify(subscription.source_modules ?? []) === JSON.stringify(job.source_modules ?? [])))
+                : false;
+    const instanceScopeValid = job.subscription_scope !== "instance" || job.scope === "instance";
+    const valid = workflowIds.includes(workflowId) && typeof job.scope === "string" && scheduleValid && instanceScopeValid;
     checks.push(valid
-      ? check("SEMANTIC_JOB_WORKFLOW_BOUND", "pass", `${jobId} explicitly binds ${workflowId}.`, `jobs.${jobId}`)
-      : check("SEMANTIC_JOB_WORKFLOW_REQUIRED", "fail", `${jobId} must bind a declared Workflow and provide scope and schedule details.`, `jobs.${jobId}`));
+      ? check("SEMANTIC_JOB_WORKFLOW_BOUND", "pass", `${jobId} fully materializes ${schedule} for ${workflowId}.`, `jobs.${jobId}`)
+      : check("SEMANTIC_JOB_TRIGGER_INCOMPLETE", "fail", `${jobId} must bind a declared Workflow and provide the complete ${schedule || "unknown"} Trigger contract.`, `jobs.${jobId}`));
   }
 }
 
@@ -407,7 +444,7 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
     network: privacy.network_allowed === true,
     allow_external_network: privacy.network_allowed === true,
   };
-  manifest.events = { publishes: blueprintEventNames(events.publishes), subscribes: blueprintEventNames(events.subscribes) };
+  manifest.events = { publishes: blueprintEventNames(events.publishes), subscribes: materializedSubscriptions(events.subscribes) };
   if (strings(resolved.blueprint.inputs).includes("pdf")) manifest.pdf_policy = { accepted_statuses: ["completed"], partial_policy: "review" };
   writeYaml(moduleRoot, manifestPath, manifest);
   if (isSemanticBlueprint(resolved.blueprint)) await materializeSemanticEntities(moduleRoot, resolved.blueprint, manifest);
@@ -735,9 +772,16 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     const workflow = declared.find((item) => item.id === workflowId) ?? scheduledWorkflow;
     const schedule = String(job.schedule);
     const trigger: JsonObject = schedule === "weekly"
-      ? { type: "weekly", weekday: "Sun", at: String(job.at ?? "18:00"), timezone: String(job.timezone ?? "instance") }
-      : schedule === "daily" ? { type: "cron", expression: `0 ${String(job.at ?? "08:00").split(":")[0]} * * *`, timezone: String(job.timezone ?? "instance") }
-        : { type: schedule };
+      ? { type: "weekly", weekday: String(job.weekday ?? "Sun"), at: String(job.at), timezone: String(job.timezone) }
+      : schedule === "daily" ? { type: "daily", at: String(job.at), timezone: String(job.timezone) }
+        : schedule === "monthly" ? { type: "monthly", day: Number(job.day ?? 1), at: String(job.at), timezone: String(job.timezone) }
+          : schedule === "startup" ? { type: "startup", ...(job.dedupe === "daily" ? { dedupe: "daily", timezone: String(job.timezone) } : {}) }
+            : schedule === "field-due" ? { type: "field-due", source_root: String(job.source_root), field: String(job.field), id_field: String(job.id_field) }
+              : schedule === "event" ? {
+                type: "event", event: String(job.event), subscription_scope: String(job.subscription_scope),
+                ...(Array.isArray(job.source_modules) ? { source_modules: job.source_modules } : {}),
+              }
+                : (() => { throw new PkbError("BLUEPRINT_TRIGGER_UNSUPPORTED", `Unsupported Blueprint Job schedule ${schedule}.`); })();
     return {
       id, scope: String(job.scope ?? "instance"), enabled: true, task_type: "workflow", workflow: `${String(object(blueprint.module)?.id)}:${workflowId}`,
       workflow_id: workflowId, workflow_version: "1.0.0", trigger,

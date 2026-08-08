@@ -259,6 +259,38 @@ test("Blueprint roles that deny Codex cannot be bound to an AI Workflow", async 
   } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
+test("Blueprint materializes complete advanced Job trigger contracts", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const source = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
+    (source.capability_packs as string[]).push("event-subscription");
+    (source.events as JsonObject).subscribes = [{ event: "course.lecture-created", scope: "instance", workflow_id: "normalize-lecture" }];
+    (source.testing as JsonObject).event_consumption = "required";
+    (source.jobs as JsonObject[]).push(
+      { id: "monthly-summary", workflow_id: "generate-weekly-summary", schedule: "monthly", day: 1, at: "19:00", timezone: "instance", scope: "instance", catch_up: "latest" },
+      { id: "startup-summary", workflow_id: "generate-weekly-summary", schedule: "startup", dedupe: "daily", timezone: "instance", scope: "instance", catch_up: "latest" },
+      { id: "due-assignment", workflow_id: "normalize-assignment", schedule: "field-due", source_root: "20-Workspace/Course/Records", field: "deadline", id_field: "instance_id", scope: "module", catch_up: "latest" },
+      { id: "lecture-followup", workflow_id: "normalize-lecture", schedule: "event", event: "course.lecture-created", subscription_scope: "instance", scope: "instance", catch_up: "latest" },
+    );
+    const blueprint = path.join(engine, "course.blueprint.yaml");
+    writeYaml(engine, blueprint, source);
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprint);
+    const jobs = parseYaml(String(generated.module_root), path.join(String(generated.module_root), "jobs", "jobs.yaml")).jobs as JsonObject[];
+    assert.deepEqual(jobs.find((job) => job.id === "monthly-summary")?.trigger, { type: "monthly", day: 1, at: "19:00", timezone: "instance" });
+    assert.deepEqual(jobs.find((job) => job.id === "startup-summary")?.trigger, { type: "startup", dedupe: "daily", timezone: "instance" });
+    assert.deepEqual(jobs.find((job) => job.id === "due-assignment")?.trigger, { type: "field-due", source_root: "20-Workspace/Course/Records", field: "deadline", id_field: "instance_id" });
+    assert.deepEqual(jobs.find((job) => job.id === "lecture-followup")?.trigger, { type: "event", event: "course.lecture-created", subscription_scope: "instance" });
+    const manifest = parseYaml(String(generated.module_root), path.join(String(generated.module_root), "module.yaml"));
+    assert.deepEqual((manifest.events as JsonObject).subscribes, [{ event: "course.lecture-created", scope: "instance" }]);
+
+    delete (source.jobs as JsonObject[]).find((job) => job.id === "due-assignment")!.field;
+    writeYaml(engine, blueprint, source);
+    const invalid = await validateModuleBlueprint(engine, blueprint);
+    assert.equal(invalid.report.overall, "FAIL");
+    assert.equal(invalid.report.checks.some((item) => item.code === "SEMANTIC_JOB_TRIGGER_INCOMPLETE" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("Official Course Blueprint module passes its executable Module Test contract", async () => {
   const report = await testModule(SOURCE_ROOT, "course");
   assert.equal(report.overall, "PASS", report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));

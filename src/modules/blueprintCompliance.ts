@@ -8,6 +8,19 @@ function object(value: JsonValue | undefined): JsonObject | null { return value 
 function strings(value: JsonValue | undefined): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []; }
 function sameSet(left: string[], right: string[]): boolean { return left.length === right.length && left.every((item) => right.includes(item)); }
 
+function subscriptionKeys(value: JsonValue | undefined): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (typeof item === "string") return [JSON.stringify({ event: item })];
+    const subscription = object(item);
+    return subscription ? [JSON.stringify({
+      event: subscription.event,
+      ...(typeof subscription.scope === "string" ? { scope: subscription.scope } : {}),
+      ...(Array.isArray(subscription.source_modules) ? { source_modules: subscription.source_modules } : {}),
+    })] : [];
+  });
+}
+
 function entries(value: JsonValue | undefined): JsonObject[] { return Array.isArray(value) ? value.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : []; }
 function blueprintInboxRoles(blueprint: JsonObject): JsonObject {
   return object(object(blueprint.inbox)?.roles) ?? {};
@@ -185,7 +198,7 @@ export async function validateBlueprintCompliance(engineRoot: string, moduleRoot
   add("BLUEPRINT_NETWORK_MATCH", permissions?.network === privacy.network_allowed, "Runtime network permission matches Blueprint.", "module.yaml");
   const runtimeEvents = object(manifest.events);
   add("BLUEPRINT_PUBLISHED_EVENTS_MATCH", sameSet(strings(runtimeEvents?.publishes), strings(events.publishes)), "Published Events match Blueprint.", "module.yaml");
-  add("BLUEPRINT_SUBSCRIBED_EVENTS_MATCH", sameSet(strings(runtimeEvents?.subscribes), strings(events.subscribes)), "Subscribed Events match Blueprint.", "module.yaml");
+  add("BLUEPRINT_SUBSCRIBED_EVENTS_MATCH", sameSet(subscriptionKeys(runtimeEvents?.subscribes), subscriptionKeys(events.subscribes)), "Subscribed Events match Blueprint.", "module.yaml");
   const workflowRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "workflows", "index.yaml"));
   const runtimeWorkflows = object(workflowRegistry.workflows) ?? {};
   const declaredWorkflows = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)).map((item) => String(item.id)) : [];
