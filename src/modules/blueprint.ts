@@ -26,6 +26,7 @@ export interface BlueprintValidationReport extends JsonObject {
   resolved_capability_packs: string[];
   resolved_capabilities: string[];
   required_components: JsonObject;
+  required_rule_files: string[];
   overall: "PASS" | "PASS WITH WARNINGS" | "FAIL";
 }
 
@@ -117,6 +118,39 @@ function addUnique(target: string[], values: string[]): void {
   for (const value of values) if (!target.includes(value)) target.push(value);
 }
 
+function validateCapabilityPackContracts(packs: JsonObject, resolved: string[], blueprint: JsonObject, checks: BlueprintCheck[], requiredRuleFiles: string[]): void {
+  const privacy = object(blueprint.privacy) ?? {};
+  const workflows = workflowObjects(blueprint);
+  const inputRoles = blueprintInputRoles(blueprint);
+  const testing = object(blueprint.testing) ?? {};
+  const moduleType = String(object(blueprint.module_class)?.type ?? "");
+  for (const id of resolved) {
+    const contract = object(object(packs[id])?.contract);
+    if (!contract) continue;
+    addUnique(requiredRuleFiles, strings(contract.required_rules));
+    const requiredTests = strings(contract.required_tests);
+    const missingTests = requiredTests.filter((name) => testing[name] !== "required");
+    checks.push(missingTests.length === 0
+      ? check("CAPABILITY_PACK_TESTS_BOUND", "pass", `${id} requires and received its executable test scenarios.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_TESTS_MISSING", "fail", `${id} requires testing.${missingTests.join(", ")}: required.`, `capability_packs.${id}`));
+    const allowedTypes = strings(contract.module_types);
+    if (allowedTypes.length) checks.push(allowedTypes.includes(moduleType)
+      ? check("CAPABILITY_PACK_MODULE_TYPE_VALID", "pass", `${id} is valid for ${moduleType}.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_MODULE_TYPE_DENIED", "fail", `${id} requires module_class.type to be one of ${allowedTypes.join(", ")}.`, `capability_packs.${id}`));
+    const policy = object(contract.privacy);
+    if (!policy) continue;
+    const networkValid = policy.network_allowed === undefined || privacy.network_allowed === policy.network_allowed;
+    const mutableValid = policy.user_original_content_mutable === undefined || privacy.user_original_content_mutable === policy.user_original_content_mutable;
+    const sensitivityValid = typeof policy.min_sensitivity_class !== "number" || Number(privacy.default_sensitivity_class) >= policy.min_sensitivity_class;
+    const unsafeSummary = policy.forbid_summary_for_sensitive_roles === true && workflows.some((workflow) =>
+      String(object(workflow.read)?.representation ?? "metadata") === "summary"
+      && strings(workflow.input_roles).some((role) => Number(object(inputRoles[role])?.sensitivity_class ?? 0) >= 2));
+    checks.push(networkValid && mutableValid && sensitivityValid && !unsafeSummary
+      ? check("CAPABILITY_PACK_PRIVACY_BOUND", "pass", `${id} privacy and Workflow restrictions are satisfied.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_PRIVACY_DENIED", "fail", `${id} requires its declared privacy and Workflow restrictions.`, `capability_packs.${id}`));
+  }
+}
+
 export async function validateModuleBlueprint(engineRoot: string, blueprintPath: string): Promise<ResolvedBlueprint> {
   const absolute = path.resolve(blueprintPath);
   if (!(await exists(absolute))) throw new PkbError("BLUEPRINT_NOT_FOUND", `Module Blueprint not found: ${absolute}`);
@@ -149,6 +183,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
 
   const resolvedCapabilities: string[] = [];
   const requiredComponents: JsonObject = {};
+  const requiredRuleFiles: string[] = [];
   for (const id of resolved) {
     const pack = object(packs[id])!;
     addUnique(resolvedCapabilities, strings(pack.capabilities));
@@ -160,6 +195,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
     }
   }
   if (!checks.some((item) => item.code.startsWith("CAPABILITY_") && item.status === "fail")) checks.push(check("CAPABILITY_PACKS_RESOLVED", "pass", `Resolved ${resolved.length} Capability Packs.`, "capability_packs"));
+  validateCapabilityPackContracts(packs, resolved, blueprint, checks, requiredRuleFiles);
 
   for (const format of strings(blueprint.inputs)) {
     const adapter = availableIngestionAdapter(format);
@@ -201,6 +237,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
     resolved_capability_packs: resolved,
     resolved_capabilities: resolvedCapabilities,
     required_components: requiredComponents,
+    required_rule_files: requiredRuleFiles,
     overall: failed ? "FAIL" : warnings ? "PASS WITH WARNINGS" : "PASS",
   };
   return { blueprint, report, scaffoldTemplate: String(template?.scaffold_template ?? "minimal-config") as ModuleTemplate };
@@ -448,6 +485,7 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
   if (strings(resolved.blueprint.inputs).includes("pdf")) manifest.pdf_policy = { accepted_statuses: ["completed"], partial_policy: "review" };
   writeYaml(moduleRoot, manifestPath, manifest);
   if (isSemanticBlueprint(resolved.blueprint)) await materializeSemanticEntities(moduleRoot, resolved.blueprint, manifest);
+  await ensureCapabilityPackRules(moduleRoot, resolved.blueprint, resolved.report.required_rule_files);
   await materializeDeclaredWorkflows(moduleRoot, resolved.blueprint, manifest);
   await materializeBlueprintTestContract(moduleRoot, resolved.blueprint);
   writeYaml(moduleRoot, manifestPath, manifest);
@@ -455,6 +493,26 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
   await fs.writeFile(path.join(moduleRoot, "docs", "blueprint-boundary.md"), renderBoundaryDocument(resolved.blueprint), "utf8");
   await fs.writeFile(path.join(moduleRoot, "blueprint-validation-report.json"), `${JSON.stringify(resolved.report, null, 2)}\n`, "utf8");
   return { ...result, module_id: moduleId, blueprint: path.join(moduleRoot, "module.blueprint.yaml"), validation: resolved.report.overall };
+}
+
+async function ensureCapabilityPackRules(moduleRoot: string, blueprint: JsonObject, requiredRules: string[]): Promise<void> {
+  for (const rule of requiredRules) {
+    const target = path.join(moduleRoot, "rules", `${rule}.yaml`);
+    if (await exists(target)) continue;
+    if (rule === "ownership") {
+      writeYaml(moduleRoot, target, {
+        user_original_content_mutable: object(blueprint.privacy)?.user_original_content_mutable === true,
+        generated_entities: [],
+        forbidden_operations: ["update-user-original", "overwrite-source"],
+      });
+      continue;
+    }
+    if (rule === "permissions") {
+      writeYaml(moduleRoot, target, object(blueprint.privacy) ?? {});
+      continue;
+    }
+    throw new PkbError("CAPABILITY_PACK_RULE_UNSUPPORTED", `Capability Pack requires unknown rule ${rule}.`);
+  }
 }
 
 function blueprintOutputObjects(blueprint: JsonObject): JsonObject[] {

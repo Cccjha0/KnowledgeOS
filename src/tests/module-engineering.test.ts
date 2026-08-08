@@ -54,6 +54,20 @@ test("Module Blueprint resolves templates, Capability Packs, Adapters, and Compo
   assert.equal(report.resolved_capabilities.includes("periodic-summary"), true);
   assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
   assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
+  assert.equal(report.checks.some((item) => item.code === "CAPABILITY_PACK_PRIVACY_BOUND" && item.status === "pass"), true, "high-privacy and immutable-user-content must enforce executable Pack contracts.");
+});
+
+test("Capability Pack contracts reject Blueprint privacy drift before scaffolding", async () => {
+  const source = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
+  (source.privacy as JsonObject).network_allowed = true;
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-pack-contract-"));
+  try {
+    const blueprint = path.join(directory, "course.blueprint.yaml");
+    writeYaml(directory, blueprint, source);
+    const { report } = await validateModuleBlueprint(SOURCE_ROOT, blueprint);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "CAPABILITY_PACK_PRIVACY_DENIED" && item.status === "fail"), true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
 });
 
 test("Module Blueprint rejects inputs without an installed Adapter", async () => {

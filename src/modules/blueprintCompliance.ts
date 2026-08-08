@@ -196,6 +196,17 @@ export async function validateBlueprintCompliance(engineRoot: string, moduleRoot
   add("BLUEPRINT_SENSITIVITY_MATCH", policy?.sensitivity_class === privacy.default_sensitivity_class && permissions?.max_sensitivity_class === privacy.default_sensitivity_class, "Runtime sensitivity policy matches Blueprint.", "module.yaml");
   add("BLUEPRINT_REPRESENTATION_MATCH", policy?.max_representation === privacy.default_max_representation, "Runtime representation policy matches Blueprint.", "module.yaml");
   add("BLUEPRINT_NETWORK_MATCH", permissions?.network === privacy.network_allowed, "Runtime network permission matches Blueprint.", "module.yaml");
+  for (const rule of blueprintReport.required_rule_files) {
+    const rulePath = path.join(moduleRoot, "rules", `${rule}.yaml`);
+    add("CAPABILITY_PACK_RUNTIME_RULE_BOUND", await exists(rulePath), `Capability Pack required rule ${rule}.yaml is materialized.`, `rules/${rule}.yaml`);
+    if (rule === "ownership" && await exists(rulePath)) {
+      const ownership = parseYaml(moduleRoot, rulePath);
+      const expectedMutable = privacy.user_original_content_mutable === true;
+      add("CAPABILITY_PACK_OWNERSHIP_ENFORCED", ownership.user_original_content_mutable === expectedMutable
+        && (expectedMutable || Array.isArray(ownership.forbidden_operations)),
+      "Capability Pack ownership policy is enforced by the generated runtime rule.", "rules/ownership.yaml");
+    }
+  }
   const runtimeEvents = object(manifest.events);
   add("BLUEPRINT_PUBLISHED_EVENTS_MATCH", sameSet(strings(runtimeEvents?.publishes), strings(events.publishes)), "Published Events match Blueprint.", "module.yaml");
   add("BLUEPRINT_SUBSCRIBED_EVENTS_MATCH", sameSet(subscriptionKeys(runtimeEvents?.subscribes), subscriptionKeys(events.subscribes)), "Subscribed Events match Blueprint.", "module.yaml");
