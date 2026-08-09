@@ -20,7 +20,7 @@ import { locateReviewItem } from "../core/reviews.js";
 import { decideReview } from "../platform/reviewWorkflow.js";
 import { QualityRepository } from "../quality/repository.js";
 import { runQualityAudit } from "../quality/audit.js";
-import { authorizedEvidenceSources, criticalFieldsMissingEvidence, evidenceSourceId, materializeFieldProvenance, parseEvidenceSelections } from "../quality/fieldProvenance.js";
+import { authorizedEvidenceSources, fieldsMissingRequiredEvidence, evidenceSourceId, materializeFieldProvenance, parseEvidenceSelections } from "../quality/fieldProvenance.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -196,7 +196,7 @@ test("a green module operation replaces model provenance with Core-authorized ev
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
-test("field provenance records only selected authorized evidence and flags unsupported Critical fields", async () => {
+test("field provenance requires evidence only for fields whose Quality Contract requires provenance", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-evidence-selection-"));
   try {
     await initializeVault(vault, "disabled");
@@ -205,7 +205,8 @@ test("field provenance records only selected authorized evidence and flags unsup
     const sources = authorizedEvidenceSources(["20-Workspace/course/Inbox/first.md", "20-Workspace/course/Inbox/second.md"]);
     const selected = parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator: { page: 3, section: "Assessment" } }] }, sources);
     const output = { deadline: "2026-09-01T09:00:00+08:00", status: "planned" };
-    assert.deepEqual(criticalFieldsMissingEvidence(moduleRoot, manifest, "assignment", output, selected, sources), ["status"]);
+    assert.deepEqual(fieldsMissingRequiredEvidence(moduleRoot, manifest, "assignment", output, selected, sources), []);
+    assert.deepEqual(fieldsMissingRequiredEvidence(moduleRoot, manifest, "lecture", { lecture_date: "2026-09-01" }, {}, sources), ["lecture_date"]);
     assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: "SRC-NOT-AUTHORIZED", locator: {} }] }, sources), /did not authorize/);
     const meta = await materializeFieldProvenance({
       vaultRoot: vault, moduleRoot, manifest, entityId: "assignment", target: "20-Workspace/course/Assignments/essay.md", output,
@@ -271,7 +272,7 @@ test("Core forces Review for a Critical update and strips model-controlled syste
     const reviewId = path.basename(pending.find((file) => parseMarkdown(vault, path.join(vault, "90-System", "Review Queue", "Pending", file)).data.origin_task_id === task.task_id)!, ".md");
     const review = await locateReviewItem(vault, reviewId);
     assert.equal(((review.item.proposed_value as JsonObject).matching_rules as JsonObject[]).some((rule) => rule.condition === "critical-field-update"), true);
-    assert.equal(((review.item.proposed_value as JsonObject).matching_rules as JsonObject[]).some((rule) => rule.condition === "missing-evidence-selection"), true, "Critical AI fields without selected evidence must be routed to Review.");
+    assert.equal(((review.item.proposed_value as JsonObject).matching_rules as JsonObject[]).some((rule) => rule.condition === "missing-required-evidence"), true, "Fields with required provenance but no selected evidence must be routed to Review.");
     await decideReview({ vaultRoot: vault, reviewId, decision: "approve" });
     const updated = parseMarkdown(vault, target).data;
     assert.equal(updated.deadline, output.deadline);

@@ -83,12 +83,12 @@ export function selectedEvidenceRefs(selections: FieldEvidenceSelections, source
   return [...new Set(Object.keys(selections).flatMap((field) => selectionsForField(field, selections, sources).map((selection) => selection.source_ref)))];
 }
 
-/** Critical output must name at least one actual supporting input. This turns
- * missing support into a user Review instead of silently treating every read
- * file as evidence. */
-export function criticalFieldsMissingEvidence(moduleRoot: string, manifest: JsonObject, entityId: string, output: JsonObject, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
+/** A field that declares provenance as required must name an actual supporting
+ * input. Criticality controls the risk of changing a value; it does not make a
+ * source mandatory by itself. */
+export function fieldsMissingRequiredEvidence(moduleRoot: string, manifest: JsonObject, entityId: string, output: JsonObject, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
   return [...fieldQualityContracts(moduleRoot, manifest, entityId)]
-    .filter(([field, contract]) => contract.critical && output[field] !== undefined && output[field] !== null && selectionsForField(field, selections, sources).length === 0)
+    .filter(([field, contract]) => contract.provenanceRequired && output[field] !== undefined && output[field] !== null && selectionsForField(field, selections, sources).length === 0)
     .map(([field]) => field);
 }
 

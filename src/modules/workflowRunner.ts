@@ -8,7 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import { authorizedEvidenceSources, criticalFieldsMissingEvidence, fieldQualityContracts, materializeFieldProvenance, parseEvidenceSelections, selectedEvidenceRefs, type FieldEvidenceSelections } from "../quality/fieldProvenance.js";
+import { authorizedEvidenceSources, fieldsMissingRequiredEvidence, fieldQualityContracts, materializeFieldProvenance, parseEvidenceSelections, selectedEvidenceRefs, type FieldEvidenceSelections } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -571,6 +571,7 @@ function criticalUpdateReviewRequirements(
     .map(([field]) => ({
       field: `${entityId}.${field}`,
       condition: "critical-field-update",
+      priority: "high",
       current_value: current[field] ?? null,
       reason: `Core protection: ${entityId}.${field} is a Critical Field and requires user approval.`,
     }));
@@ -847,13 +848,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const entityId = typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema);
         const planData = operationMode === "update-record" ? coreManagedUpdatePatch(output) : output;
         const currentData = operationMode === "update-record" ? parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, target)).data : {};
+        const qualityContracts = fieldQualityContracts(resolved.moduleRoot, resolved.manifest, entityId);
         const reviewRequirements = uniqueReviewRequirements([
           ...pendingReviewRequirements(state),
           ...(operationMode === "update-record" ? criticalUpdateReviewRequirements(resolved.moduleRoot, resolved.manifest, entityId, planData, currentData) : []),
-          ...criticalFieldsMissingEvidence(resolved.moduleRoot, resolved.manifest, entityId, planData, evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))).map((field) => ({
+          ...fieldsMissingRequiredEvidence(resolved.moduleRoot, resolved.manifest, entityId, planData, evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))).map((field) => ({
             field: `${entityId}.${field}`,
-            condition: "missing-evidence-selection",
-            reason: `Core protection: Critical Field ${entityId}.${field} has no selected supporting evidence from this Workflow's authorized inputs.`,
+            condition: "missing-required-evidence",
+            priority: qualityContracts.get(field)?.critical === true ? "high" : "medium",
+            reason: `Core protection: ${entityId}.${field} requires selected supporting evidence from this Workflow's authorized inputs.`,
           })),
         ]);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
@@ -896,7 +899,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
               field: String(primary.field ?? "record"), old_value: primary.current_value ?? null, new_value: output,
               operation_plan_id: planId, matching_rules: reviewRequirements, evidence_selection: evidenceSelections as unknown as JsonObject,
             }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
-            priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
+            priority: reviewRequirements.some((item) => item.condition === "conflicting" || item.priority === "high") ? "high" : "medium",
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
             evidence: selectedEvidenceRefs(evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,

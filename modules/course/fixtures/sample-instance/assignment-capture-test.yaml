@@ -27,7 +27,3 @@ capture:
       - source_id: SRC-4FB42DAFF836
         locator:
           section: Assignment brief
-      status:
-      - source_id: SRC-4FB42DAFF836
-        locator:
-          section: Assignment brief
