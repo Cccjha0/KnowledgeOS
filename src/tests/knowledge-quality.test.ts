@@ -179,6 +179,13 @@ test("quality audit infers module ownership, honors frontmatter links, and suppr
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-application-contract-"));
   try {
     await initializeVault(vault, "disabled");
+    const declaredFollowup = {
+      type: "workflow",
+      workflow_id: "sync-due-research",
+      workflow_version: "1.0.0",
+      resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
+      dedupe: { entity_type: "research-request", target_field: "record_path", open_statuses: ["pending", "in-progress", "needs-more-information"] },
+    };
     const recordPath = "20-Workspace/Applications/demo/Records/Application.md";
     const requestPath = path.join(vault, "20-Workspace", "Applications", "demo", "Research Requests", "REQ-2026-000001.md");
     writeMarkdown(vault, requestPath, { data: {
@@ -194,7 +201,7 @@ test("quality audit infers module ownership, honors frontmatter links, and suppr
       job_id: "quality.stale-field-followup", module: "application-tracker", instance_id: "demo", task_type: "workflow",
       workflow: "module:application-tracker:sync-due-research", priority: "high", resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
       trigger: { type: "quality-issue", issue_id: "QI-TEST", workflow_id: "sync-due-research", workflow_version: "1.0.0" }, catch_up_policy: "latest", idempotency_key: "quality:demo:followup",
-      payload: { quality_issue_id: "QI-TEST", target: { path: recordPath } }, concurrency_key: "quality:demo:research", concurrency_policy: "merge",
+      payload: { quality_issue_id: "QI-TEST", target: { path: recordPath }, quality_followup: declaredFollowup }, concurrency_key: "quality:demo:research", concurrency_policy: "merge",
     }).task;
     runtime.transitionTask(task.task_id, "waiting-for-user"); runtime.close();
 
@@ -203,8 +210,40 @@ test("quality audit infers module ownership, honors frontmatter links, and suppr
     assert.equal(issues.some((item) => item.target.path === "20-Workspace/Applications/demo/Research Requests/REQ-2026-000001.md" && item.issue_type === "unowned-file"), false);
     assert.equal(issues.some((item) => item.target.path === "20-Workspace/Applications/demo/Research Requests/REQ-2026-000001.md" && item.issue_type === "orphan-file"), false);
     assert.equal(issues.some((item) => item.target.path === "30-Knowledge/Target.md" && item.issue_type === "orphan-file"), false);
-    assert.equal(issues.some((item) => item.recommended_action.type === "create-research-request" && item.target.path === recordPath), false);
+    assert.equal(issues.some((item) => item.recommended_action.type === "workflow" && item.target.path === recordPath), false);
     const checkedRuntime = await RuntimeRepository.open(vault); assert.equal(checkedRuntime.getTask(task.task_id)?.status, "completed"); checkedRuntime.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("stale followups are scheduled from the module Quality Policy, not an application Core branch", async () => {
+  const source = await fs.readFile(path.join(ENGINE_ROOT, "src", "quality", "audit.ts"), "utf8");
+  assert.equal(source.includes('moduleId === "application-tracker"'), false);
+  assert.equal(source.includes("module:application-tracker:sync-due-research"), false);
+
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-quality-policy-followup-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const recordPath = "20-Workspace/Applications/demo/Records/Application.md";
+    writeMarkdown(vault, path.join(vault, recordPath), { data: {
+      source_module: "application-tracker", type: "application-record", schema_id: "application-record", schema_version: 1, module_version: "0.3.0-beta", instance_id: "demo",
+      id: "APP-2026-000001", title: "Application", source_refs: ["[[Official source]]"], created: "2026-06-01T00:00:00Z", updated: "2026-06-01T00:00:00Z",
+      application_status: "watching", application_open: false, deadline: "2026-07-01", tuition: "50000", academic_requirement: "Bachelor", english_requirement: "IELTS 6.5",
+      _field_meta: { deadline: { evidence_refs: ["EVD-2026-000001"], verification: { last_verified: "2026-07-01T00:00:00Z" } } },
+    }, content: "# Application\n" });
+
+    await runQualityAudit(vault, "weekly", { now: "2026-08-01T00:00:00Z" });
+    const runtime = await RuntimeRepository.open(vault);
+    const followup = runtime.listTasks().find((task) => task.job_id === "quality.stale-field-followup" && (task.payload.target as JsonObject | undefined)?.path === recordPath);
+    runtime.close();
+    assert.ok(followup);
+    assert.equal(followup.module, "application-tracker");
+    assert.equal(followup.workflow, "module:application-tracker:sync-due-research");
+    assert.equal(followup.trigger.workflow_id, "sync-due-research");
+    assert.equal((followup.payload.quality_followup as JsonObject).type, "workflow");
+
+    const quality = await QualityRepository.open(vault); const issues = quality.listIssues(); quality.close();
+    const stale = issues.find((item) => item.target.path === recordPath && item.target.field === "deadline");
+    assert.equal((stale?.recommended_action as JsonObject | undefined)?.workflow_id, "sync-due-research");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

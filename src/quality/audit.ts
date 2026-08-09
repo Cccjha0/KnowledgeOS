@@ -8,6 +8,7 @@ import { ensureDir, exists, listFilesRecursive, readJson, sha256File, toVaultPat
 import type { JsonObject, JsonValue, ReviewItem } from "../core/types.js";
 import { persistReviewItem } from "../core/reviews.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import type { ResourceRequirement, TaskResources } from "../runtime/domain.js";
 import type { QualityIssue, QualityPolicy, QualitySeverity } from "./domain.js";
 import { evaluateFreshness, resolveVerificationInterval } from "./freshness.js";
 import { qualityFingerprint } from "./fingerprint.js";
@@ -72,6 +73,39 @@ function documentEntityType(data: JsonObject): string {
   return typeof data.type === "string" ? data.type : data.research_type === "application-update" ? "research-report" : "";
 }
 
+/** A policy-owned Workflow action. Core only schedules this declared contract. */
+function staleFollowupAction(config: JsonObject): JsonObject | null {
+  const action = object(config.stale_action);
+  return action?.type === "workflow" && typeof action.workflow_id === "string" && action.workflow_id.trim() ? action : null;
+}
+
+function followupResources(action: JsonObject): TaskResources {
+  const declared = object(action.resources) ?? {};
+  const resource = (name: string, fallback: ResourceRequirement): ResourceRequirement => {
+    const value = declared[name];
+    return value === "required" || value === "not-required" ? value : fallback;
+  };
+  return { filesystem: resource("filesystem", "required"), network: resource("network", "not-required"), codex: resource("codex", "not-required"), user: resource("user", "required") };
+}
+
+function followupDedupe(action: JsonObject): JsonObject | null {
+  const dedupe = object(action.dedupe);
+  return typeof dedupe?.entity_type === "string" && typeof dedupe?.target_field === "string" ? dedupe : null;
+}
+
+async function openFollowupTargets(vaultRoot: string, action: JsonObject): Promise<Set<string>> {
+  const dedupe = followupDedupe(action); const targets = new Set<string>();
+  if (!dedupe) return targets;
+  const statuses = Array.isArray(dedupe.open_statuses) ? new Set(dedupe.open_statuses.filter((value): value is string => typeof value === "string")) : null;
+  for (const file of await knowledgeFiles(vaultRoot)) {
+    let data: JsonObject; try { data = parseMarkdown(vaultRoot, file).data; } catch { continue; }
+    if (data.type !== dedupe.entity_type || (statuses && !statuses.has(String(data.status)))) continue;
+    const target = data[String(dedupe.target_field)];
+    if (typeof target === "string") targets.add(target.replaceAll("\\", "/").toLowerCase());
+  }
+  return targets;
+}
+
 function moduleForDocument(data: JsonObject, type: string, modulePolicies: Map<string, ModuleQuality>): string {
   if (typeof data.source_module === "string") return data.source_module;
   if (typeof data.module_id === "string") return data.module_id;
@@ -94,18 +128,6 @@ function collectWikiLinks(value: unknown, output = new Map<string, WikiLink>()):
     for (const item of Object.values(value)) collectWikiLinks(item, output);
   }
   return output;
-}
-
-async function openResearchRequestTargets(vaultRoot: string): Promise<Set<string>> {
-  const targets = new Set<string>();
-  const root = path.join(vaultRoot, "20-Workspace", "Applications");
-  for (const file of await listFilesRecursive(root, ".md")) {
-    let data: JsonObject;
-    try { data = parseMarkdown(vaultRoot, file).data; } catch { continue; }
-    if (data.type !== "research-request" || !["pending", "in-progress", "needs-more-information"].includes(String(data.status))) continue;
-    if (typeof data.record_path === "string") targets.add(data.record_path.replaceAll("\\", "/").toLowerCase());
-  }
-  return targets;
 }
 
 async function policies(vaultRoot: string): Promise<Map<string, ModuleQuality>> {
@@ -194,13 +216,16 @@ async function auditDocuments(vaultRoot: string, frequency: AuditFrequency, modu
       if (!Array.isArray(refs) || refs.length === 0) candidates.push({ issue_type: "missing-provenance", dimension: "provenance", severity: criticalFields.has(field) ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: { value_present: true }, recommended_action: { type: "attach-evidence" }, detector: "missing-provenance-auditor" });
     }
     const freshnessRules = new Map<string, JsonObject>(Object.entries(object(policy.policy.freshness) ?? {}).map(([field, raw]) => [field, object(raw) ?? {}]));
-    for (const [field, config] of declaredRules) if (typeof config.verification_interval_days === "number") freshnessRules.set(field, { interval_days: config.verification_interval_days });
+    for (const [field, config] of declaredRules) if (typeof config.verification_interval_days === "number") freshnessRules.set(field, { ...config, interval_days: config.verification_interval_days });
     for (const [field, configured] of freshnessRules) {
       const value = fieldValue(document.data, field); if (value === undefined || value === null) continue;
       const meta = fieldMeta(document.data, field); const verification = object(meta?.verification);
       const interval = resolveVerificationInterval({ field: Number(configured?.interval_days) || null, module: Number(policy.policy.default_verification_interval_days) || null });
       const freshness = evaluateFreshness({ lastVerified: typeof verification?.last_verified === "string" ? verification.last_verified : typeof meta?.checked_at === "string" ? meta.checked_at : null, intervalDays: interval, now: new Date(now) });
-      if (["stale", "due-soon"].includes(freshness.verification_status)) candidates.push({ issue_type: freshness.stale ? "stale-critical-field" : "due-soon-field", dimension: "freshness", severity: freshness.stale ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: freshness, recommended_action: { type: moduleId === "application-tracker" ? "create-research-request" : "verify-field" }, detector: "stale-field-auditor" });
+      if (["stale", "due-soon"].includes(freshness.verification_status)) {
+        const action = freshness.stale ? staleFollowupAction(configured) : null;
+        candidates.push({ issue_type: freshness.stale ? "stale-critical-field" : "due-soon-field", dimension: "freshness", severity: freshness.stale ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: freshness, recommended_action: action ?? { type: "verify-field" }, detector: "stale-field-auditor" });
+      }
     }
     const ownershipRules = object(policy.policy.ownership); const ownershipPolicy = object(ownershipRules?.[entityType]); const ownershipRequired = ownershipPolicy?.required === true; const actualOwnership = object(object(document.data._ownership)?.sections); const expectedOwnership = object(ownershipPolicy?.sections);
     if (ownershipRequired && !actualOwnership) candidates.push({ issue_type: "missing-content-ownership", dimension: "reviewability", severity: "medium", module: moduleId, instance_id: instanceId, target: { path: relative }, evidence: { entity_type: entityType }, recommended_action: { type: "backfill-ownership" }, detector: "ownership-auditor" });
@@ -356,13 +381,19 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
     const files = await knowledgeFiles(vaultRoot); const currentHashes = Object.fromEntries(await Promise.all(files.map(async (file) => [toVaultPath(vaultRoot, file), await sha256File(file)])));
     const previous = await readJson<JsonObject>(path.join(vaultRoot, "90-System", "State", "quality-audit-checkpoint.json"), {}); const previousHashes = object(previous.file_hashes) ?? {};
     const fullSchemaScan = frequency !== "daily" || previous.schema_version !== 2; const changedPaths = new Set(Object.entries(currentHashes).filter(([relative, hash]) => fullSchemaScan || previousHashes[relative] !== hash).map(([relative]) => relative));
-    const modulePolicies = await policies(vaultRoot); const openRequestTargets = await openResearchRequestTargets(vaultRoot);
+    const modulePolicies = await policies(vaultRoot);
     const recentMetrics = repository.aggregateMetrics(new Date(Date.parse(now) - 24 * 86_400_000).toISOString());
     const candidates = [...await auditDocuments(vaultRoot, frequency, modulePolicies, auditId, now, changedPaths), ...await auditReviewDebt(vaultRoot, now), ...await auditInstanceTasks(vaultRoot), ...evidenceQualityIssues(repository.listEvidence(5000)), ...readAccessIssues(recentMetrics)];
     if (frequency !== "daily") candidates.push(...await promptQualityIssues(modulePolicies, repository.aggregateMetrics(new Date(Date.parse(now) - 7 * 86_400_000).toISOString())));
+    const openTargetsByAction = new Map<string, Set<string>>();
+    const targetsFor = async (action: JsonObject): Promise<Set<string>> => {
+      const key = JSON.stringify(action.dedupe ?? {});
+      const existing = openTargetsByAction.get(key); if (existing) return existing;
+      const targets = await openFollowupTargets(vaultRoot, action); openTargetsByAction.set(key, targets); return targets;
+    };
     for (const candidate of candidates) {
       const targetPath = typeof candidate.target.path === "string" ? candidate.target.path.replaceAll("\\", "/").toLowerCase() : "";
-      if (candidate.recommended_action.type === "create-research-request" && openRequestTargets.has(targetPath)) candidate.recommended_action = { type: "await-existing-research-request" };
+      if (candidate.recommended_action.type === "workflow" && (await targetsFor(candidate.recommended_action)).has(targetPath)) candidate.recommended_action = { type: "await-existing-followup" };
     }
     const seen = new Set<string>(); const issues: QualityIssue[] = [];
     for (const candidate of candidates) { const stored = repository.upsertIssue(issue(candidate, auditId, now)); seen.add(stored.fingerprint); issues.push(stored); repository.recordMetric({ idempotency_key: `quality:${auditId}:${stored.fingerprint}`, event_type: "quality.issue-detected", module: stored.module, instance_id: stored.instance_id, workflow_id: null, workflow_version: null, prompt_id: null, prompt_version: null, run_id: auditId, occurred_at: now, dimensions: { issue_type: stored.issue_type, severity: stored.severity, dimension: stored.dimension }, values: {} }); }
@@ -370,17 +401,20 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
     try {
       for (const task of followups.listTasks().filter((item) => item.job_id === "quality.stale-field-followup" && !TERMINAL_TASKS.has(item.status))) {
         const target = object(task.payload.target); const targetPath = typeof target?.path === "string" ? target.path.replaceAll("\\", "/").toLowerCase() : "";
-        if (!openRequestTargets.has(targetPath)) continue;
-        if (task.status === "waiting-for-user") followups.transitionTask(task.task_id, "completed", { error: null, completionReason: "research-request-already-open" });
+        const action = object(task.payload.quality_followup);
+        if (!action || !(await targetsFor(action)).has(targetPath)) continue;
+        if (task.status === "waiting-for-user") followups.transitionTask(task.task_id, "completed", { error: null, completionReason: "followup-already-open" });
         else followups.cancelTask(task.task_id);
       }
-      for (const stored of issues.filter((item) => item.recommended_action.type === "create-research-request")) {
+      for (const stored of issues.filter((item) => item.recommended_action.type === "workflow")) {
         const targetPath = typeof stored.target.path === "string" ? stored.target.path.replaceAll("\\", "/").toLowerCase() : "";
-        if (openRequestTargets.has(targetPath)) continue;
+        if ((await targetsFor(stored.recommended_action)).has(targetPath)) continue;
+        const workflowId = String(stored.recommended_action.workflow_id);
+        const workflowVersion = typeof stored.recommended_action.workflow_version === "string" ? stored.recommended_action.workflow_version : "active";
         followups.createTask({
-        job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: "module:application-tracker:sync-due-research", priority: "high", scheduled_for: now, available_after: now,
-        resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" }, trigger: { type: "quality-issue", issue_id: stored.issue_id, workflow_id: "sync-due-research", workflow_version: "1.0.0" }, catch_up_policy: "latest",
-        idempotency_key: `quality:${stored.fingerprint}:research-request`, max_attempts: 1, payload: { quality_issue_id: stored.issue_id, target: stored.target }, concurrency_key: `quality:${stored.instance_id ?? "global"}:research`, concurrency_policy: "merge",
+        job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: `module:${stored.module}:${workflowId}`, priority: "high", scheduled_for: now, available_after: now,
+        resources: followupResources(stored.recommended_action), trigger: { type: "quality-issue", issue_id: stored.issue_id, workflow_id: workflowId, workflow_version: workflowVersion }, catch_up_policy: "latest",
+        idempotency_key: `quality:${stored.fingerprint}:followup:${workflowId}`, max_attempts: 1, payload: { quality_issue_id: stored.issue_id, target: stored.target, quality_followup: stored.recommended_action }, concurrency_key: `quality:${stored.instance_id ?? "global"}:${workflowId}`, concurrency_policy: "merge",
         });
       }
     } finally { followups.close(); }
