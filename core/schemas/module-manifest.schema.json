@@ -168,6 +168,12 @@
       "additionalProperties": false,
       "required": ["record", "request"],
       "properties": {
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["adapter"],
+          "properties": { "adapter": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } }
+        },
         "record": {
           "type": "object",
           "additionalProperties": false,

@@ -1,4 +1,6 @@
 import { prepareResearchReconciliation } from "../components/researchReconciliation.js";
+import { resolveResearchReconciliationAdapter } from "./researchReconciliationAdapterRegistry.js";
+import { parseResearchRequestContract } from "../components/researchRequest.js";
 import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
 import { prepareLinkReconciliation } from "../components/linkReconciliation.js";
 import { prepareIndexMaterialization, type IndexEntry } from "../components/indexMaterializer.js";
@@ -123,6 +125,8 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
       const result = await prepareResearchReconciliation({
         vaultRoot: context.vaultRoot, taskId: context.task.task_id, runId: context.runId, moduleId: context.moduleId, moduleVersion: context.moduleVersion,
         instance: context.instance, report, sourceFile: context.sourceFile,
+        researchRequest: parseResearchRequestContract(context.manifest),
+        adapter: resolveResearchReconciliationAdapter(context.manifest),
         candidates: candidates.map((candidate) => {
           const document = object(candidate, "MODULE_WORKFLOW_RECORD_CANDIDATE_INVALID");
           return { path: string(document.path, "MODULE_WORKFLOW_RECORD_CANDIDATE_INVALID"), data: object(document.data, "MODULE_WORKFLOW_RECORD_CANDIDATE_INVALID") };

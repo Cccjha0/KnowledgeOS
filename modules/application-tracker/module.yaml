@@ -57,6 +57,8 @@ pdf_policy:
 # This is the complete module-owned contract consumed by the generic
 # research-request Component. Core never assumes an Application Record.
 research_request:
+  reconciliation:
+    adapter: application-deterministic
   record:
     search_root: 20-Workspace/Applications
     directory: Records
