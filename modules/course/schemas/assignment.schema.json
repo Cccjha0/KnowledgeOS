@@ -2,6 +2,27 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://pkb.local/schemas/course/assignment.schema.json",
   "type": "object",
+  "$defs": {
+    "fieldProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorship", "evidence_refs", "generation", "review", "verification"],
+      "properties": {
+        "authorship": { "enum": ["user", "ai", "system", "official-source", "external-research"] },
+        "evidence_refs": { "type": "array", "items": { "type": "string" } },
+        "generation": { "type": ["object", "null"] }, "review": { "type": ["object", "null"] },
+        "verification": {
+          "type": "object", "additionalProperties": false,
+          "required": ["last_verified", "verification_interval_days", "stale_after", "stale", "verification_status"],
+          "properties": {
+            "last_verified": { "type": ["string", "null"], "format": "date-time" }, "verification_interval_days": { "type": ["number", "null"] },
+            "stale_after": { "type": ["string", "null"], "format": "date-time" }, "stale": { "type": "boolean" },
+            "verification_status": { "enum": ["verified", "due-soon", "stale", "unverifiable", "historical", "unknown"] }
+          }
+        }
+      }
+    }
+  },
   "additionalProperties": false,
   "required": ["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "title", "source_refs", "created", "updated", "safe_summary", "deadline", "status"],
   "properties": {
@@ -10,6 +31,7 @@
     "source_refs": { "type": "array", "items": { "type": "string" } }, "generation": { "type": ["object", "null"] },
     "created": { "type": "string", "format": "date-time" }, "updated": { "type": "string", "format": "date-time" },
     "safe_summary": { "type": ["string", "null"] },
+    "_field_meta": { "type": "object", "additionalProperties": false, "properties": { "deadline": { "$ref": "#/$defs/fieldProvenance" } } },
     "deadline": { "type": "string", "format": "date-time" }, "status": { "enum": ["planned", "submitted", "graded"] }
   }
 }

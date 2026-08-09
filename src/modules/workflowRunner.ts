@@ -8,6 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
+import { materializeFieldProvenance } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -504,6 +505,21 @@ function approvedDocuments(state: WorkflowState): DocumentInput[] {
   return [...byPath.values()];
 }
 
+/** Paths from documents Core actually admitted to this workflow, excluding
+ * sidecars, caches, and any references merely suggested by the model. */
+function authorizedSourceRefs(state: WorkflowState): string[] {
+  return [...new Set(approvedDocuments(state).map((document) => document.path))];
+}
+
+/** `_field_meta` and source_refs are Core-managed output. A model may describe
+ * facts, but it cannot manufacture an evidence chain or claim it read a file. */
+function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject {
+  const managed = structuredClone(output);
+  delete managed._field_meta;
+  managed.source_refs = authorizedSourceRefs(state);
+  return managed;
+}
+
 function contextDocumentContent(document: DocumentInput): string {
   // parseMarkdown separates frontmatter from the body. Both are approved task
   // input, so materialize them together without copying the original Vault file.
@@ -648,7 +664,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             ? fixedValue(step.with.fixed_fields as JsonObject, state, task) as JsonObject : {};
           const nullDefaults = Array.isArray(step.with.default_null_fields)
             ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
-          return { output: { ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
+          return { output: coreManagedOutput({ ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) }, state) };
         }, (output) => {
           try { validateSchema(vaultRoot, outputSchema, output); return true; }
           catch { return Boolean(output && typeof output === "object" && !Array.isArray(output) && hasMissingReviewRule(resolved.workflow, output as JsonObject)); }
@@ -714,7 +730,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           continue;
         }
         const outputKey = typeof step.with.output === "string" ? step.with.output : steps.slice(0, steps.indexOf(step)).reverse().find((candidate) => candidate.uses === "codex.prompt")?.id;
-        const output = outputKey ? object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING") : null;
+        const output = outputKey ? coreManagedOutput(object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING"), state) : null;
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
         try { validateSchema(vaultRoot, outputSchema, output); }
@@ -749,6 +765,21 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const reviewRequirements = pendingReviewRequirements(state);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
         const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
+        if (!reviewId) {
+          const fieldMeta = await materializeFieldProvenance({
+            vaultRoot,
+            moduleRoot: resolved.moduleRoot,
+            manifest: resolved.manifest,
+            entityId: typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema),
+            target,
+            output,
+            authorizedSourceRefs: authorizedSourceRefs(state),
+            runId,
+            generation: generated,
+            review: { status: "not-required", review_id: null, reviewed_by: null, reviewed_at: null, decision: null },
+          });
+          if (Object.keys(fieldMeta).length) output._field_meta = fieldMeta;
+        }
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
           summary: typeof step.with.summary === "string" ? interpolate(step.with.summary, state, task) : `Run ${resolved.workflowId}`,
@@ -773,7 +804,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
             priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
-            evidence: [...state.sourceFiles], created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            evidence: authorizedSourceRefs(state), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,
             ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
             ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),

@@ -16,6 +16,8 @@ import { dispatchOnce } from "../runtime/dispatcher.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { locateReviewItem } from "../core/reviews.js";
 import { decideReview } from "../platform/reviewWorkflow.js";
+import { QualityRepository } from "../quality/repository.js";
+import { runQualityAudit } from "../quality/audit.js";
 
 function makePdf(text: string): Buffer {
   const stream = `BT\n/F1 18 Tf\n72 720 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
@@ -106,7 +108,24 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     await assert.rejects(fs.access(target), "Review-gated output must not be written before a user decision.");
     const approved = { ...output, deadline: "2026-09-01T09:00:00+08:00" };
     await decideReview({ vaultRoot: vault, reviewId, decision: "approve-with-modification", modifiedValue: approved, userComment: "Confirmed the official deadline." });
-    assert.equal(parseMarkdown(vault, target).data.deadline, "2026-09-01T09:00:00+08:00");
+    const approvedDocument = parseMarkdown(vault, target).data;
+    assert.equal(approvedDocument.deadline, "2026-09-01T09:00:00+08:00");
+    const deadlineMeta = ((approvedDocument._field_meta as JsonObject).deadline as JsonObject);
+    assert.equal(deadlineMeta.authorship, "ai");
+    assert.equal((deadlineMeta.verification as JsonObject).verification_interval_days, 7);
+    assert.equal((deadlineMeta.verification as JsonObject).verification_status, "verified");
+    assert.equal(Array.isArray(deadlineMeta.evidence_refs), true);
+    assert.match(String((deadlineMeta.evidence_refs as string[])[0]), /^EVD-/);
+    const quality = await QualityRepository.open(vault);
+    const evidence = quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!);
+    quality.close();
+    assert.equal(evidence?.source_ref, sourceRelative, "Evidence must refer to a Core-authorized input, never a model-supplied source_ref.");
+    const staleAfter = String((deadlineMeta.verification as JsonObject).stale_after);
+    await runQualityAudit(vault, "weekly", { now: new Date(Date.parse(staleAfter) + 1).toISOString() });
+    const afterAudit = await QualityRepository.open(vault);
+    const issues = afterAudit.listIssues(); afterAudit.close();
+    assert.equal(issues.some((entry) => entry.issue_type === "missing-provenance" && entry.target.field === "deadline"), false);
+    assert.equal(issues.some((entry) => entry.issue_type === "stale-critical-field" && entry.target.field === "deadline"), true, "Field metadata must enter the verified → stale lifecycle.");
     const completed = await RuntimeRepository.open(vault);
     assert.equal(completed.getTask(task.task_id)?.status, "completed");
     completed.close();

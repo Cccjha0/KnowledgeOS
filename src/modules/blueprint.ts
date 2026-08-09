@@ -611,6 +611,37 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
       properties[fieldId] = schemaProperty(field);
       if (field.required === true && !required.includes(fieldId)) required.push(fieldId);
     }
+    // `_field_meta` is Core-owned. It is optional because a record can contain
+    // no quality-governed values, but each declared field contract has a stable
+    // schema for the evidence / generation / review / freshness lifecycle.
+    const fieldMetaProperties: JsonObject = {};
+    for (const [fieldId, raw] of Object.entries(declaredFields)) {
+      const field = object(raw) ?? {};
+      if (field.provenance_required !== true && typeof field.freshness_days !== "number") continue;
+      fieldMetaProperties[fieldId] = {
+        type: "object",
+        additionalProperties: false,
+        required: ["authorship", "evidence_refs", "generation", "review", "verification"],
+        properties: {
+          authorship: { enum: ["user", "ai", "system", "official-source", "external-research"] },
+          evidence_refs: { type: "array", items: { type: "string" } },
+          generation: { type: ["object", "null"] },
+          review: { type: ["object", "null"] },
+          verification: {
+            type: "object", additionalProperties: false,
+            required: ["last_verified", "verification_interval_days", "stale_after", "stale", "verification_status"],
+            properties: {
+              last_verified: { type: ["string", "null"], format: "date-time" },
+              verification_interval_days: { type: ["number", "null"] },
+              stale_after: { type: ["string", "null"], format: "date-time" },
+              stale: { type: "boolean" },
+              verification_status: { enum: ["verified", "due-soon", "stale", "unverifiable", "historical", "unknown"] },
+            },
+          },
+        },
+      };
+    }
+    if (Object.keys(fieldMetaProperties).length) properties._field_meta = { type: "object", additionalProperties: false, properties: fieldMetaProperties };
     const schema = { $schema: "https://json-schema.org/draft/2020-12/schema", $id: `https://pkb.local/schemas/${moduleId}/${entityId}.schema.json`, type: "object", additionalProperties: false, required, properties };
     await fs.writeFile(path.join(moduleRoot, "schemas", `${entityId}.schema.json`), `${JSON.stringify(schema, null, 2)}\n`, "utf8");
     registeredSchemas[entityId] = { version: 1, path: `${entityId}.schema.json`, entity_type: `${moduleId}-${entityId}` };

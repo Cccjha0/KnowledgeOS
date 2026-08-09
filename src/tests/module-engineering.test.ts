@@ -277,6 +277,9 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
       assert.deepEqual((qualityPolicy.field_policies as JsonObject)["assignment.deadline"], {
         critical: true, provenance: "required", verification_interval_days: 7,
       }, "Blueprint provenance_required and freshness_days must materialize into a Quality Policy.");
+      const assignmentSchema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", "assignment.schema.json"), "utf8")) as JsonObject;
+      const deadlineMeta = (((assignmentSchema.properties as JsonObject)._field_meta as JsonObject).properties as JsonObject).deadline as JsonObject;
+      assert.deepEqual(deadlineMeta.required, ["authorship", "evidence_refs", "generation", "review", "verification"], "Generated entities must declare the Core-owned field provenance contract.");
     const lectureWorkflowPath = path.join(moduleRoot, "workflows", "normalize-lecture", "v1.0.0.yaml");
     const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
     const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");
