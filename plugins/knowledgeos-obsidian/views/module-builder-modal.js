@@ -77,6 +77,8 @@ function createModuleBuilderViews(deps) {
         inputs: "markdown", sensitivity: "1", representation: "full", critical: "", weekly: false,
       };
       this.guidedBrief = "";
+      this.guidedAnswers = {};
+      this.guidedDiff = [];
       this.expertBlueprint = "";
       this.confirmedApprovals = new Set();
       this.platformContract = null;
@@ -155,16 +157,32 @@ function createModuleBuilderViews(deps) {
         const list = section.createEl("ul");
         exclusions.forEach((item) => list.createEl("li", { text: item }));
       }
-      if (result.capability_gap) {
-        section.createEl("strong", { text: "Capability gap" });
-        section.createEl("p", { text: result.capability_gap.requested_behavior || "The current platform needs a generic capability before this can be scaffolded." });
-        return;
-      }
       const notes = Array.isArray(result.questions) ? result.questions : [];
       if (notes.length) {
-        section.createEl("strong", { text: "Planning considerations" });
-        const list = section.createEl("ul");
-        notes.forEach((item) => list.createEl("li", { text: item.question }));
+        section.createEl("strong", { text: "Questions to resolve" });
+        section.createEl("p", { cls: "knowledgeos-builder-intro", text: "Answer these decisions in your own words. KnowledgeOS will regenerate the draft and show what changed before anything is created." });
+        const questions = section.createDiv({ cls: "knowledgeos-builder-questions" });
+        notes.forEach((item) => {
+          const row = questions.createEl("label", { cls: "knowledgeos-builder-question" });
+          row.createEl("strong", { text: item.question });
+          row.createEl("span", { text: item.impact || "This decision changes the generated contract." });
+          const answer = row.createEl("textarea", { attr: { placeholder: "Your answer…", "aria-label": item.question } });
+          answer.value = this.guidedAnswers[item.id] || "";
+          answer.oninput = () => { this.guidedAnswers[item.id] = answer.value; };
+        });
+        const refine = section.createEl("button", { cls: "mod-cta", text: this.busy ? "Regenerating…" : "Regenerate draft with answers" });
+        refine.disabled = this.busy || notes.some((item) => item.required !== false && !(this.guidedAnswers[item.id] || "").trim());
+        refine.onclick = () => this.refineGuided();
+      }
+      if (this.guidedDiff.length) {
+        const changes = section.createEl("details", { cls: "knowledgeos-builder-diff" });
+        changes.open = true;
+        changes.createEl("summary", { text: `Draft changed in ${this.guidedDiff.length} place${this.guidedDiff.length === 1 ? "" : "s"}` });
+        const list = changes.createEl("ul"); this.guidedDiff.forEach((change) => list.createEl("li", { text: change }));
+      }
+      if (result.capability_gap || ["instance", "configuration-pack", "component"].includes(boundary.kind)) {
+        this.renderBoundaryContinuation(section, result);
+        return;
       }
       if (result.proposed_blueprint) {
         const report = result.blueprint_preview?.report;
@@ -255,7 +273,7 @@ function createModuleBuilderViews(deps) {
     blueprint() { return buildQuickBlueprint(this.form); }
 
     async analyzeGuided() {
-      this.busy = true; this.preview = null; this.guided = null; this.confirmedApprovals.clear(); this.render();
+      this.busy = true; this.preview = null; this.guided = null; this.guidedAnswers = {}; this.guidedDiff = []; this.confirmedApprovals.clear(); this.render();
       const response = await this.plugin.client.invoke("analyzeModuleRequirement", {
         brief: this.guidedBrief,
         codex_model: this.plugin.settings.codexModel,
@@ -265,6 +283,65 @@ function createModuleBuilderViews(deps) {
       if (!response.ok) this.preview = { error: response.error };
       else this.guided = response.data;
       this.render();
+    }
+
+    async refineGuided() {
+      if (!this.guided || this.busy) return;
+      const previous = this.guided;
+      const answers = (previous.questions || []).map((question) => ({ question_id: question.id, answer: (this.guidedAnswers[question.id] || "").trim() })).filter((answer) => answer.answer);
+      this.busy = true; this.preview = null; this.confirmedApprovals.clear(); this.render();
+      const response = await this.plugin.client.invoke("refineModuleRequirement", {
+        brief: this.guidedBrief, previous_analysis: previous, answers,
+        codex_model: this.plugin.settings.codexModel, codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      }, null, { timeoutMs: 130_000 });
+      this.busy = false;
+      if (!response.ok) this.preview = { error: response.error };
+      else { this.guided = response.data; this.guidedAnswers = {}; this.guidedDiff = this.diffBlueprints(previous.proposed_blueprint, response.data.proposed_blueprint); }
+      this.render();
+    }
+
+    diffBlueprints(before, after) {
+      const changes = [];
+      const visit = (left, right, trail) => {
+        if (JSON.stringify(left) === JSON.stringify(right)) return;
+        if (left && right && typeof left === "object" && typeof right === "object" && !Array.isArray(left) && !Array.isArray(right)) {
+          for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) visit(left[key], right[key], trail ? `${trail}.${key}` : key);
+          return;
+        }
+        changes.push(`${trail || "proposal"}: ${left === undefined ? "added" : right === undefined ? "removed" : "updated"}`);
+      };
+      visit(before, after, ""); return changes.slice(0, 30);
+    }
+
+    renderBoundaryContinuation(root, result) {
+      const kind = result.boundary?.kind;
+      const continuation = root.createDiv({ cls: "knowledgeos-builder-continuation" });
+      if (kind === "instance") {
+        continuation.createEl("p", { text: "This is a concrete use of an existing module. Continue with the Instance Wizard instead of creating a new module." });
+        const button = continuation.createEl("button", { cls: "mod-cta", text: "Open Instance Wizard" });
+        button.onclick = () => { this.close(); this.plugin.openInstanceWizard(); };
+      } else if (kind === "configuration-pack" || kind === "component") {
+        continuation.createEl("p", { text: kind === "configuration-pack" ? "Save a configuration-pack design brief, then continue it from Module Development." : "Save a constrained component design brief for platform review." });
+        const button = continuation.createEl("button", { cls: "mod-cta", text: kind === "configuration-pack" ? "Create Pack design brief" : "Create Component design brief" });
+        button.onclick = () => this.saveBoundaryDesign(kind);
+      } else if (kind === "capability-gap") {
+        continuation.createEl("strong", { text: "Capability gap" });
+        continuation.createEl("p", { text: result.capability_gap?.requested_behavior || "The current platform needs a generic capability before this can be scaffolded." });
+        const button = continuation.createEl("button", { cls: "mod-cta", text: "Save Gap Report" });
+        button.onclick = () => this.saveGapReport();
+      }
+    }
+
+    async saveBoundaryDesign(kind) {
+      this.busy = true; this.render();
+      const response = await this.plugin.client.invoke("saveExtensionDesignDraft", { kind, previous_analysis: this.guided });
+      this.busy = false; if (!response.ok) this.preview = { error: response.error }; else new Notice(`Saved ${kind} design brief: ${response.data.path}`); this.render();
+    }
+
+    async saveGapReport() {
+      this.busy = true; this.render();
+      const response = await this.plugin.client.invoke("saveModuleBuilderGapReport", { previous_analysis: this.guided });
+      this.busy = false; if (!response.ok) this.preview = { error: response.error }; else new Notice(`Saved Gap Report: ${response.data.path}`); this.render();
     }
 
     async validate(blueprint) {

@@ -188,6 +188,43 @@ test("Guided Module Builder preserves the extension boundary and never exposes a
   }), /Only a module decision/);
 });
 
+test("Guided Module Builder carries structured answers into a regenerated draft", async () => {
+  const previous = normalizeGuidedBuilderAnalysis("Design a private course workspace with a weekly summary and controlled source access.", {
+    boundary: { kind: "module", rationale: "A dedicated lifecycle is needed.", exclusions: [] }, summary: "Initial draft.",
+    questions: [{ id: "access", category: "content-access", question: "Allow full text?", impact: "This changes Codex context." }],
+    proposed_blueprint: parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml")), capability_gap: null,
+  });
+  const refined = await analyzeGuidedModuleRequirement({
+    brief: "Design a private course workspace with a weekly summary and controlled source access.", previousAnalysis: previous,
+    answers: [{ question_id: "access", answer: "No. Use safe summaries only." }],
+    execute: async (request) => {
+      assert.match(request.prompt, /safe summaries only/i, "The answer must enter the restricted planning prompt.");
+      const revised = structuredClone(previous.proposed_blueprint as JsonObject);
+      (revised.privacy as JsonObject).default_max_representation = "summary";
+      return { stderr: "", output: { boundary: previous.boundary, summary: "Revised draft uses summaries.", questions: [], proposed_blueprint: revised, capability_gap: null } };
+    },
+  });
+  assert.equal(refined.iteration, 2);
+  assert.equal((refined.proposed_blueprint as JsonObject).privacy && ((refined.proposed_blueprint as JsonObject).privacy as JsonObject).default_max_representation, "summary");
+  assert.equal(refined.questions.length, 0);
+});
+
+test("Command API persists capability gaps as user-visible development reports", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-guided-gap-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const analysis: JsonObject = {
+      analysis_version: 2, requirement_hash: "a".repeat(64), iteration: 1,
+      boundary: { kind: "capability-gap", rationale: "Needs a generic adapter.", exclusions: [] }, summary: "Need a reusable adapter.", questions: [], proposed_blueprint: null,
+      capability_gap: { requested_behavior: "Read an unsupported source", proposed_generic_contract: "adapter" }, platform_contract: null, generated_at: "2026-08-09T00:00:00Z",
+    };
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "GUIDED-GAP", method: "saveModuleBuilderGapReport", params: { previous_analysis: analysis } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).path, "90-System/Module Development/Capability Gaps/GAP-aaaaaaaaaaaaaaaa.md");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "Capability Gaps", "GAP-aaaaaaaaaaaaaaaa.md")).then(() => true), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Command API creates a Blueprint module in the Vault development workspace, not Engine source", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-workspace-"));
   try {
