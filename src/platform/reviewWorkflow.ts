@@ -227,20 +227,43 @@ function moduleOperationPlanId(item: ReviewItem): string {
   return planId;
 }
 
-function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonValue): void {
+/**
+ * Builds the only record shape that a modified module-operation Review may
+ * pass to the Executor.  A Review UI can propose business-field corrections,
+ * but cannot alter Core-owned identity/version/lifecycle fields simply by
+ * replacing an entire entity payload.
+ */
+function sanitizeModuleReviewModification(original: JsonObject, modifiedValue: JsonValue): JsonObject {
   if (!modifiedValue || typeof modifiedValue !== "object" || Array.isArray(modifiedValue)) throw new PkbError("INVALID_MODIFIED_VALUE", "A module-operation Review modification must be a record object.");
-  const replacement = structuredClone(modifiedValue) as JsonObject;
+  const requested = structuredClone(modifiedValue) as JsonObject;
+  const sanitized: JsonObject = {};
+  for (const field of MODULE_UPDATE_PROTECTED_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(original, field)) sanitized[field] = structuredClone(original[field]!);
+  }
+  for (const [field, value] of Object.entries(requested)) {
+    if (MODULE_UPDATE_PROTECTED_FIELDS.has(field)) continue;
+    sanitized[field] = value;
+  }
   // Evidence selection is a transient, Core-validated instruction from the
   // model. It is never part of a module entity schema and must not be able to
   // reach the Executor through a user-modified review payload.
-  delete replacement._evidence_selection;
-  delete replacement._field_meta;
+  delete sanitized._evidence_selection;
+  delete sanitized._field_meta;
+  return sanitized;
+}
+
+function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonValue): void {
   for (const operation of plan.operations) {
     if (operation.type === "create-file") {
       const document = operation.payload.document;
       if (!document || typeof document !== "object" || Array.isArray(document)) throw new PkbError("INVALID_REVIEW_PLAN", "Module create operation has no document payload.");
-      (document as JsonObject).data = replacement;
+      const original = (document as JsonObject).data;
+      if (!original || typeof original !== "object" || Array.isArray(original)) throw new PkbError("INVALID_REVIEW_PLAN", "Module create operation has no document data.");
+      (document as JsonObject).data = sanitizeModuleReviewModification(original as JsonObject, modifiedValue);
     } else if (operation.type === "update-frontmatter") {
+      const original = operation.payload.patch;
+      if (!original || typeof original !== "object" || Array.isArray(original)) throw new PkbError("INVALID_REVIEW_PLAN", "Module update operation has no frontmatter patch.");
+      const replacement = sanitizeModuleReviewModification(original as JsonObject, modifiedValue);
       operation.payload.patch = replacement;
       operation.payload.replace_top_level = Object.keys(replacement);
     }

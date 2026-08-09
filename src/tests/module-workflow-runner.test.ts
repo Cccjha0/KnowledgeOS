@@ -121,10 +121,32 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     assert.equal((review.item.proposed_value as JsonObject).field, "assignment.deadline");
     const target = path.join(vault, "20-Workspace", "课程管理", instanceId, "Assignments", "assignment-001.md");
     await assert.rejects(fs.access(target), "Review-gated output must not be written before a user decision.");
-    const approved = { ...output, deadline: "2026-09-01T09:00:00+08:00" };
+    const approved = {
+      ...output,
+      // A create-file Review receives a complete record object. These are
+      // intentionally hostile replacements: Core must retain the original
+      // plan's system-managed values rather than trusting this payload.
+      id: "ASSIGN-OVERRIDE-000001",
+      type: "unexpected-type",
+      schema_id: "unexpected-schema",
+      schema_version: 999,
+      module_version: "999.0.0",
+      instance_id: "other-instance",
+      created: "2000-01-01T00:00:00Z",
+      updated: "2000-01-01T00:00:00Z",
+      deadline: "2026-09-01T09:00:00+08:00",
+    };
     await decideReview({ vaultRoot: vault, reviewId, decision: "approve-with-modification", modifiedValue: approved, userComment: "Confirmed the official deadline." });
     const approvedDocument = parseMarkdown(vault, target).data;
     assert.equal(approvedDocument.deadline, "2026-09-01T09:00:00+08:00");
+    assert.equal(approvedDocument.id, output.id);
+    assert.equal(approvedDocument.type, output.type);
+    assert.equal(approvedDocument.schema_id, output.schema_id);
+    assert.equal(approvedDocument.schema_version, output.schema_version);
+    assert.equal(approvedDocument.module_version, output.module_version);
+    assert.equal(approvedDocument.instance_id, output.instance_id);
+    assert.equal(approvedDocument.created, output.created);
+    assert.notEqual(approvedDocument.updated, approved.updated, "Core owns the update timestamp after a Review decision.");
     const deadlineMeta = ((approvedDocument._field_meta as JsonObject).deadline as JsonObject);
     assert.equal(deadlineMeta.authorship, "user", "A user-modified value must not be attributed to the original AI proposal.");
     assert.equal(deadlineMeta.generation, null, "A user-confirmed value must not retain AI generation provenance.");
