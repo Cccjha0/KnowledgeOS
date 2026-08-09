@@ -44,7 +44,7 @@ import {
 } from "../core/reviews.js";
 import { QualityRepository } from "../quality/repository.js";
 import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
-import { materializeFieldProvenance } from "../quality/fieldProvenance.js";
+import { authorizedEvidenceSources, materializeFieldProvenance, parseEvidenceSelections } from "../quality/fieldProvenance.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -387,6 +387,14 @@ async function materializeApprovedModuleFieldProvenance(
   if (!module) return;
   const moduleRoot = path.dirname(module.path);
   const authorizedSourceRefs = item.evidence.filter((entry): entry is string => typeof entry === "string" && !/^EVD-\d{4}-\d{6,}$/.test(entry));
+  const authorizedSources = authorizedEvidenceSources(authorizedSourceRefs);
+  const proposed = item.proposed_value && typeof item.proposed_value === "object" && !Array.isArray(item.proposed_value) ? item.proposed_value as JsonObject : {};
+  // New Module Workflow reviews persist a Core-validated selection. Legacy
+  // single-field Reviews already treat `item.evidence` as the field's actual
+  // evidence, so preserve that narrower historical contract during migration.
+  const evidenceSelections = proposed.evidence_selection === undefined
+    ? item.action === "module-operation" ? {} : { [fieldFromReview(item)]: authorizedSources.map((source) => ({ source_id: source.source_id, locator: {} })) }
+    : parseEvidenceSelections(proposed.evidence_selection, authorizedSources);
   const sourceGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
   const generation: JsonObject = { ...(sourceGeneration ?? {}), review_resolution: { run_id: runId, review_id: item.review_id, decided_at: decision.decided_at } };
   const review: JsonObject = { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision };
@@ -410,7 +418,7 @@ async function materializeApprovedModuleFieldProvenance(
     if (!entityId) continue;
     const fieldMeta = await materializeFieldProvenance({
       vaultRoot, moduleRoot, manifest: module.data, entityId, target: operation.target, output: record,
-      authorizedSourceRefs, runId, generation, review, now: decision.decided_at,
+      authorizedSources, evidenceSelections, runId, generation, review, now: decision.decided_at,
     });
     if (Object.keys(fieldMeta).length) record._field_meta = fieldMeta;
   }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { parseMarkdown, parseYaml, writeMarkdown, writeYaml } from "../core/bridge.js";
 import { updateAssetAccessPolicy } from "../core/ingestion.js";
@@ -19,6 +20,9 @@ import { locateReviewItem } from "../core/reviews.js";
 import { decideReview } from "../platform/reviewWorkflow.js";
 import { QualityRepository } from "../quality/repository.js";
 import { runQualityAudit } from "../quality/audit.js";
+import { authorizedEvidenceSources, criticalFieldsMissingEvidence, evidenceSourceId, materializeFieldProvenance, parseEvidenceSelections } from "../quality/fieldProvenance.js";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 function makePdf(text: string): Buffer {
   const stream = `BT\n/F1 18 Tf\n72 720 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
@@ -99,6 +103,10 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     const output = {
       id: "ASSIGN-2026-000001", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
       title: "Essay", source_refs: [sourceRelative], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief", status: "planned",
+      _evidence_selection: {
+        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Deadline" } }],
+        status: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Assignment brief" } }],
+      },
     };
     await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
     const after = await RuntimeRepository.open(vault);
@@ -166,6 +174,10 @@ test("a green module operation replaces model provenance with Core-authorized ev
       id: "ASSIGN-2026-000099", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.3.0-beta", instance_id: instanceId,
       title: "Essay", source_refs: ["fabricated-source.md"], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief",
       deadline: "2026-09-01T09:00:00+08:00", status: "planned",
+      _evidence_selection: {
+        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Deadline" } }],
+        status: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Assignment brief" } }],
+      },
       _field_meta: { deadline: { authorship: "ai", evidence_refs: ["EVD-2099-999999"], verification: { last_verified: "2099-01-01T00:00:00Z" } } },
     };
     await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
@@ -177,8 +189,34 @@ test("a green module operation replaces model provenance with Core-authorized ev
     assert.notEqual((deadlineMeta.evidence_refs as string[])[0], "EVD-2099-999999");
     assert.equal((deadlineMeta.verification as JsonObject).verification_interval_days, 7);
     const quality = await QualityRepository.open(vault);
-    assert.equal(quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!)?.source_ref, sourceRelative);
+    const evidence = quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!);
+    assert.equal(evidence?.source_ref, sourceRelative);
+    assert.deepEqual(evidence?.locator, { section: "Deadline" });
     quality.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("field provenance records only selected authorized evidence and flags unsupported Critical fields", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-evidence-selection-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const moduleRoot = path.join(ENGINE_ROOT, "modules", "course");
+    const manifest = parseYaml(ENGINE_ROOT, path.join(moduleRoot, "module.yaml")) as JsonObject;
+    const sources = authorizedEvidenceSources(["20-Workspace/course/Inbox/first.md", "20-Workspace/course/Inbox/second.md"]);
+    const selected = parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator: { page: 3, section: "Assessment" } }] }, sources);
+    const output = { deadline: "2026-09-01T09:00:00+08:00", status: "planned" };
+    assert.deepEqual(criticalFieldsMissingEvidence(moduleRoot, manifest, "assignment", output, selected, sources), ["status"]);
+    assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: "SRC-NOT-AUTHORIZED", locator: {} }] }, sources), /did not authorize/);
+    const meta = await materializeFieldProvenance({
+      vaultRoot: vault, moduleRoot, manifest, entityId: "assignment", target: "20-Workspace/course/Assignments/essay.md", output,
+      authorizedSources: sources, evidenceSelections: selected, runId: "RUN-TEST", generation: { adapter: "test" }, review: null, now: "2026-08-09T00:00:00Z",
+    });
+    const deadline = meta.deadline as JsonObject;
+    const refs = deadline.evidence_refs as string[];
+    assert.equal(refs.length, 1);
+    const quality = await QualityRepository.open(vault); const evidence = quality.getEvidence(refs[0]!); quality.close();
+    assert.equal(evidence?.source_ref, "20-Workspace/course/Inbox/second.md");
+    assert.deepEqual(evidence?.locator, { page: 3, section: "Assessment" });
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -233,6 +271,7 @@ test("Core forces Review for a Critical update and strips model-controlled syste
     const reviewId = path.basename(pending.find((file) => parseMarkdown(vault, path.join(vault, "90-System", "Review Queue", "Pending", file)).data.origin_task_id === task.task_id)!, ".md");
     const review = await locateReviewItem(vault, reviewId);
     assert.equal(((review.item.proposed_value as JsonObject).matching_rules as JsonObject[]).some((rule) => rule.condition === "critical-field-update"), true);
+    assert.equal(((review.item.proposed_value as JsonObject).matching_rules as JsonObject[]).some((rule) => rule.condition === "missing-evidence-selection"), true, "Critical AI fields without selected evidence must be routed to Review.");
     await decideReview({ vaultRoot: vault, reviewId, decision: "approve" });
     const updated = parseMarkdown(vault, target).data;
     assert.equal(updated.deadline, output.deadline);
