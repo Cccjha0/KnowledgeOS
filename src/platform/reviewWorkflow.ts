@@ -380,6 +380,18 @@ function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonV
   }
 }
 
+/** Returns only user-visible values that differ from the original AI proposal. */
+function userModifiedModuleFields(item: ReviewItem, decision: ReviewDecision, record: JsonObject): Set<string> {
+  if (decision.decision !== "approve-with-modification") return new Set();
+  const proposed = item.proposed_value && typeof item.proposed_value === "object" && !Array.isArray(item.proposed_value)
+    ? item.proposed_value as JsonObject : {};
+  const original = proposed.new_value && typeof proposed.new_value === "object" && !Array.isArray(proposed.new_value)
+    ? proposed.new_value as JsonObject : {};
+  return new Set(Object.keys(record).filter((field) => !MODULE_UPDATE_PROTECTED_FIELDS.has(field)
+    && field !== "source_refs" && field !== "generation" && field !== "_field_meta"
+    && !deepEqual(record[field], original[field])));
+}
+
 /** Apply Core-owned field provenance only after a module operation is approved. */
 async function materializeApprovedModuleFieldProvenance(
   vaultRoot: string,
@@ -421,9 +433,10 @@ async function materializeApprovedModuleFieldProvenance(
     }
     const entityId = typeof record.schema_id === "string" ? record.schema_id : typeof operation.payload.schema_id === "string" ? operation.payload.schema_id : null;
     if (!entityId) continue;
+    const userConfirmedFields = userModifiedModuleFields(item, decision, record);
     const fieldMeta = await materializeFieldProvenance({
       vaultRoot, moduleRoot, manifest: module.data, entityId, target: operation.target, output: record,
-      authorizedSources, evidenceSelections, runId, generation, review, now: decision.decided_at,
+      authorizedSources, evidenceSelections, runId, generation, review, userConfirmedFields, now: decision.decided_at,
     });
     if (Object.keys(fieldMeta).length) record._field_meta = fieldMeta;
   }

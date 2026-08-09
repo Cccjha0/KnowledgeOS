@@ -177,6 +177,11 @@ export interface MaterializeFieldProvenanceOptions {
   runId: string;
   generation: JsonObject | null;
   review: JsonObject | null;
+  /**
+   * Values changed by an approve-with-modification decision are user-authored.
+   * They must not inherit evidence selected for the original AI proposal.
+   */
+  userConfirmedFields?: ReadonlySet<string>;
   now?: string;
 }
 
@@ -196,9 +201,30 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
     const fieldMeta: JsonObject = {};
     for (const [field, contract] of contracts) {
       const value: JsonValue | undefined = options.output[field];
-      if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null)) continue;
+      const userConfirmed = options.userConfirmedFields?.has(field) === true;
+      if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null && !userConfirmed)) continue;
       const evidenceRefs: string[] = [];
-      if (contract.provenanceRequired) {
+      if (userConfirmed) {
+        const reviewId = typeof options.review?.review_id === "string" ? options.review.review_id : "unknown";
+        const sourceRef = `review:${reviewId}`;
+        const locator = { review_id: reviewId, field };
+        const match = existing.find((entry) => entry.source_type === "user-confirmation"
+          && entry.source_ref === sourceRef
+          && entry.supports.some((support) => support.entity_ref === options.target && support.field === field)
+          && JSON.stringify(entry.locator) === JSON.stringify(locator));
+        const evidence = match ?? repository.upsertEvidence({
+          source_type: "user-confirmation",
+          source_ref: sourceRef,
+          supports: [{ entity_ref: options.target, field }],
+          locator,
+          observed_at: now,
+          captured_at: now,
+          collector: { type: "user-review", run_id: options.runId, review_id: reviewId },
+          quality: { authority: "user-observation", freshness: "current", extraction_confidence: 1 },
+          status: "active",
+        });
+        evidenceRefs.push(evidence.evidence_id);
+      } else if (contract.provenanceRequired) {
         for (const selection of selectionsForField(field, options.evidenceSelections, sources)) {
           const match = existing.find((entry) => entry.source_ref === selection.source_ref
             && entry.supports.some((support) => support.entity_ref === options.target && support.field === field)
@@ -219,9 +245,9 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
       }
       const verification = evaluateFreshness({ lastVerified: evidenceRefs.length ? now : null, intervalDays: contract.verificationIntervalDays, now: new Date(now) });
       fieldMeta[field] = {
-        authorship: options.generation ? "ai" : "system",
+        authorship: userConfirmed ? "user" : options.generation ? "ai" : "system",
         evidence_refs: evidenceRefs,
-        generation: options.generation,
+        generation: userConfirmed ? null : options.generation,
         review: options.review,
         verification,
       };

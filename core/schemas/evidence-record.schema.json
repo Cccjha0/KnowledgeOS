@@ -7,7 +7,7 @@
   "required": ["evidence_id", "source_type", "source_ref", "supports", "locator", "observed_at", "captured_at", "collector", "quality", "status"],
   "properties": {
     "evidence_id": { "type": "string", "pattern": "^EVD-\\d{4}-\\d{6,}$" },
-    "source_type": { "enum": ["user", "ai", "system", "official-source", "external-research"] },
+    "source_type": { "enum": ["user", "ai", "system", "official-source", "external-research", "user-confirmation"] },
     "source_ref": { "type": "string", "minLength": 1 },
     "supports": {
       "type": "array",

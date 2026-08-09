@@ -126,7 +126,8 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     const approvedDocument = parseMarkdown(vault, target).data;
     assert.equal(approvedDocument.deadline, "2026-09-01T09:00:00+08:00");
     const deadlineMeta = ((approvedDocument._field_meta as JsonObject).deadline as JsonObject);
-    assert.equal(deadlineMeta.authorship, "ai");
+    assert.equal(deadlineMeta.authorship, "user", "A user-modified value must not be attributed to the original AI proposal.");
+    assert.equal(deadlineMeta.generation, null, "A user-confirmed value must not retain AI generation provenance.");
     assert.equal((deadlineMeta.verification as JsonObject).verification_interval_days, 7);
     assert.equal((deadlineMeta.verification as JsonObject).verification_status, "verified");
     assert.equal(Array.isArray(deadlineMeta.evidence_refs), true);
@@ -134,7 +135,9 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     const quality = await QualityRepository.open(vault);
     const evidence = quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!);
     quality.close();
-    assert.equal(evidence?.source_ref, sourceRelative, "Evidence must refer to a Core-authorized input, never a model-supplied source_ref.");
+    assert.equal(evidence?.source_type, "user-confirmation");
+    assert.equal(evidence?.source_ref, `review:${reviewId}`, "Modified values must be supported by the user's Review decision, not the original AI evidence selection.");
+    assert.equal((evidence?.collector as JsonObject).type, "user-review");
     const staleAfter = String((deadlineMeta.verification as JsonObject).stale_after);
     await runQualityAudit(vault, "weekly", { now: new Date(Date.parse(staleAfter) + 1).toISOString() });
     const afterAudit = await QualityRepository.open(vault);
