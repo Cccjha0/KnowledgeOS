@@ -172,6 +172,7 @@ async function findItem(vaultRoot: string, itemId: string): Promise<InboxItemVie
 function preview(item: InboxItemView, overrides: { moduleId: string | null; instanceId: string | null } = { moduleId: null, instanceId: null }): JsonObject {
   const moduleId = overrides.moduleId ?? item.suggested_module_id;
   const instanceId = overrides.instanceId ?? item.suggested_instance_id;
+  const descriptor = item.processor_descriptor;
   if (item.state === "empty") {
     return {
       status: "preview", item_id: item.item_id, path: item.path, current_state: item.state,
@@ -189,12 +190,12 @@ function preview(item: InboxItemView, overrides: { moduleId: string | null; inst
     required_representation: item.required_representation, requires_codex: item.requires_ai,
     can_auto_process: item.confidence >= item.auto_route_threshold && !item.requires_ai,
     processor: item.processor,
-    operation_summary: item.processor === "application-research-report"
-      ? { kind: "module-processing", estimated_operations: null, target: "Application Record and Research archive" }
+    operation_summary: descriptor
+      ? { kind: descriptor.preview_kind ?? "module-processing", estimated_operations: null, target: descriptor.preview_target ?? null, label: descriptor.label ?? null }
       : item.scope === "global" && moduleId
         ? { kind: "route", estimated_operations: 1, target: instanceId ? `${instanceId} Inbox` : `${moduleId} Inbox` }
         : { kind: "handoff", estimated_operations: 0, target: null },
-    risk: item.processor === "application-research-report" ? "mixed-by-module-plan" : "green",
+    risk: typeof descriptor?.risk === "string" ? descriptor.risk : "green",
   };
 }
 

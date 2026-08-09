@@ -50,7 +50,9 @@ export interface InboxItemView extends JsonObject {
   /** @deprecated UI compatibility alias for required_representation; never an authorization input. */
   required_read_level: number;
   requires_ai: boolean;
-  processor: "application-research-report" | "module-workflow" | "routing-only";
+  /** A generic processor identifier; module-owned details live in processor_descriptor. */
+  processor: string;
+  processor_descriptor: JsonObject | null;
   suggested_module_id: string | null;
   suggested_instance_id: string | null;
   auto_route_threshold: number;
@@ -107,6 +109,40 @@ function moduleThreshold(module: DiscoveredDocument | undefined): number {
   return typeof routing?.auto_route_threshold === "number" ? routing.auto_route_threshold : 1;
 }
 
+interface MatchedInboxProcessor {
+  moduleId: string;
+  id: string;
+  descriptor: JsonObject;
+  instanceField: string | null;
+}
+
+function publicProcessorDescriptor(id: string, descriptor: JsonObject): JsonObject {
+  return {
+    id,
+    label: descriptor.label ?? null,
+    risk: descriptor.risk ?? null,
+    preview_target: descriptor.preview_target ?? null,
+    preview_kind: descriptor.preview_kind ?? "module-processing",
+    content_type: descriptor.content_type ?? null,
+  };
+}
+
+/** Matches module-owned structured captures without teaching Core any business
+ * record type. A descriptor may only compare primitive frontmatter values. */
+function matchInboxProcessor(data: JsonObject, modules: DiscoveredDocument[]): MatchedInboxProcessor | null {
+  for (const module of modules) {
+    const processors = object(module.data.inbox_processors) ?? {};
+    for (const [id, raw] of Object.entries(processors)) {
+      const descriptor = object(raw); const matcher = object(descriptor?.matcher); const fields = object(matcher?.fields);
+      if (!descriptor || !matcher || !fields || !Object.entries(fields).every(([field, expected]) => data[field] === expected)) continue;
+      const required = Array.isArray(matcher.required_fields) ? matcher.required_fields : [];
+      if (!required.every((field) => typeof field === "string" && data[field] !== undefined && data[field] !== null && String(data[field]).trim())) continue;
+      return { moduleId: String(module.data.id), id, descriptor: publicProcessorDescriptor(id, descriptor), instanceField: typeof descriptor.instance_field === "string" ? descriptor.instance_field : null };
+    }
+  }
+  return null;
+}
+
 export async function discoverInboxContext(vaultRoot: string, existing?: RoutingDiscoveryContext): Promise<InboxDiscoveryContext> {
   const routing = existing ?? await discoverRoutingContext(ENGINE_ROOT, vaultRoot);
   const modules = routing.modules.filter((entry) => entry.data.status === "enabled");
@@ -140,12 +176,10 @@ function generatedFromEmptySource(data: JsonObject, content: string): boolean {
   const generation = object(data.generation);
   const prompt = object(generation?.prompt);
   const source = Array.isArray(data.sources) && data.sources.length === 1 ? object(data.sources[0]) : null;
+  const promptId = typeof prompt?.id === "string" ? prompt.id : "";
   return content.trim().length === 0
-    && data.research_type === "application-update"
-    && data.institution === "unknown"
-    && data.program_name === "unknown"
     && data.confidence === 0
-    && prompt?.id === "normalize-application-report"
+    && /^normalize-[a-z0-9-]+$/.test(promptId)
     && source?.source_type === "unknown";
 }
 
@@ -181,16 +215,16 @@ async function inspectItem(
   const reasons: string[] = root.scope === "global" ? [] : [`located-in-${root.scope}-inbox`];
   if (validInstance) reasons.push("valid-instance-hint");
   else if (validModule) reasons.push("valid-module-hint");
-  const applicationReport = data.research_type === "application-update" && typeof data.report_id === "string" && typeof data.instance_id === "string";
-  if (applicationReport) {
-    suggestedModule = "application-tracker";
-    suggestedInstance = String(data.instance_id);
+  const matchedProcessor = matchInboxProcessor(data, modules);
+  if (matchedProcessor) {
+    suggestedModule = matchedProcessor.moduleId;
+    if (matchedProcessor.instanceField && typeof data[matchedProcessor.instanceField] === "string") suggestedInstance = String(data[matchedProcessor.instanceField]);
     confidence = 1;
-    reasons.push("structured-application-research-report");
+    reasons.push(`matched-inbox-processor:${matchedProcessor.moduleId}:${matchedProcessor.id}`);
   }
   if (!suggestedModule) reasons.push("no-reliable-route");
-  const processor: InboxItemView["processor"] = applicationReport
-    ? "application-research-report"
+  const processor = matchedProcessor
+    ? `module:${matchedProcessor.moduleId}:${matchedProcessor.id}`
     : root.scope === "global" && suggestedModule ? "routing-only" : "module-workflow";
   const workflowModule = modules.find((entry) => String(entry.data.id) === suggestedModule);
   let workflowContract = null;
@@ -225,12 +259,12 @@ async function inspectItem(
     item_id: id, path: vaultPath, filename: path.basename(absolute), title: emptySource ? `空白副本 · ${path.basename(absolute)}` : typeof data.title === "string" ? data.title : path.basename(absolute),
     extension, size: stat.size, created_at: stat.birthtime.toISOString(), modified_at: stat.mtime.toISOString(), lifecycle_revision: lifecycleRevision,
     scope: root.scope, source_module: root.moduleId, instance_id: root.instanceId,
-    content_type: typeof data.content_type === "string" ? data.content_type : applicationReport ? "research-report" : extension.slice(1) || "file",
+    content_type: typeof data.content_type === "string" ? data.content_type : typeof matchedProcessor?.descriptor.content_type === "string" ? matchedProcessor.descriptor.content_type : extension.slice(1) || "file",
     state, confidence, reasons,
     required_representation: workflowContract?.read_representation ?? "metadata",
     required_read_level: ({ metadata: 0, summary: 1, full: 2, "sensitive-original": 3 } as const)[workflowContract?.read_representation ?? "metadata"],
     requires_ai: requiresAi,
-    processor, suggested_module_id: suggestedModule, suggested_instance_id: suggestedInstance,
+    processor, processor_descriptor: matchedProcessor?.descriptor ?? null, suggested_module_id: suggestedModule, suggested_instance_id: suggestedInstance,
     auto_route_threshold: moduleThreshold(modules.find((entry) => entry.data.id === suggestedModule)),
     retryable: state === "failed", blocked_by_open_editor: blockedByOpenEditor,
     error: emptySource ? "此文件没有可处理的正文内容。它可能是归档后被重新创建的同名空白副本；请移至恢复区或手动补充内容。" : interrupted ? "Previous processing was interrupted; explicit retry is required." : stored?.error ?? null, review_after: stored?.review_after ?? null,

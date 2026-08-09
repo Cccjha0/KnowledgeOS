@@ -3,7 +3,7 @@
   "module_id": "application-tracker",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-08T17:03:39.248Z",
+  "generated_at": "2026-08-09T10:58:39.357Z",
   "checks": [
     {
       "category": "manifest",
@@ -278,6 +278,14 @@
       "path": "workflows/index.yaml"
     },
     {
+      "category": "schema",
+      "code": "DASHBOARD_PROVIDER_VALID",
+      "status": "pass",
+      "message": "dashboard/today-provider.yaml satisfies Dashboard Provider v1.",
+      "critical": false,
+      "path": "dashboard/today-provider.yaml"
+    },
+    {
       "category": "events",
       "code": "EVENT_CONTRACTS_VALID",
       "status": "pass",
@@ -399,7 +407,7 @@
     }
   ],
   "counts": {
-    "pass": 36,
+    "pass": 37,
     "warning": 13,
     "fail": 0,
     "critical": 0
