@@ -26,4 +26,4 @@ ownership:
       系统信息: system-managed
       用户确认结论: mixed
 audits: [broken-links, orphan-files, schema-version, ownership, instance-task]
-default_verification_interval_days: null
+orphan_exempt_entity_types: []
