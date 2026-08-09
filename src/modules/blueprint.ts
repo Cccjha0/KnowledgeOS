@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { availableIngestionAdapter } from "../core/adapterRegistry.js";
@@ -28,6 +29,17 @@ export interface BlueprintValidationReport extends JsonObject {
   required_components: JsonObject;
   required_rule_files: string[];
   overall: "PASS" | "PASS WITH WARNINGS" | "FAIL";
+}
+
+export interface BlueprintApprovalRequirement extends JsonObject {
+  id: "network-access" | "sensitive-full-read" | "mutable-user-original" | "global-event-subscription" | "destructive-operation" | "critical-fields";
+  title: string;
+  impact: string;
+}
+
+export interface BlueprintApproval extends JsonObject {
+  blueprint_hash: string;
+  requirements: BlueprintApprovalRequirement[];
 }
 
 interface ResolvedBlueprint {
@@ -108,6 +120,44 @@ function blueprintInputRoles(blueprint: JsonObject): JsonObject {
 
 function representationRank(value: string): number {
   return ["metadata", "summary", "full", "sensitive-original"].indexOf(value);
+}
+
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function approvalRequirement(id: BlueprintApprovalRequirement["id"], title: string, impact: string): BlueprintApprovalRequirement {
+  return { id, title, impact };
+}
+
+/**
+ * The Core-owned security contract for a Blueprint. Its canonical hash binds
+ * approvals to the exact proposal the user reviewed; callers cannot safely
+ * reuse an approval after changing a high-risk field.
+ */
+export function deriveBlueprintApproval(blueprint: JsonObject): BlueprintApproval {
+  const privacy = object(blueprint.privacy) ?? {};
+  const inputRoles = blueprintInputRoles(blueprint);
+  const workflows = workflowObjects(blueprint);
+  const events = object(blueprint.events) ?? {};
+  const reviewPolicy = object(blueprint.review_policy) ?? {};
+  const entityCriticalFields = entityObjects(blueprint).some((entity) => Object.values(object(object(entity.schema)?.fields) ?? {}).some((field) => object(field)?.critical === true));
+  const sensitiveFullRead = Object.values(inputRoles).some((raw) => {
+    const policy = object(raw) ?? {};
+    return Number(policy.sensitivity_class) >= 2 && representationRank(String(policy.max_representation ?? "metadata")) >= representationRank("full");
+  }) || Number(privacy.default_sensitivity_class) >= 2 && representationRank(String(privacy.default_max_representation ?? "metadata")) >= representationRank("full");
+  const hasGlobalSubscription = subscriptionObjects(events.subscribes).some((subscription) => subscription.scope === "global")
+    || (Array.isArray(blueprint.jobs) && blueprint.jobs.some((job) => object(job)?.subscription_scope === "global"));
+  const requirements: BlueprintApprovalRequirement[] = [];
+  if (privacy.network_allowed === true || workflows.some((workflow) => workflow.requires_network === true)) requirements.push(approvalRequirement("network-access", "Allow network access", "This module may contact external services while processing its declared workflows."));
+  if (sensitiveFullRead) requirements.push(approvalRequirement("sensitive-full-read", "Allow sensitive full-text access", "One or more input roles may provide sensitive content in full to a workflow or Codex."));
+  if (privacy.user_original_content_mutable === true) requirements.push(approvalRequirement("mutable-user-original", "Allow editing user original content", "A workflow may modify content owned directly by the user."));
+  if (hasGlobalSubscription) requirements.push(approvalRequirement("global-event-subscription", "Allow global event subscriptions", "This module may receive explicitly declared events from other modules or instances."));
+  if (reviewPolicy.destructive_operations === "review-required") requirements.push(approvalRequirement("destructive-operation", "Allow review-gated destructive operations", "The Blueprint permits destructive behavior after a separate review decision."));
+  if (strings(reviewPolicy.critical_fields).length > 0 || entityCriticalFields) requirements.push(approvalRequirement("critical-fields", "Accept critical field policy", "Declared critical fields will be protected by the module Review Policy and Quality checks."));
+  return { blueprint_hash: createHash("sha256").update(canonicalJson(blueprint), "utf8").digest("hex"), requirements };
 }
 
 function check(code: string, status: BlueprintCheck["status"], message: string, itemPath: string | null = null): BlueprintCheck {

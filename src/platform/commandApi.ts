@@ -39,7 +39,7 @@ import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsi
 import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
-import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { analyzeGuidedModuleRequirement } from "../modules/guidedBuilder.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
@@ -289,18 +289,24 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     });
     if (!analysis.proposed_blueprint) return analysis;
     const preview = await withTemporaryBlueprint(vaultRoot, requestId, analysis.proposed_blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
-    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate } } as unknown as JsonValue;
+    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate, approval: deriveBlueprintApproval(analysis.proposed_blueprint) } } as unknown as JsonValue;
   }
   if (method === "previewModuleBlueprint") {
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
     const result = await withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
-    return { report: result.report, scaffold_template: result.scaffoldTemplate } as unknown as JsonValue;
+    return { report: result.report, scaffold_template: result.scaffoldTemplate, approval: deriveBlueprintApproval(blueprint) } as unknown as JsonValue;
   }
   if (method === "createModuleFromBlueprint") {
     if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    const expectedApproval = deriveBlueprintApproval(blueprint);
+    const approval = params.approval && typeof params.approval === "object" && !Array.isArray(params.approval) ? params.approval as JsonObject : null;
+    if (approval?.blueprint_hash !== expectedApproval.blueprint_hash) throw new PkbError("BLUEPRINT_APPROVAL_STALE", "The Blueprint changed or no matching approval was supplied. Preview the exact Blueprint again before creating it.", { expected_hash: expectedApproval.blueprint_hash, requirements: expectedApproval.requirements });
+    const approved = Array.isArray(approval.approved_requirement_ids) ? approval.approved_requirement_ids.filter((item): item is string => typeof item === "string") : [];
+    const missing = expectedApproval.requirements.filter((requirement) => !approved.includes(requirement.id));
+    if (missing.length) throw new PkbError("BLUEPRINT_APPROVAL_REQUIRED", "The Blueprint has unapproved high-risk requirements.", { blueprint_hash: expectedApproval.blueprint_hash, missing_requirements: missing, requirements: expectedApproval.requirements });
     const moduleId = typeof blueprint.module === "object" && blueprint.module && !Array.isArray(blueprint.module) && typeof (blueprint.module as JsonObject).id === "string"
       ? String((blueprint.module as JsonObject).id) : null;
     if (!moduleId) throw new PkbError("INVALID_REQUEST", "blueprint.module.id is required.");

@@ -75,7 +75,7 @@ function createModuleBuilderViews(deps) {
       };
       this.guidedBrief = "";
       this.expertBlueprint = "";
-      this.confirmedQuestions = new Set();
+      this.confirmedApprovals = new Set();
     }
 
     onOpen() { this.render(); }
@@ -145,26 +145,15 @@ function createModuleBuilderViews(deps) {
         section.createEl("p", { text: result.capability_gap.requested_behavior || "The current platform needs a generic capability before this can be scaffolded." });
         return;
       }
-      const items = Array.isArray(result.questions) ? result.questions : [];
-      if (items.length) {
-        section.createEl("strong", { text: "Confirm high-impact choices" });
-        section.createEl("p", { text: "These choices are not added silently. Confirm each one before continuing to Blueprint validation." });
-        const choices = section.createDiv({ cls: "knowledgeos-builder-confirmations" });
-        for (const item of items) {
-          const label = choices.createEl("label", { cls: "knowledgeos-builder-confirmation" });
-          const input = label.createEl("input", { type: "checkbox" });
-          input.checked = this.confirmedQuestions.has(item.id);
-          input.onchange = () => {
-            if (input.checked) this.confirmedQuestions.add(item.id); else this.confirmedQuestions.delete(item.id);
-            this.render();
-          };
-          const content = label.createDiv();
-          content.createEl("strong", { text: item.question });
-          content.createEl("span", { text: item.impact });
-        }
+      const notes = Array.isArray(result.questions) ? result.questions : [];
+      if (notes.length) {
+        section.createEl("strong", { text: "Planning considerations" });
+        const list = section.createEl("ul");
+        notes.forEach((item) => list.createEl("li", { text: item.question }));
       }
       if (result.proposed_blueprint) {
         const report = result.blueprint_preview?.report;
+        const approval = result.blueprint_preview?.approval;
         section.createEl("strong", { text: report?.overall === "PASS" ? "Blueprint is ready for review" : "Blueprint needs revision" });
         if (report?.overall !== "PASS") {
           const failures = (report?.checks || []).filter((item) => item.status !== "pass");
@@ -176,12 +165,13 @@ function createModuleBuilderViews(deps) {
         const details = section.createEl("details");
         details.createEl("summary", { text: "Review Blueprint JSON" });
         details.createEl("pre", { text: JSON.stringify(result.proposed_blueprint, null, 2) });
+        this.renderCoreApprovals(section, approval);
         const actions = section.createDiv({ cls: "knowledgeos-builder-actions" });
-        const canCreate = report?.overall === "PASS" && items.every((item) => this.confirmedQuestions.has(item.id));
+        const canCreate = report?.overall === "PASS" && this.hasRequiredApprovals(approval);
         const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Creating…" : "Confirm and create module" });
         create.disabled = this.busy || !canCreate;
-        create.onclick = () => this.create(result.proposed_blueprint);
-        if (!canCreate && report?.overall === "PASS") actions.createEl("span", { cls: "knowledgeos-builder-action-hint", text: "Confirm the required choices above before creating this module." });
+        create.onclick = () => this.create(result.proposed_blueprint, approval);
+        if (!canCreate && report?.overall === "PASS") actions.createEl("span", { cls: "knowledgeos-builder-action-hint", text: "Approve each Core security requirement before creating this module." });
       }
     }
 
@@ -211,7 +201,7 @@ function createModuleBuilderViews(deps) {
       const preview = actions.createEl("button", { text: this.busy ? "Validating…" : "Validate design" });
       preview.disabled = this.busy; preview.onclick = () => this.validate(this.blueprint());
       const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Please wait…" : "Confirm and create" });
-      create.disabled = this.busy || this.preview?.report?.overall !== "PASS"; create.onclick = () => this.create(this.blueprint());
+      create.disabled = this.busy || this.preview?.report?.overall !== "PASS" || !this.hasRequiredApprovals(this.preview?.approval); create.onclick = () => this.create(this.blueprint(), this.preview?.approval);
       const close = actions.createEl("button", { text: "Cancel" }); close.disabled = this.busy; close.onclick = () => this.close();
     }
 
@@ -233,7 +223,7 @@ function createModuleBuilderViews(deps) {
       const preview = actions.createEl("button", { text: this.busy ? "Validating…" : "Validate Blueprint" });
       preview.disabled = this.busy || !blueprint; preview.onclick = () => this.validate(blueprint);
       const create = actions.createEl("button", { cls: "mod-cta", text: this.busy ? "Creating…" : "Confirm and create" });
-      create.disabled = this.busy || !blueprint || this.preview?.report?.overall !== "PASS"; create.onclick = () => this.create(blueprint);
+      create.disabled = this.busy || !blueprint || this.preview?.report?.overall !== "PASS" || !this.hasRequiredApprovals(this.preview?.approval); create.onclick = () => this.create(blueprint, this.preview?.approval);
       const close = actions.createEl("button", { text: "Cancel" }); close.disabled = this.busy; close.onclick = () => this.close();
     }
 
@@ -244,13 +234,13 @@ function createModuleBuilderViews(deps) {
 
     text(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addText((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
     area(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addTextArea((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
-    invalidate() { if (this.preview) { this.preview = null; this.render(); } }
+    invalidate() { if (this.preview) { this.preview = null; this.confirmedApprovals.clear(); this.render(); } }
     lines(value, separator = /\r?\n/) { return splitBuilderValues(value, separator); }
 
     blueprint() { return buildQuickBlueprint(this.form); }
 
     async analyzeGuided() {
-      this.busy = true; this.preview = null; this.guided = null; this.confirmedQuestions.clear(); this.render();
+      this.busy = true; this.preview = null; this.guided = null; this.confirmedApprovals.clear(); this.render();
       const response = await this.plugin.client.invoke("analyzeModuleRequirement", {
         brief: this.guidedBrief,
         codex_model: this.plugin.settings.codexModel,
@@ -277,6 +267,26 @@ function createModuleBuilderViews(deps) {
       const failed = (report.checks || []).filter((item) => item.status !== "pass");
       if (failed.length) { const list = section.createEl("ul"); failed.forEach((item) => list.createEl("li", { text: item.message })); }
       const details = section.createEl("details"); details.createEl("summary", { text: "Review Blueprint JSON" }); details.createEl("pre", { text: JSON.stringify(blueprint, null, 2) });
+      this.renderCoreApprovals(section, this.preview.approval);
+    }
+
+    approvalRequirements(approval) { return Array.isArray(approval?.requirements) ? approval.requirements : []; }
+    hasRequiredApprovals(approval) { return this.approvalRequirements(approval).every((requirement) => this.confirmedApprovals.has(requirement.id)); }
+    renderCoreApprovals(root, approval) {
+      const requirements = this.approvalRequirements(approval);
+      if (!requirements.length) return;
+      root.createEl("strong", { text: "Core security approvals" });
+      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "Core derives these requirements for this exact Blueprint. Changing the Blueprint invalidates the approvals." });
+      const choices = root.createDiv({ cls: "knowledgeos-builder-confirmations" });
+      for (const requirement of requirements) {
+        const label = choices.createEl("label", { cls: "knowledgeos-builder-confirmation" });
+        const input = label.createEl("input", { type: "checkbox" });
+        input.checked = this.confirmedApprovals.has(requirement.id);
+        input.onchange = () => { if (input.checked) this.confirmedApprovals.add(requirement.id); else this.confirmedApprovals.delete(requirement.id); this.render(); };
+        const content = label.createDiv();
+        content.createEl("strong", { text: requirement.title || requirement.id });
+        content.createEl("span", { text: requirement.impact || "Core requires explicit approval for this change." });
+      }
     }
 
     boundaryLabel(kind) { return ({ module: "Module recommended", component: "Component recommended", "configuration-pack": "Configuration Pack recommended", instance: "Instance recommended", "capability-gap": "Capability gap found" })[kind] || "Boundary decision"; }
@@ -284,9 +294,9 @@ function createModuleBuilderViews(deps) {
     stateLabel(state) { return ({ draft: "Draft", "implementation-required": "Implementation required", "test-failed": "Needs fixes", "ready-to-package": "Ready to package", installed: "Installed" })[state] || state; }
     stepLabel(step) { return ({ blueprint: "Blueprint", scaffold: "Scaffold", validation: "Validation", test: "Module tests", sandbox: "Isolated sandbox", package: "Package", installation: "Installation" })[step] || step; }
 
-    async create(blueprint) {
+    async create(blueprint, approval) {
       this.busy = true; this.render();
-      const response = await this.plugin.client.invoke("createModuleFromBlueprint", { blueprint, confirm: true });
+      const response = await this.plugin.client.invoke("createModuleFromBlueprint", { blueprint, confirm: true, approval: { blueprint_hash: approval?.blueprint_hash, approved_requirement_ids: [...this.confirmedApprovals] } });
       this.busy = false;
       if (!response.ok) { this.preview = { error: response.error }; this.render(); return; }
       const readiness = await this.plugin.client.invoke("getModuleReadiness", { module_id: response.data.module_id });

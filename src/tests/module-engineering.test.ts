@@ -14,7 +14,7 @@ import { installModulePackage, packModuleDirectory, rollbackModulePackage } from
 import { syncInstalledConfiguration } from "../platform/configuration.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
-import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { analyzeGuidedModuleRequirement, normalizeGuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
@@ -35,6 +35,11 @@ async function writeReadinessEvidence(engineRoot: string, moduleId: string, modu
   // real fixture execution is covered by the dedicated Module Test cases.
   await writeJsonAtomic(path.join(moduleRoot, "module-test-report.json"), { report_version: 1, module_id: moduleId, module_version: validation.module_version, generated_at: new Date().toISOString(), static_validation: validation, environment, checks: [], overall: "PASS", beta_eligible: true });
   await writeJsonAtomic(path.join(moduleRoot, "sandbox-report.json"), { sandbox_version: 1, module_id: moduleId, isolation: "temporary-vault", lifecycle: "created-executed-cleaned", overall: "PASS", checks: [], environment });
+}
+
+function approveBlueprint(blueprint: JsonObject): JsonObject {
+  const approval = deriveBlueprintApproval(blueprint);
+  return { blueprint_hash: approval.blueprint_hash, approved_requirement_ids: approval.requirements.map((requirement) => requirement.id) };
 }
 
 async function temporaryEngine(): Promise<string> {
@@ -135,6 +140,7 @@ test("Command API previews a Module Blueprint without creating source files", as
     assert.equal(response.ok, true);
     assert.equal((response.data as JsonObject).scaffold_template, "minimal-config");
     assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
+    assert.equal(typeof ((response.data as JsonObject).approval as JsonObject).blueprint_hash, "string");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
@@ -167,11 +173,32 @@ test("Command API creates a Blueprint module in the Vault development workspace,
   try {
     await initializeVault(vault, "disabled");
     const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
-    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    const bypass = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE-BYPASS", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(bypass.ok, false, "A generic confirm flag must not bypass Core approval requirements.");
+    assert.equal(bypass.error?.code, "BLUEPRINT_APPROVAL_STALE");
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
     assert.equal(response.ok, true);
     assert.equal((response.data as JsonObject).workspace_path, "90-System/Module Development/media-library");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "media-library", "module.yaml")).then(() => true), true);
     assert.equal(await fs.stat(path.join(SOURCE_ROOT, "modules", "media-library", "module.yaml")).then(() => true).catch(() => false), false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Core security gate derives, binds, and enforces Blueprint approvals", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-approval-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
+    const approval = deriveBlueprintApproval(blueprint);
+    assert.deepEqual(approval.requirements.map((requirement) => requirement.id), ["sensitive-full-read", "critical-fields"]);
+    const missing = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-APPROVAL-MISSING", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: { blueprint_hash: approval.blueprint_hash, approved_requirement_ids: [] } } });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error?.code, "BLUEPRINT_APPROVAL_REQUIRED");
+    const changed = structuredClone(blueprint);
+    (changed.privacy as JsonObject).network_allowed = true;
+    const stale = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-APPROVAL-STALE", method: "createModuleFromBlueprint", params: { blueprint: changed, confirm: true, approval: approveBlueprint(blueprint) } });
+    assert.equal(stale.ok, false);
+    assert.equal(stale.error?.code, "BLUEPRINT_APPROVAL_STALE");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -180,7 +207,7 @@ test("Module workspace readiness keeps a scaffold separate from validation and i
   try {
     await initializeVault(vault, "disabled");
     const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
-    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
     assert.equal(create.ok, true);
     const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
     assert.equal(before.ok, true);
