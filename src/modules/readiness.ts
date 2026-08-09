@@ -11,7 +11,8 @@ import { validateModule } from "./validator.js";
 import { validateModuleBlueprint } from "./blueprint.js";
 import { implementModuleWorkspace, moduleImplementationReportPath, type ModuleImplementationReport } from "./implementation.js";
 
-export type ModuleReadinessAction = "implement" | "validate" | "test" | "sandbox" | "pack" | "install";
+/** `implement` and `validate` remain accepted aliases for older clients. */
+export type ModuleReadinessAction = "implement-with-ai" | "validate-manual" | "test" | "sandbox" | "pack" | "install" | "implement" | "validate";
 type ReadinessStatus = "complete" | "pending" | "failed";
 
 interface ReadinessStep extends JsonObject {
@@ -29,19 +30,18 @@ function stateFor(steps: ReadinessStep[]): string {
   const step = (id: ReadinessStep["id"]) => steps.find((candidate) => candidate.id === id)!;
   if (step("installation").status === "complete") return "installed";
   if (step("scaffold").status === "failed") return "draft";
-  if (step("implementation").status === "failed") return "implementation-failed";
   if (step("validation").status === "failed" || step("test").status === "failed" || step("sandbox").status === "failed") return "test-failed";
   if (step("validation").status === "complete" && step("test").status === "complete" && step("sandbox").status === "complete") return "ready-to-package";
-  if (step("blueprint").status === "complete" && step("scaffold").status === "complete" && step("implementation").status === "complete") return "implementation-complete";
-  if (step("blueprint").status === "complete" && step("scaffold").status === "complete") return "implementation-required";
+  if (step("blueprint").status === "complete" && step("scaffold").status === "complete" && step("validation").status === "complete") return "implementation-complete";
+  if (step("blueprint").status === "complete" && step("scaffold").status === "complete") return "implementation-preparation";
   return "draft";
 }
 
 function availableActions(steps: ReadinessStep[]): ModuleReadinessAction[] {
   const byId = Object.fromEntries(steps.map((step) => [step.id, step])) as Record<ReadinessStep["id"], ReadinessStep>;
   if (byId.scaffold.status !== "complete") return [];
-  if (byId.implementation.status !== "complete") return ["implement"];
-  const actions: ModuleReadinessAction[] = ["validate"];
+  if (byId.validation.status !== "complete") return ["implement-with-ai", "validate-manual"];
+  const actions: ModuleReadinessAction[] = [];
   if (byId.validation.status === "complete") actions.push("test");
   if (byId.test.status === "complete") actions.push("sandbox");
   if (byId.validation.status === "complete" && byId.test.status === "complete" && byId.sandbox.status === "complete") actions.push("pack");
@@ -79,11 +79,11 @@ export async function getModuleReadiness(engineRoot: string, vaultRoot: string, 
   steps.push(manifest
     ? { id: "scaffold", status: "complete", message: "Scaffold files exist in the development workspace.", report_path: toVaultPath(vaultRoot, manifestPath) }
     : { id: "scaffold", status: "failed", message: "module.yaml is missing; scaffold the Blueprint first.", report_path: null });
-  const implementation = await readJson<ModuleImplementationReport | null>(implementationPath, null);
-  const implementationStatus = reportStatus(implementation);
-  steps.push({ id: "implementation", status: implementationStatus, message: implementationStatus === "pending" ? "Use bounded AI implementation to complete declarative Schema, Prompt, Workflow, Rule, Template, and Fixture files." : implementationStatus === "complete" ? "Bounded AI implementation passed validation and Module Test." : "Implementation did not pass validation or Module Test; run it again to make another bounded attempt.", report_path: implementation ? toVaultPath(vaultRoot, implementationPath) : null });
   const validation = await readJson<ModuleValidationReport | null>(validationPath, null);
   const validationStatus = reportStatus(validation);
+  const implementation = await readJson<ModuleImplementationReport | null>(implementationPath, null);
+  const implementationStatus: ReadinessStatus = implementation ? reportStatus(implementation) : validation ? "complete" : "pending";
+  steps.push({ id: "implementation", status: implementationStatus, message: implementationStatus === "pending" ? "Prepare declarative files with bounded AI assistance or manual editing, then validate." : implementation ? implementationStatus === "complete" ? "AI-assisted declarative implementation passed." : "AI-assisted implementation needs fixes; manual declarative edits may still be validated." : "Manual declarative implementation was accepted by static validation.", report_path: implementation ? toVaultPath(vaultRoot, implementationPath) : validation ? toVaultPath(vaultRoot, validationPath) : null });
   steps.push({ id: "validation", status: validationStatus, message: validationStatus === "pending" ? "Validation has not run." : validationStatus === "complete" ? "Static validation passed." : "Static validation failed.", report_path: validation ? toVaultPath(vaultRoot, validationPath) : null });
   const test = await readJson<ModuleTestReport | null>(testPath, null);
   const testStatus = reportStatus(test);
@@ -102,32 +102,38 @@ export async function getModuleReadiness(engineRoot: string, vaultRoot: string, 
   return { module_id: moduleId, workspace_path: toVaultPath(vaultRoot, root), version, state, maturity: manifest?.maturity ?? null, steps, available_actions: availableActions(steps) };
 }
 
+function canonicalAction(action: ModuleReadinessAction): Exclude<ModuleReadinessAction, "implement" | "validate"> {
+  return action === "implement" ? "implement-with-ai" : action === "validate" ? "validate-manual" : action;
+}
+
 function requireReadyStep(readiness: JsonObject, action: ModuleReadinessAction): void {
   const actions = Array.isArray(readiness.available_actions) ? readiness.available_actions : [];
-  if (!actions.includes(action)) throw new PkbError("MODULE_READINESS_GATE_BLOCKED", `${action} is not available for this workspace state. Complete the preceding gates first.`, readiness);
+  const canonical = canonicalAction(action);
+  if (!actions.includes(canonical)) throw new PkbError("MODULE_READINESS_GATE_BLOCKED", `${canonical} is not available for this workspace state. Complete the preceding gates first.`, readiness);
 }
 
 /** Execute exactly one user-initiated delivery gate, then return refreshed readiness. */
 export async function runModuleReadinessAction(engineRoot: string, vaultRoot: string, moduleId: string, action: ModuleReadinessAction, options: { confirmBreaking?: boolean; codexModel?: string; codexReasoningEffort?: string } = {}): Promise<JsonObject> {
   let readiness = await getModuleReadiness(engineRoot, vaultRoot, moduleId);
   requireReadyStep(readiness, action);
+  const resolvedAction = canonicalAction(action);
   const root = workspaceRoot(vaultRoot, moduleId);
   let result: JsonValue;
-  if (action === "implement") result = await implementModuleWorkspace(engineRoot, vaultRoot, moduleId, { codexModel: options.codexModel, codexReasoningEffort: options.codexReasoningEffort });
-  else if (action === "validate") result = await validateModule(engineRoot, root, { writeReport: true });
-  else if (action === "test") result = await testModule(engineRoot, moduleId, { writeReport: true, moduleRoot: root });
-  else if (action === "sandbox") {
+  if (resolvedAction === "implement-with-ai") result = await implementModuleWorkspace(engineRoot, vaultRoot, moduleId, { codexModel: options.codexModel, codexReasoningEffort: options.codexReasoningEffort });
+  else if (resolvedAction === "validate-manual") result = await validateModule(engineRoot, root, { writeReport: true });
+  else if (resolvedAction === "test") result = await testModule(engineRoot, moduleId, { writeReport: true, moduleRoot: root });
+  else if (resolvedAction === "sandbox") {
     result = await runModuleSandbox(engineRoot, moduleId, { moduleRoot: root });
     await writeJsonAtomic(path.join(root, "sandbox-report.json"), result);
   } else {
     const manifest = parseYaml(root, path.join(root, "module.yaml"));
     const packagePath = path.join(vaultRoot, "90-System", "Modules", "Packages", moduleId, `${String(manifest.version)}.pkb-module`);
-    if (action === "pack") result = await packModuleDirectory(engineRoot, root, packagePath);
+    if (resolvedAction === "pack") result = await packModuleDirectory(engineRoot, root, packagePath);
     else {
       if (!(await exists(packagePath))) throw new PkbError("MODULE_PACKAGE_NOT_FOUND", "Package the module before installation.");
       result = await installModulePackage(engineRoot, vaultRoot, packagePath, { enable: true, upgrade: true, confirmBreaking: options.confirmBreaking === true });
     }
   }
   readiness = await getModuleReadiness(engineRoot, vaultRoot, moduleId);
-  return { action, result, readiness };
+  return { action: resolvedAction, result, readiness };
 }

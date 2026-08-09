@@ -291,12 +291,9 @@ test("Module workspace readiness keeps a scaffold separate from validation and i
     assert.equal(create.ok, true);
     const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
     assert.equal(before.ok, true);
-    assert.equal((before.data as JsonObject).state, "implementation-required");
-    assert.deepEqual((before.data as JsonObject).available_actions, ["implement"]);
-    await writeJsonAtomic(moduleImplementationReportPath(vault, "media-library"), {
-      report_version: 1, module_id: "media-library", workspace_path: "90-System/Module Development/media-library", generated_at: new Date().toISOString(), overall: "PASS", attempts: [], max_auto_fixes: 2, validation: null, test: null,
-    });
-    const validation = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-VALIDATE", method: "runModuleReadinessAction", params: { module_id: "media-library", action: "validate" } });
+    assert.equal((before.data as JsonObject).state, "implementation-preparation");
+    assert.deepEqual((before.data as JsonObject).available_actions, ["implement-with-ai", "validate-manual"]);
+    const validation = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-VALIDATE", method: "runModuleReadinessAction", params: { module_id: "media-library", action: "validate-manual" } });
     assert.equal(validation.ok, true);
     const refreshed = (validation.data as JsonObject).readiness as JsonObject;
     assert.equal(refreshed.state, "implementation-complete");
