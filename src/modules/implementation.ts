@@ -10,6 +10,7 @@ import { executeCodexJson } from "../runtime/codexCli.js";
 import { testModule } from "./testRunner.js";
 import type { ModuleTestReport, ModuleValidationReport } from "./types.js";
 import { validateModule } from "./validator.js";
+import { getModuleBuilderPlatformContract, moduleBuilderContractReference, type ModuleBuilderPlatformContract } from "./platformContract.js";
 
 const MODULE_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const MAX_FILES_PER_ATTEMPT = 40;
@@ -35,6 +36,7 @@ export interface ModuleImplementationReport extends JsonObject {
   candidate_workspace_path: string | null;
   transaction_backup_path: string | null;
   promoted: boolean;
+  platform_contract: JsonObject;
 }
 
 export interface ModuleImplementationOptions {
@@ -93,12 +95,12 @@ function normalizeChanges(raw: unknown): ModuleImplementationChange[] {
   });
 }
 
-function implementationPrompt(moduleId: string, retry: number, previous: { validation: ModuleValidationReport | null; test: ModuleTestReport | null }): string {
+function implementationPrompt(moduleId: string, retry: number, previous: { validation: ModuleValidationReport | null; test: ModuleTestReport | null }, contract: ModuleBuilderPlatformContract): string {
   const diagnostics = retry === 0 ? "This is the first implementation pass." : `This is bounded correction pass ${retry} of ${MAX_AUTO_FIXES}. Fix only the reported problems.\n\nValidation report:\n${JSON.stringify(previous.validation, null, 2)}\n\nModule test report:\n${JSON.stringify(previous.test, null, 2)}`;
-  return `You are implementing the declarative artifacts for KnowledgeOS module ${moduleId}.\n\n${diagnostics}\n\nRead module.blueprint.yaml and the existing module/ directory in this temporary context. Keep module.yaml and the Blueprint unchanged. You may only propose text updates under schemas/, prompts/, workflows/, rules/, templates/, and fixtures/. Never create scripts, TypeScript, executors, package files, or files outside those directories. Preserve Core-generated schema fields and contracts. Complete fixtures so the declared module can validate and pass its deterministic Module Test.\n\nReturn JSON only:\n{\n  "summary": "short description",\n  "files": [{ "path": "rules/example.yaml", "content": "complete file text" }]\n}\nDo not use markdown fences.`;
+  return `You are implementing the declarative artifacts for KnowledgeOS module ${moduleId}.\n\n${diagnostics}\n\nRead module-builder-platform-contract.json first. It is the authoritative current list of Blueprint capabilities, adapters, component contracts, Workflow Steps, and Engine API. Use only identifiers supplied by that Contract; do not invent Steps, Components, Adapters, or Pack IDs. Contract reference: ${JSON.stringify(moduleBuilderContractReference(contract))}.\n\nRead module.blueprint.yaml and the existing module/ directory in this temporary context. Keep module.yaml and the Blueprint unchanged. You may only propose text updates under schemas/, prompts/, workflows/, rules/, templates/, and fixtures/. Never create scripts, TypeScript, executors, package files, or files outside those directories. Preserve Core-generated schema fields and contracts. Complete fixtures so the declared module can validate and pass its deterministic Module Test.\n\nReturn JSON only:\n{\n  "summary": "short description",\n  "files": [{ "path": "rules/example.yaml", "content": "complete file text" }]\n}\nDo not use markdown fences.`;
 }
 
-async function copyImplementationContext(moduleRoot: string, contextRoot: string): Promise<void> {
+async function copyImplementationContext(moduleRoot: string, contextRoot: string, contract: ModuleBuilderPlatformContract): Promise<void> {
   const contextModule = path.join(contextRoot, "module");
   let copiedBytes = 0;
   for (const file of await listFilesRecursive(moduleRoot)) {
@@ -111,6 +113,7 @@ async function copyImplementationContext(moduleRoot: string, contextRoot: string
     await fs.mkdir(path.dirname(target), { recursive: true });
     await fs.copyFile(file, target);
   }
+  await fs.writeFile(path.join(contextRoot, "module-builder-platform-contract.json"), JSON.stringify(contract, null, 2), "utf8");
 }
 
 async function applyChanges(moduleRoot: string, changes: ModuleImplementationChange[]): Promise<JsonObject[]> {
@@ -164,6 +167,8 @@ export async function implementModuleWorkspace(engineRoot: string, vaultRoot: st
   const manifest = parseYaml(moduleRoot, manifestPath);
   if (manifest.id !== moduleId) throw new PkbError("MODULE_IMPLEMENTATION_WORKSPACE_INVALID", "Workspace manifest does not match the requested module_id.");
   const reportPath = moduleImplementationReportPath(vaultRoot, moduleId);
+  const platformContract = await getModuleBuilderPlatformContract(engineRoot);
+  const platformContractReference = moduleBuilderContractReference(platformContract);
   const runId = implementationRunId();
   const stateRoot = implementationStateRoot(vaultRoot, moduleId);
   const candidateRoot = path.join(stateRoot, "Candidates", runId, "module");
@@ -178,8 +183,8 @@ export async function implementModuleWorkspace(engineRoot: string, vaultRoot: st
     const contextRoot = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-implementation-"));
     let effects: JsonObject[] = [];
     try {
-      await copyImplementationContext(candidateRoot, contextRoot);
-      const response = await (options.execute ?? executeCodexJson)({ contextRoot, prompt: implementationPrompt(moduleId, retry, { validation, test }), model: options.codexModel, reasoningEffort: options.codexReasoningEffort, timeoutMs: 180_000 });
+      await copyImplementationContext(candidateRoot, contextRoot, platformContract);
+      const response = await (options.execute ?? executeCodexJson)({ contextRoot, prompt: implementationPrompt(moduleId, retry, { validation, test }, platformContract), model: options.codexModel, reasoningEffort: options.codexReasoningEffort, timeoutMs: 180_000 });
       const changes = normalizeChanges(response.output);
       effects = await applyChanges(candidateRoot, changes);
       validation = await validateModule(engineRoot, candidateRoot, { writeReport: true });
@@ -187,7 +192,7 @@ export async function implementModuleWorkspace(engineRoot: string, vaultRoot: st
       attempts.push(attemptRecord(retry, effects, validation, test, (response.output as Record<string, unknown>)?.summary));
       if (validation.overall === "PASS" && test?.overall === "PASS") {
         await promoteVerifiedCandidate(moduleRoot, candidateRoot, backupRoot);
-        const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "PASS", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: null, transaction_backup_path: toVaultPath(vaultRoot, backupRoot), promoted: true };
+        const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "PASS", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: null, transaction_backup_path: toVaultPath(vaultRoot, backupRoot), promoted: true, platform_contract: platformContractReference };
         await writeJsonAtomic(reportPath, report);
         return report;
       }
@@ -199,7 +204,7 @@ export async function implementModuleWorkspace(engineRoot: string, vaultRoot: st
       await fs.rm(contextRoot, { recursive: true, force: true });
     }
   }
-  const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "FAIL", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: toVaultPath(vaultRoot, candidateRoot), transaction_backup_path: null, promoted: false };
+  const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "FAIL", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: toVaultPath(vaultRoot, candidateRoot), transaction_backup_path: null, promoted: false, platform_contract: platformContractReference };
   await writeJsonAtomic(reportPath, report);
   if (caught) throw caught;
   return report;

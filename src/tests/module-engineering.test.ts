@@ -320,7 +320,12 @@ test("Module implementation rejects an escaped model write and records the bound
     const create = await invokeCommandApi({ vaultRoot: vault, requestId: "IMPLEMENTATION-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
     assert.equal(create.ok, true);
     await assert.rejects(() => implementModuleWorkspace(SOURCE_ROOT, vault, "media-library", {
-      execute: async () => ({ output: { files: [{ path: "../core/forbidden.ts", content: "unsafe" }] }, stderr: "" }),
+      execute: async (request) => {
+        const contract = JSON.parse(await fs.readFile(path.join(request.contextRoot, "module-builder-platform-contract.json"), "utf8")) as JsonObject;
+        assert.equal(Array.isArray(contract.workflow_steps), true, "Implementation must receive the same generated Platform Contract as Guided Builder.");
+        assert.equal(Array.isArray(contract.adapters), true);
+        return { output: { files: [{ path: "../core/forbidden.ts", content: "unsafe" }] }, stderr: "" };
+      },
     }), /Only declarative Schema/);
     const report = await readJson<JsonObject | null>(moduleImplementationReportPath(vault, "media-library"), null);
     assert.equal(report?.overall, "FAIL");
