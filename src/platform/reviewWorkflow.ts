@@ -398,8 +398,8 @@ async function materializeApprovedModuleFieldProvenance(
   // single-field Reviews already treat `item.evidence` as the field's actual
   // evidence, so preserve that narrower historical contract during migration.
   const evidenceSelections = proposed.evidence_selection === undefined
-    ? item.action === "module-operation" ? {} : { [fieldFromReview(item)]: authorizedSources.map((source) => ({ source_id: source.source_id, locator: {} })) }
-    : parseEvidenceSelections(proposed.evidence_selection, authorizedSources);
+    ? item.action === "module-operation" ? {} : { [fieldFromReview(item)]: authorizedSources.map((source) => ({ source_id: source.source_id, locator_id: "LOC-DOCUMENT", locator: {} })) }
+    : parseEvidenceSelections(proposed.evidence_selection, authorizedSources, { allowLegacyLocator: true });
   const sourceGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
   const generation: JsonObject = { ...(sourceGeneration ?? {}), review_resolution: { run_id: runId, review_id: item.review_id, decided_at: decision.decided_at } };
   const review: JsonObject = { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision };

@@ -28,5 +28,4 @@ capture:
     _evidence_selection:
       lecture_date:
       - source_id: SRC-674F825F898F
-        locator:
-          section: Fixture Capture
+        locator_id: LOC-HEADING-001

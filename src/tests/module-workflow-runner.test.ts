@@ -104,8 +104,8 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
       id: "ASSIGN-2026-000001", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
       title: "Essay", source_refs: [sourceRelative], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief", status: "planned",
       _evidence_selection: {
-        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Deadline" } }],
-        status: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Assignment brief" } }],
+        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }],
+        status: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }],
       },
     };
     await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
@@ -175,8 +175,8 @@ test("a green module operation replaces model provenance with Core-authorized ev
       title: "Essay", source_refs: ["fabricated-source.md"], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief",
       deadline: "2026-09-01T09:00:00+08:00", status: "planned",
       _evidence_selection: {
-        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Deadline" } }],
-        status: [{ source_id: evidenceSourceId(sourceRelative), locator: { section: "Assignment brief" } }],
+        deadline: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }],
+        status: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }],
       },
       _field_meta: { deadline: { authorship: "ai", evidence_refs: ["EVD-2099-999999"], verification: { last_verified: "2099-01-01T00:00:00Z" } } },
     };
@@ -191,7 +191,7 @@ test("a green module operation replaces model provenance with Core-authorized ev
     const quality = await QualityRepository.open(vault);
     const evidence = quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!);
     assert.equal(evidence?.source_ref, sourceRelative);
-    assert.deepEqual(evidence?.locator, { section: "Deadline" });
+    assert.deepEqual(evidence?.locator, { section: "Essay brief" });
     quality.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
@@ -202,12 +202,17 @@ test("field provenance requires evidence only for fields whose Quality Contract 
     await initializeVault(vault, "disabled");
     const moduleRoot = path.join(ENGINE_ROOT, "modules", "course");
     const manifest = parseYaml(ENGINE_ROOT, path.join(moduleRoot, "module.yaml")) as JsonObject;
-    const sources = authorizedEvidenceSources(["20-Workspace/course/Inbox/first.md", "20-Workspace/course/Inbox/second.md"]);
-    const selected = parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator: { page: 3, section: "Assessment" } }] }, sources);
+    const sources = authorizedEvidenceSources([
+      "20-Workspace/course/Inbox/first.md",
+      { source_ref: "20-Workspace/course/Inbox/second.md", locators: [{ locator_id: "LOC-PAGE-0003", locator: { page: 3 } }] },
+    ]);
+    const selected = parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator_id: "LOC-PAGE-0003" }] }, sources);
     const output = { deadline: "2026-09-01T09:00:00+08:00", status: "planned" };
     assert.deepEqual(fieldsMissingRequiredEvidence(moduleRoot, manifest, "assignment", output, selected, sources), []);
     assert.deepEqual(fieldsMissingRequiredEvidence(moduleRoot, manifest, "lecture", { lecture_date: "2026-09-01" }, {}, sources), ["lecture_date"]);
-    assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: "SRC-NOT-AUTHORIZED", locator: {} }] }, sources), /did not authorize/);
+    assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: "SRC-NOT-AUTHORIZED", locator_id: "LOC-PAGE-0003" }] }, sources), /did not authorize/);
+    assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator_id: "LOC-PAGE-0999" }] }, sources), /Core-issued locator_id/);
+    assert.throws(() => parseEvidenceSelections({ deadline: [{ source_id: sources[1]!.source_id, locator: { page: 999 } }] }, sources), /Core-issued locator_id/);
     const meta = await materializeFieldProvenance({
       vaultRoot: vault, moduleRoot, manifest, entityId: "assignment", target: "20-Workspace/course/Assignments/essay.md", output,
       authorizedSources: sources, evidenceSelections: selected, runId: "RUN-TEST", generation: { adapter: "test" }, review: null, now: "2026-08-09T00:00:00Z",
@@ -217,7 +222,7 @@ test("field provenance requires evidence only for fields whose Quality Contract 
     assert.equal(refs.length, 1);
     const quality = await QualityRepository.open(vault); const evidence = quality.getEvidence(refs[0]!); quality.close();
     assert.equal(evidence?.source_ref, "20-Workspace/course/Inbox/second.md");
-    assert.deepEqual(evidence?.locator, { page: 3, section: "Assessment" });
+    assert.deepEqual(evidence?.locator, { page: 3 });
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -491,6 +496,10 @@ test("a module policy that allows partial PDFs reaches the Runner, Codex Context
     assert.equal(pdfInputs[0]?.extraction_status, "partial");
     assert.equal(pdfInputs[0]?.usable, true);
     assert.deepEqual(pdfInputs[0]?.policy, { accepted_statuses: ["completed", "partial"], partial_policy: "allow" });
+    const evidenceContract = runtimeContext.evidence_selection_contract as JsonObject;
+    const allowedSources = evidenceContract.allowed_sources as JsonObject[];
+    const pdfLocators = allowedSources.flatMap((source) => Array.isArray(source.locators) ? source.locators : []) as JsonObject[];
+    assert.equal(pdfLocators.some((locator) => locator.locator_id === "LOC-PAGE-0001" && (locator.locator as JsonObject)?.page === 1), true, "Core exposes only page locators issued from the PDF extraction cache.");
     const completedRepository = await RuntimeRepository.open(vault);
     const completed = completedRepository.getTask(first.created[0]!);
     const run = completedRepository.getRuns(first.created[0]!)[0];
