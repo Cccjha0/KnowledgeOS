@@ -10,6 +10,8 @@ import { assertApplicationTransition } from "../application/stateMachine.js";
 import { writeMarkdown } from "../core/bridge.js";
 import { initializeVault } from "../core/vault.js";
 import { startResearchRequest, syncDueResearchRequests } from "../platform/researchRequestWorkflow.js";
+import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
+import type { JsonObject } from "../core/types.js";
 import type { ApplicationRecord, ResearchReport } from "../types.js";
 
 function record(id: string, instance: string, status: ApplicationRecord["application_status"] = "open"): ApplicationRecord {
@@ -29,6 +31,22 @@ function report(requestId: string, reportId: string, unresolved: string[]): Rese
     checked_at: "2026-07-27T00:00:00Z", material_change: false, confidence: 1,
     sources: [], findings: {}, unresolved, summary: "Checked",
   };
+}
+
+async function registerApplicationInstance(vault: string, instanceId: string): Promise<void> {
+  const root = path.join(vault, "90-System", "Instances", instanceId);
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "instance.yaml"), [
+    `instance_id: ${instanceId}`,
+    "module_id: application-tracker",
+    "status: active",
+    `display_name: ${instanceId}`,
+    `content_root: 20-Workspace/Applications/${instanceId}`,
+    `inbox_path: 20-Workspace/Applications/${instanceId}/Inbox`,
+    'created: "2026-07-01T00:00:00Z"',
+    'updated: "2026-07-01T00:00:00Z"',
+    "",
+  ].join("\n"), "utf8");
 }
 
 test("application state machine accepts the main path and rejects skips", () => {
@@ -67,6 +85,7 @@ test("due-request sync handles multiple projects and is idempotent", async () =>
   try {
     await initializeVault(vault, "disabled", ["20-Workspace/Applications/Inbox"]);
     for (const [id, instance] of [["APP-2026-0101", "instance-a"], ["APP-2026-0102", "instance-b"]] as const) {
+      await registerApplicationInstance(vault, instance);
       const directory = path.join(vault, "20-Workspace", "Applications", instance, "Records");
       await fs.mkdir(directory, { recursive: true });
       writeMarkdown(vault, path.join(directory, `${id}.md`), { data: record(id, instance), content: `# ${id}\n` });
@@ -82,6 +101,26 @@ test("due-request sync handles multiple projects and is idempotent", async () =>
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("research scheduler derives nested request paths from the instance content root", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-nested-research-request-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await registerApplicationInstance(vault, "nested-instance");
+    const recordPath = path.join(vault, "20-Workspace", "Applications", "nested-instance", "Data", "Records", "Nested.md");
+    await fs.mkdir(path.dirname(recordPath), { recursive: true });
+    writeMarkdown(vault, recordPath, { data: record("APP-2026-0199", "nested-instance"), content: "# Nested\n" });
+    const manifest: JsonObject = {
+      research_request: {
+        record: { search_root: "20-Workspace/Applications", directory: "Data/Records", type: "application-record", schema: "https://pkb.local/schemas/application-tracker/application-record.schema.json", id_field: "id", instance_id_field: "instance_id", active_path: "monitoring.active", due_path: "monitoring.next_check", requested_fields_path: "facts", requested_field_status_path: "status", requested_field_statuses: ["unknown", "pending", "conflicting"], fallback_requested_fields: ["deadline"] },
+        request: { directory: "State/Research Requests", type: "research-request", schema: "https://pkb.local/schemas/application-tracker/research-request.schema.json", id_field: "request_id", record_id_field: "application_id", record_path_field: "record_path", instance_id_field: "instance_id", status_field: "status", report_ids_field: "report_ids", idempotency_key_field: "idempotency_key", id_prefix: "REQ", lifecycle: { initial: "pending", startable: ["pending", "needs-more-information"], in_progress: "in-progress", completed: "completed", open: ["pending", "needs-more-information", "in-progress"] }, reason: "Due.", body: { title: "Request {request_id}", record_label: "Record", instructions: "Verify." } },
+      },
+    };
+    const scheduled = await prepareDueResearchRequests({ vaultRoot: vault, taskId: "TASK-2026-000001", planId: "PLAN-2026-000001", now: "2026-07-27T00:00:00Z", moduleId: "application-tracker", moduleVersion: "0.3.0-beta", manifest, allocateId: async () => "REQ-2026-000001" });
+    assert.equal(scheduled.created.length, 1);
+    assert.equal(scheduled.plan?.operations[0]?.target, "20-Workspace/Applications/nested-instance/State/Research Requests/REQ-2026-000001.md");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("an open Research Request replaces the overdue application action in Today", async () => {

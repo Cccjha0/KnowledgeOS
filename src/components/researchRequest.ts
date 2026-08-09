@@ -30,7 +30,13 @@ export interface ResearchRequestContract {
     report_ids_field: string;
     idempotency_key_field: string;
     id_prefix: string;
-    open_statuses: string[];
+    lifecycle: {
+      initial: string;
+      startable: string[];
+      in_progress: string;
+      completed: string;
+      open: string[];
+    };
     reason: string;
     body: { title: string; record_label: string; instructions: string };
   };
@@ -65,10 +71,19 @@ export function parseResearchRequestContract(manifest: JsonObject): ResearchRequ
   const record = object(root.record, "research_request.record");
   const request = object(root.request, "research_request.request");
   const body = object(request.body, "research_request.request.body");
+  const lifecycle = object(request.lifecycle, "research_request.request.lifecycle");
+  const open = strings(lifecycle.open, "research_request.request.lifecycle.open");
+  const startable = strings(lifecycle.startable, "research_request.request.lifecycle.startable");
+  const initial = string(lifecycle.initial, "research_request.request.lifecycle.initial");
+  const inProgress = string(lifecycle.in_progress, "research_request.request.lifecycle.in_progress");
+  const completed = string(lifecycle.completed, "research_request.request.lifecycle.completed");
+  if (!open.includes(initial) || !open.includes(inProgress) || startable.some((status) => !open.includes(status)) || open.includes(completed)) {
+    throw new PkbError("RESEARCH_REQUEST_LIFECYCLE_INVALID", "Research Request lifecycle must keep initial/in-progress/startable states open and completed state closed.");
+  }
   return {
     record: {
       search_root: relative(string(record.search_root, "research_request.record.search_root"), "research_request.record.search_root"),
-      directory: string(record.directory, "research_request.record.directory"),
+      directory: relative(string(record.directory, "research_request.record.directory"), "research_request.record.directory"),
       type: string(record.type, "research_request.record.type"), schema: string(record.schema, "research_request.record.schema"),
       id_field: string(record.id_field, "research_request.record.id_field"), instance_id_field: string(record.instance_id_field, "research_request.record.instance_id_field"),
       active_path: string(record.active_path, "research_request.record.active_path"), due_path: string(record.due_path, "research_request.record.due_path"),
@@ -78,12 +93,12 @@ export function parseResearchRequestContract(manifest: JsonObject): ResearchRequ
       fallback_requested_fields: strings(record.fallback_requested_fields, "research_request.record.fallback_requested_fields"),
     },
     request: {
-      directory: string(request.directory, "research_request.request.directory"), type: string(request.type, "research_request.request.type"), schema: string(request.schema, "research_request.request.schema"),
+      directory: relative(string(request.directory, "research_request.request.directory"), "research_request.request.directory"), type: string(request.type, "research_request.request.type"), schema: string(request.schema, "research_request.request.schema"),
       id_field: string(request.id_field, "research_request.request.id_field"), record_id_field: string(request.record_id_field, "research_request.request.record_id_field"),
       record_path_field: string(request.record_path_field, "research_request.request.record_path_field"), instance_id_field: string(request.instance_id_field, "research_request.request.instance_id_field"),
       status_field: string(request.status_field, "research_request.request.status_field"), report_ids_field: string(request.report_ids_field, "research_request.request.report_ids_field"),
       idempotency_key_field: string(request.idempotency_key_field, "research_request.request.idempotency_key_field"), id_prefix: string(request.id_prefix, "research_request.request.id_prefix"),
-      open_statuses: strings(request.open_statuses, "research_request.request.open_statuses"), reason: string(request.reason, "research_request.request.reason"),
+      lifecycle: { initial, startable, in_progress: inProgress, completed, open }, reason: string(request.reason, "research_request.request.reason"),
       body: { title: string(body.title, "research_request.request.body.title"), record_label: string(body.record_label, "research_request.request.body.record_label"), instructions: string(body.instructions, "research_request.request.body.instructions") },
     },
   };
@@ -112,6 +127,13 @@ export function requestedFields(record: JsonObject, contract: ResearchRequestCon
   return requested.length ? requested : [...contract.record.fallback_requested_fields];
 }
 
+/** Deterministic lifecycle gate used by every request-start entrypoint. */
+export function startResearchRequestLifecycle(contract: ResearchRequestContract, currentStatus: JsonValue | undefined): string {
+  if (currentStatus === contract.request.lifecycle.in_progress) return contract.request.lifecycle.in_progress;
+  if (typeof currentStatus === "string" && contract.request.lifecycle.startable.includes(currentStatus)) return contract.request.lifecycle.in_progress;
+  throw new PkbError("RESEARCH_REQUEST_NOT_STARTABLE", `Research Request is ${String(currentStatus)}.`);
+}
+
 export function createResearchRequestDocument(input: {
   vaultRoot: string; moduleId: string; contract: ResearchRequestContract; record: JsonObject; recordPath: string; requestId: string; now: string;
 }): JsonObject {
@@ -124,7 +146,7 @@ export function createResearchRequestDocument(input: {
     [input.contract.request.instance_id_field]: instanceId,
     [input.contract.request.record_id_field]: recordId,
     [input.contract.request.record_path_field]: input.recordPath,
-    [input.contract.request.status_field]: "pending",
+    [input.contract.request.status_field]: input.contract.request.lifecycle.initial,
     reason: input.contract.request.reason,
     requested_fields: requestedFields(input.record, input.contract),
     [input.contract.request.report_ids_field]: [],
@@ -146,6 +168,8 @@ export function researchRequestBody(vaultRoot: string, request: JsonObject, cont
   ].join("\n");
 }
 
-export function requestTargetPath(vaultRoot: string, recordAbsolutePath: string, requestId: string, contract: ResearchRequestContract): string {
-  return toVaultPath(vaultRoot, path.join(path.dirname(path.dirname(recordAbsolutePath)), contract.request.directory, `${requestId}.md`));
+export function requestTargetPath(vaultRoot: string, instanceContentRoot: string, requestId: string, contract: ResearchRequestContract): string {
+  const root = instanceContentRoot.replaceAll("\\", "/").replace(/^\/+/, "");
+  if (!root || root.split("/").includes("..") || path.isAbsolute(root)) throw new PkbError("RESEARCH_REQUEST_INSTANCE_INVALID", "Research Request instance content_root must be Vault-relative.");
+  return toVaultPath(vaultRoot, path.join(vaultRoot, ...root.split("/"), ...contract.request.directory.split("/"), `${requestId}.md`));
 }
