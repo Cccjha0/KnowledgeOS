@@ -11,12 +11,6 @@ use_cases:
   primary: [capture lecture material, track assignment deadlines, generate weekly course summaries]
   excluded: [submit assignments, send external email, overwrite user classroom notes]
 entities:
-  - id: course
-    ownership: module
-    schema:
-      fields:
-        course_code: { type: string, required: true }
-        title: { type: string, required: true }
   - id: lecture
     ownership: instance
     schema:
@@ -45,15 +39,32 @@ outputs:
   - { id: lecture-note, entity: lecture, schema: lecture, template: templates/lecture.md, target: '{instance.content_root}/Lectures/{task.payload.item_id}.md' }
   - { id: assignment-record, entity: assignment, schema: assignment, template: templates/assignment.md, target: '{instance.content_root}/Assignments/{task.payload.item_id}.md' }
   - { id: weekly-summary, entity: weekly-summary, schema: weekly-summary, template: templates/weekly-summary.md, target: '{instance.content_root}/Summaries/{schedule.iso_week}.md' }
-inbox: { module_level: true, instance_level: true, global_routing: true }
+inbox:
+  module_level: true
+  instance_level: true
+  global_routing: true
+  default_asset_role: lecture-material
+  roles:
+    lecture-material:
+      inbox_subpath: Lectures
+      access_policy: { sensitivity_class: 1, max_representation: full }
+      entrypoint: normalize-lecture
+      allow_codex: true
+    assignment-brief:
+      inbox_subpath: Assignments
+      access_policy: { sensitivity_class: 2, max_representation: full }
+      entrypoint: normalize-assignment
+      allow_codex: true
+    private-document:
+      inbox_subpath: Private
+      access_policy: { sensitivity_class: 3, max_representation: metadata }
+      required_user_action: resolve-review
+      allow_codex: false
 privacy:
   default_sensitivity_class: 2
   default_max_representation: full
   network_allowed: false
   user_original_content_mutable: false
-  input_roles:
-    lecture-material: { sensitivity_class: 1, max_representation: full, allow_codex: true }
-    assignment-brief: { sensitivity_class: 2, max_representation: full, allow_codex: true }
 workflows:
   - id: normalize-lecture
     trigger: capture
@@ -81,6 +92,13 @@ workflows:
     trigger: schedule
     requires_ai: true
     input_entities: [lecture, assignment]
+    sources:
+      - entity: lecture
+        window: current-week
+        date_field: lecture_date
+      - entity: assignment
+        window: active-or-upcoming
+        date_field: deadline
     output_entity: weekly-summary
     read: { representation: summary }
     prompt: { id: generate-weekly-summary }

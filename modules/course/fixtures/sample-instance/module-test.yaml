@@ -7,7 +7,8 @@ scenarios:
     entrypoint: normalize-assignment
   ambiguous_capture:
     fixture: tests/behavior/ambiguous-input.md
-    expected: failed
+    expected: review
+    expected_error_code: MODULE_WORKFLOW_REVIEW_REQUIRED
   permission_denied:
     target: 20-Workspace/课程管理/forbidden.md
   resource_unavailable:
@@ -26,6 +27,77 @@ scenarios:
     job_id: course.weekly-summary.sample-instance
     scheduled_at: '2026-08-09T10:00:00Z'
     expected_output: 20-Workspace/课程管理/sample-instance/Summaries/2026-W32.md
+    seed_documents:
+    - path: 20-Workspace/课程管理/sample-instance/Lectures/week-32.md
+      data:
+        id: course-lecture-week-32
+        type: course-lecture
+        schema_id: lecture
+        schema_version: 1
+        module_version: 0.2.0
+        instance_id: sample-instance
+        title: Week 32 lecture
+        source_refs: []
+        created: '2026-08-05T09:00:00Z'
+        updated: '2026-08-05T09:00:00Z'
+        safe_summary: This week covers the tested course concept.
+        lecture_date: '2026-08-05'
+        material_kind: slides
+      content: '# Week 32 lecture'
+    - path: 20-Workspace/课程管理/sample-instance/Lectures/old.md
+      data:
+        id: course-lecture-old
+        type: course-lecture
+        schema_id: lecture
+        schema_version: 1
+        module_version: 0.2.0
+        instance_id: sample-instance
+        title: Old lecture
+        source_refs: []
+        created: '2026-07-29T09:00:00Z'
+        updated: '2026-07-29T09:00:00Z'
+        safe_summary: This is outside the requested weekly window.
+        lecture_date: '2026-07-29'
+        material_kind: slides
+      content: '# Old lecture'
+    - path: 20-Workspace/课程管理/sample-instance/Assignments/upcoming.md
+      data:
+        id: course-assignment-upcoming
+        type: course-assignment
+        schema_id: assignment
+        schema_version: 1
+        module_version: 0.2.0
+        instance_id: sample-instance
+        title: Upcoming assignment
+        source_refs: []
+        created: '2026-08-01T09:00:00Z'
+        updated: '2026-08-01T09:00:00Z'
+        safe_summary: The assignment is due next week.
+        deadline: '2026-08-14T17:00:00Z'
+        status: planned
+      content: '# Upcoming assignment'
+    - path: 20-Workspace/课程管理/sample-instance/Assignments/past.md
+      data:
+        id: course-assignment-past
+        type: course-assignment
+        schema_id: assignment
+        schema_version: 1
+        module_version: 0.2.0
+        instance_id: sample-instance
+        title: Past assignment
+        source_refs: []
+        created: '2026-07-20T09:00:00Z'
+        updated: '2026-07-20T09:00:00Z'
+        safe_summary: The past assignment should not be included.
+        deadline: '2026-08-02T17:00:00Z'
+        status: submitted
+      content: '# Past assignment'
+    expected_context_sources:
+    - 20-Workspace/课程管理/sample-instance/Lectures/week-32.md
+    - 20-Workspace/课程管理/sample-instance/Assignments/upcoming.md
+    expected_source_refs:
+    - 20-Workspace/课程管理/sample-instance/Lectures/week-32.md
+    - 20-Workspace/课程管理/sample-instance/Assignments/upcoming.md
     codex_output:
       id: course-weekly-2026-W32
       type: course-weekly-summary
@@ -34,7 +106,9 @@ scenarios:
       module_version: 0.2.0
       instance_id: sample-instance
       title: 2026-W32 Weekly Summary
-      source_refs: []
+      source_refs:
+      - 20-Workspace/课程管理/sample-instance/Lectures/week-32.md
+      - 20-Workspace/课程管理/sample-instance/Assignments/upcoming.md
       created: '2026-08-09T18:00:00Z'
       updated: '2026-08-09T18:00:00Z'
       week: 2026-W32

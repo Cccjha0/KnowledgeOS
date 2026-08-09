@@ -1,24 +1,45 @@
 provider_id: application-tracker-today
-version: 1
-implementation: src/application/dashboard.ts
-
-project_fields:
-  - current_project
-  - application_status
-  - next_check
-  - pending_review_count
-  - material_progress
-  - last_updated
-  - next_action
-
+version: 2
 items:
-  - source: application-record
+  - id: current-project
+    kind: entity
+    entity: application-record
     category: status
+    due_category: research
+    due_field: monitoring.next_check
+    due_state: overdue-only
+    filters:
+      monitoring.active: true
+    suppress_due_when:
+      entity: research-request
+      local_field: id
+      foreign_field: application_id
+      filters:
+        status: [pending, in-progress, needs-more-information]
+    priority:
+      overdue: high
+      default: medium
+    title: "{institution} — {program_name}"
+    description: "状态：{application_status}；下次核验：{monitoring.next_check}"
     actions: [open, generate]
-  - source: research-request
+    due_actions: [open, generate]
+  - id: research-request
+    kind: entity
+    entity: research-request
+    filters:
+      status: [pending, in-progress, needs-more-information]
     category: research
+    due_field: next_action_at
+    priority:
+      overdue: high
+      default: medium
+    title: "申请核验：{request_id}"
+    description: "等待研究结果：{requested_fields}"
     actions: [open, run]
-  - source: application-document
-    aggregate: material_progress
-  - source: review-item
-    aggregate: pending_review_count
+  - id: waiting-reviews
+    kind: review-summary
+    category: status
+    priority: high
+    title: "{count} 项申请事项等待审核"
+    description: "有 {count} 项申请审核等待你的决定。"
+    actions: [open]

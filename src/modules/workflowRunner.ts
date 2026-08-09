@@ -8,7 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import type { JsonObject, JsonValue, OperationPlan } from "../core/types.js";
+import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
@@ -69,9 +69,73 @@ interface WorkflowState {
   codexContexts: CodexContextManifest[];
 }
 
+type RecordOperationMode = "create-record" | "update-record" | "append-record";
+
+/** Maps the public Blueprint record contract onto Core's executable operations. */
+export function operationPlanTypeForRecordMode(mode: string): "create-file" | "update-frontmatter" | "append-section" {
+  if (mode === "create-record") return "create-file";
+  if (mode === "update-record") return "update-frontmatter";
+  if (mode === "append-record") return "append-section";
+  throw new PkbError("MODULE_WORKFLOW_OPERATION_MODE_INVALID", `Unsupported Blueprint operation.type: ${mode}`);
+}
+
+function pendingReviewRequirements(state: WorkflowState): JsonObject[] {
+  return [...state.values.values()].flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const result = value as JsonObject;
+    return result.review_required === true && Array.isArray(result.matches)
+      ? result.matches.filter((match): match is JsonObject => Boolean(match) && typeof match === "object" && !Array.isArray(match)) : [];
+  });
+}
+
+/** A declared missing-field Review may hold an otherwise incomplete AI result
+ * before any Operation is created or executed. It never makes that result
+ * automatically writable. */
+function hasMissingReviewRule(workflow: JsonObject, output: JsonObject): boolean {
+  const declared = Array.isArray(workflow.review_when) ? workflow.review_when : [];
+  const materialized = Array.isArray(workflow.steps) ? workflow.steps.flatMap((raw) => {
+    const step = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as JsonObject : null;
+    const withValue = step?.with && typeof step.with === "object" && !Array.isArray(step.with) ? step.with as JsonObject : null;
+    return step?.uses === "core.require-review-if" && Array.isArray(withValue?.rules) ? withValue.rules : [];
+  }) : [];
+  const rules = declared.length ? declared : materialized;
+  return rules.some((raw) => {
+    const rule = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as JsonObject : null;
+    const condition = rule?.condition;
+    const field = typeof rule?.field === "string" ? rule.field.split(".").at(-1) : null;
+    return field && (condition === "missing" || condition === "missing-or-conflicting")
+      && (output[field] === undefined || output[field] === null || (typeof output[field] === "string" && !output[field].trim()));
+  });
+}
+
+/** Enforces a role's Codex policy at the final execution boundary. */
+export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: JsonObject, workflowContract: JsonObject | null): void {
+  const roleId = typeof taskPayload.asset_role === "string" ? taskPayload.asset_role : null;
+  if (!roleId) return;
+  // Blueprint contracts are optional for hand-authored module workflows.
+  // Missing policy maps mean "no additional role restriction", not malformed
+  // workflow data.  Keep `object()` strict for fields that are actually
+  // required elsewhere in the Runner.
+  const contractRoles = optionalObject(workflowContract?.role_policies);
+  const contractRole = optionalObject(contractRoles?.[roleId]);
+  const inboxRoles = optionalObject(optionalObject(manifest.inbox)?.asset_roles);
+  const manifestRole = optionalObject(inboxRoles?.[roleId]);
+  if (contractRole?.allow_codex === false || manifestRole?.allow_codex === false) {
+    throw new PkbError("MODULE_WORKFLOW_CODEX_DENIED", `Asset role ${roleId} does not permit Codex for this Workflow.`, {
+      asset_role: roleId,
+      contract_allow_codex: contractRole?.allow_codex ?? null,
+      manifest_allow_codex: manifestRole?.allow_codex ?? null,
+    });
+  }
+}
+
 function object(value: unknown, code = "MODULE_WORKFLOW_INVALID"): JsonObject {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new PkbError(code, "Workflow data must be an object.");
   return value as JsonObject;
+}
+
+function optionalObject(value: unknown): JsonObject | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
 }
 
 function string(value: unknown, label: string, code = "MODULE_WORKFLOW_INVALID"): string {
@@ -366,10 +430,11 @@ function matchesTimeWindow(data: JsonObject, settings: JsonObject, state: Workfl
     throw new PkbError("MODULE_QUERY_TIME_MISSING", `${relativePath} is missing a valid ${field} required by this query.`);
   }
   if (unit === "day") return date === reference;
-  if (unit === "week") {
-    const [year, month, day] = date.split("-").map(Number);
-    return isoWeek({ year: year!, month: month!, day: day! }).iso_week === reference;
-  }
+    if (unit === "week") {
+      const [year, month, day] = date.split("-").map(Number);
+      return isoWeek({ year: year!, month: month!, day: day! }).iso_week === reference;
+    }
+    if (unit === "on-or-after") return date >= reference;
   throw new PkbError("MODULE_QUERY_TIME_WINDOW_INVALID", `Unsupported time_window unit ${unit}.`);
 }
 
@@ -551,6 +616,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       } else if (step.uses === "core.query-documents") {
         state.values.set(step.id, await queryDocuments(vaultRoot, state, task, step.with));
       } else if (step.uses === "codex.prompt") {
+        assertCodexRolePermitted(task.payload, resolved.manifest, optionalObject(resolved.workflow.blueprint_contract));
         const prompt = promptEntry(resolved.moduleRoot, resolved.manifest, string(step.with.prompt_id, "codex.prompt.prompt_id"));
         const outputSchema = typeof step.with.output_schema === "string" ? schemaId(resolved.moduleRoot, resolved.manifest, step.with.output_schema) : prompt.schema;
         if (typeof step.with.skip_if_valid_schema === "string") {
@@ -584,7 +650,8 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
           return { output: { ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
         }, (output) => {
-          try { validateSchema(vaultRoot, outputSchema, output); return true; } catch { return false; }
+          try { validateSchema(vaultRoot, outputSchema, output); return true; }
+          catch { return Boolean(output && typeof output === "object" && !Array.isArray(output) && hasMissingReviewRule(resolved.workflow, output as JsonObject)); }
         });
         state.values.set(step.id, managed.output);
         state.codexCalls += 1;
@@ -650,13 +717,19 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const output = outputKey ? object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING") : null;
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
-        validateSchema(vaultRoot, outputSchema, output);
+        try { validateSchema(vaultRoot, outputSchema, output); }
+        catch (error) {
+          if (!hasMissingReviewRule(resolved.workflow, output)) throw error;
+        }
         const target = relative(interpolate(string(step.with.target, "build-operation-plan.target"), state, task), "build-operation-plan.target");
+        const operationMode = String(step.with.operation_type ?? "create-record") as RecordOperationMode;
+        const operationType = operationPlanTypeForRecordMode(operationMode);
         if (!resolved.instance) throw new PkbError("MODULE_WORKFLOW_INSTANCE_REQUIRED", "Creating a module document requires an instance.");
         const contentRoot = String(resolved.instance.content_root ?? "");
         if (!target.startsWith(`${contentRoot}/`)) throw new PkbError("MODULE_WRITE_DENIED", `Workflow cannot write ${target}.`);
         const idempotencyKey = interpolate(string(step.with.idempotency_key, "build-operation-plan.idempotency_key"), state, task);
-        if (await exists(fromVaultPath(vaultRoot, target))) {
+        const targetExists = await exists(fromVaultPath(vaultRoot, target));
+        if (operationMode === "create-record" && targetExists) {
           // A process can exit after the transactional write succeeds but before
           // its Task is marked complete. Reuse the durable operation ledger in
           // that narrow recovery window; unrelated user files are never replaced.
@@ -668,20 +741,57 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           state.values.set(step.id, { plan_id: completed.plan_id, recovered: true });
           continue;
         }
+        if (operationMode !== "create-record" && !targetExists) {
+          throw new PkbError("MODULE_WORKFLOW_TARGET_MISSING", `${operationMode} requires an existing target ${target}.`);
+        }
         const templatePath = path.join(resolved.moduleRoot, ...relative(string(step.with.template, "build-operation-plan.template"), "build-operation-plan.template").split("/"));
         const planId = await allocateId(vaultRoot, "PLAN");
+        const reviewRequirements = pendingReviewRequirements(state);
+        const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
+        const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
           summary: typeof step.with.summary === "string" ? interpolate(step.with.summary, state, task) : `Run ${resolved.workflowId}`,
           operations: [{
-            operation_id: "OP-001", type: "create-file", target, risk: "green", confidence: 1,
-            idempotency_key: idempotencyKey, requires_review_id: null,
-            payload: { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema },
+            operation_id: "OP-001", type: operationType, target, risk: reviewId ? "yellow" : "green", confidence: 1,
+            idempotency_key: idempotencyKey, requires_review_id: reviewId,
+            payload: operationMode === "create-record"
+              ? { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema }
+              : operationMode === "update-record"
+                ? { patch: output, replace_top_level: Object.keys(output), schema_id: outputSchema, actor: "ai" }
+                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), output), marker: idempotencyKey, actor: "ai" },
           }], review_items: [],
         };
+        if (reviewId) {
+          const primary = reviewRequirements[0]!;
+          const now = new Date().toISOString();
+          const review: ReviewItem = {
+            review_id: reviewId, schema_version: 1, source_module: task.module, instance_id: task.instance_id, target,
+            action: "module-operation", proposed_value: {
+              field: String(primary.field ?? "record"), old_value: primary.current_value ?? null, new_value: output,
+              operation_plan_id: planId, matching_rules: reviewRequirements,
+            }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
+            priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
+            status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
+            evidence: [...state.sourceFiles], created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            resolution: null, origin_task_id: task.task_id,
+            ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
+            ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),
+            ...(generated ? { generation: generated } : {}),
+          };
+          plan.review_items = [review];
+        }
         await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
+        if (reviewId) {
+          await writeReviewItems(vaultRoot, plan.review_items);
+          throw new PkbError("MODULE_WORKFLOW_REVIEW_REQUIRED", `Workflow ${resolved.workflowId} requires a user Review before writing ${target}.`, {
+            review_id: reviewId, plan_id: planId, matches: reviewRequirements,
+            ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
+            ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),
+          });
+        }
         const snapshot = await createGitSnapshot(vaultRoot, runId);
-        await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["create-file"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
+        await executeOperationPlan(vaultRoot, plan, { allowedTypes: [operationType], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
         state.planId = planId; state.snapshot = snapshot; state.outputFiles.add(target); state.values.set(step.id, plan);
       }
     }

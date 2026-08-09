@@ -115,7 +115,37 @@
     "inbox": {
       "type": "object", "additionalProperties": false,
       "required": ["module_level", "instance_level", "global_routing"],
-      "properties": { "module_level": { "type": "boolean" }, "instance_level": { "type": "boolean" }, "global_routing": { "type": "boolean" } }
+      "properties": {
+        "module_level": { "type": "boolean" },
+        "instance_level": { "type": "boolean" },
+        "global_routing": { "type": "boolean" },
+        "default_asset_role": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "required": ["inbox_subpath", "access_policy", "allow_codex"],
+            "properties": {
+              "inbox_subpath": { "type": "string", "minLength": 1 },
+              "access_policy": {
+                "type": "object", "additionalProperties": false,
+                "required": ["sensitivity_class", "max_representation"],
+                "properties": {
+                  "sensitivity_class": { "type": "integer", "minimum": 0, "maximum": 3 },
+                  "max_representation": { "enum": ["metadata", "summary", "full", "sensitive-original"] }
+                }
+              },
+              "entrypoint": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+              "required_user_action": { "enum": ["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"] },
+              "allow_codex": { "type": "boolean" }
+            },
+            "anyOf": [
+              { "required": ["entrypoint"] },
+              { "required": ["required_user_action"] }
+            ]
+          }
+        }
+      }
     },
     "privacy": {
       "type": "object", "additionalProperties": false,
@@ -151,10 +181,26 @@
           "requires_network": { "type": "boolean", "default": false },
           "input_entities": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } },
           "input_roles": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } },
+          "sources": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["entity", "window", "date_field"],
+              "properties": {
+                "entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+                "root": { "type": "string", "minLength": 1 },
+                "window": { "enum": ["current-day", "current-week", "active-or-upcoming", "all"] },
+                "date_field": { "type": "string", "minLength": 1 },
+                "filters": { "type": "object" }
+              }
+            }
+          },
           "output_entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
           "read": { "type": "object", "additionalProperties": false, "required": ["representation"], "properties": { "representation": { "enum": ["metadata", "summary", "full", "sensitive-original"] } } },
           "prompt": { "type": "object", "additionalProperties": false, "required": ["id"], "properties": { "id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } } },
-          "operation": { "type": "object", "additionalProperties": false, "required": ["type", "target", "template"], "properties": { "type": { "enum": ["create-record", "update-record", "append-record"] }, "target": { "type": "string", "minLength": 1 }, "template": { "type": "string", "minLength": 1 } } },
+          "operation": { "type": "object", "additionalProperties": false, "required": ["type", "target", "template"], "properties": { "type": { "enum": ["create-record", "update-record", "append-record"] }, "target": { "type": "string", "minLength": 1 }, "template": { "type": "string", "minLength": 1 }, "section": { "type": "string", "minLength": 1 } } },
           "review_when": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["field", "condition"], "properties": { "field": { "type": "string", "minLength": 1 }, "condition": { "enum": ["missing", "conflicting", "missing-or-conflicting", "always"] } } } },
           "publishes": { "type": "array", "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["event"], "properties": { "event": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$" }, "payload": { "type": "object" } } } }
         }
@@ -181,6 +227,15 @@
           "workflow_id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
           "timezone": { "type": "string", "minLength": 1 },
           "at": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+          "weekday": { "enum": ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] },
+          "day": { "type": "integer", "minimum": 1, "maximum": 31 },
+          "dedupe": { "enum": ["startup", "daily"] },
+          "event": { "type": "string", "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$" },
+          "subscription_scope": { "enum": ["instance", "module", "global"] },
+          "source_modules": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } },
+          "source_root": { "type": "string", "minLength": 1 },
+          "field": { "type": "string", "minLength": 1 },
+          "id_field": { "type": "string", "minLength": 1 },
           "scope": { "enum": ["instance", "module", "global"] },
           "retry": { "type": "object", "additionalProperties": false, "properties": { "max_attempts": { "type": "integer", "minimum": 0 }, "strategy": { "enum": ["exponential", "fixed"] } } },
           "concurrency": { "type": "object", "additionalProperties": false, "properties": { "policy": { "enum": ["allow", "forbid", "replace", "merge"] }, "key": { "type": "string" } } },

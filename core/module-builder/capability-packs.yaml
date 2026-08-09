@@ -67,12 +67,24 @@ packs:
     conflicts: [external-integration]
     adapters: []
     components: {}
+    contract:
+      privacy:
+        network_allowed: false
+        min_sensitivity_class: 2
+        forbid_summary_for_sensitive_roles: true
+      required_rules: [ownership]
+      required_tests: [permission_denied, prompt_regression]
   immutable-user-content:
     capabilities: []
     requires: []
     conflicts: []
     adapters: []
     components: {}
+    contract:
+      privacy:
+        user_original_content_mutable: false
+      required_rules: [ownership]
+      required_tests: [permission_denied, repeat_execution]
   timeline:
     capabilities: [dashboard-items]
     requires: [structured-entity]
@@ -93,3 +105,9 @@ packs:
     conflicts: [high-privacy]
     adapters: []
     components: {}
+    contract:
+      module_types: [integration]
+      privacy:
+        network_allowed: true
+      required_rules: [permissions]
+      required_tests: [resource_unavailable, permission_denied]

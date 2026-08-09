@@ -1,0 +1,8 @@
+machines:
+  assignment:
+    status_field: status
+    initial: planned
+    transitions:
+      planned: [submitted]
+      submitted: [graded]
+      graded: []

@@ -1,0 +1,16 @@
+critical_fields: [assignment.deadline, assignment.status]
+provenance_required: [lecture.lecture_date, assignment.deadline]
+freshness: {}
+field_policies:
+  lecture.lecture_date:
+    provenance: required
+  assignment.deadline:
+    critical: true
+    provenance: required
+    verification_interval_days: 7
+  assignment.status:
+    critical: true
+ownership: {}
+audits: [stale-fields, missing-provenance, schema-version, instance-task]
+orphan_exempt_entity_types: []
+default_verification_interval_days: 30

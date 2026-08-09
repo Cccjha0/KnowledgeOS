@@ -24,6 +24,14 @@ steps:
   with:
     prompt_id: normalize-lecture
     output_schema: https://pkb.local/schemas/course/lecture.schema.json
+- id: require-lecture-review
+  uses: core.require-review-if
+  with:
+    target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
+    proposed_from: normalize
+    rules:
+    - field: lecture.lecture_date
+      condition: missing-or-conflicting
 - id: plan
   uses: core.build-operation-plan
   with:
@@ -31,6 +39,7 @@ steps:
     output_schema: lecture
     target: '{instance.content_root}/Lectures/{task.payload.item_id}.md'
     template: templates/lecture.md
+    operation_type: create-record
     idempotency_key: course:{instance.instance_id}:normalize-lecture:{task.payload.item_id}
     summary: Create lecture from normalized material
 - id: publish-lecture-created
@@ -48,6 +57,8 @@ blueprint_contract:
   trigger: capture
   input_entities: [capture]
   input_roles: [lecture-material]
+  role_policies:
+    lecture-material: { allow_codex: true }
   output_entity: lecture
   read: { representation: full }
   prompt_id: normalize-lecture

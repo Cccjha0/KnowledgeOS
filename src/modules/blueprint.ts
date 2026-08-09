@@ -26,6 +26,7 @@ export interface BlueprintValidationReport extends JsonObject {
   resolved_capability_packs: string[];
   resolved_capabilities: string[];
   required_components: JsonObject;
+  required_rule_files: string[];
   overall: "PASS" | "PASS WITH WARNINGS" | "FAIL";
 }
 
@@ -60,6 +61,51 @@ function entityObjects(blueprint: JsonObject): JsonObject[] {
   return Array.isArray(blueprint.entities) ? blueprint.entities.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
 }
 
+function sourceObjects(workflow: JsonObject): JsonObject[] {
+  return Array.isArray(workflow.sources) ? workflow.sources.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+}
+
+function subscriptionObjects(value: JsonValue | undefined): JsonObject[] {
+  return Array.isArray(value) ? value.flatMap((item) => {
+    if (typeof item === "string") return [{ event: item }];
+    const subscription = object(item);
+    return subscription ? [subscription] : [];
+  }) : [];
+}
+
+function materializedSubscriptions(value: JsonValue | undefined): JsonValue[] {
+  if (!Array.isArray(value)) return [];
+  return value.reduce<JsonValue[]>((output, item) => {
+    if (typeof item === "string") output.push(item);
+    const subscription = object(item);
+    if (subscription) output.push({
+      event: subscription.event,
+      ...(typeof subscription.scope === "string" ? { scope: subscription.scope } : {}),
+      ...(Array.isArray(subscription.source_modules) ? { source_modules: subscription.source_modules } : {}),
+    } as JsonObject);
+    return output;
+  }, []);
+}
+
+/**
+ * Inbox roles are the v1.1 source of truth for both routing and access.  The
+ * older privacy.input_roles remains readable so existing v1 Blueprints can be
+ * upgraded deliberately instead of losing their access policy at once.
+ */
+function blueprintInputRoles(blueprint: JsonObject): JsonObject {
+  const inboxRoles = object(object(blueprint.inbox)?.roles);
+  if (!inboxRoles) return object(object(blueprint.privacy)?.input_roles) ?? {};
+  return Object.fromEntries(Object.entries(inboxRoles).map(([id, value]) => {
+    const role = object(value) ?? {};
+    const access = object(role.access_policy) ?? {};
+    return [id, {
+      sensitivity_class: access.sensitivity_class ?? null,
+      max_representation: access.max_representation ?? null,
+      allow_codex: role.allow_codex !== false,
+    } as JsonObject];
+  })) as JsonObject;
+}
+
 function representationRank(value: string): number {
   return ["metadata", "summary", "full", "sensitive-original"].indexOf(value);
 }
@@ -70,6 +116,39 @@ function check(code: string, status: BlueprintCheck["status"], message: string, 
 
 function addUnique(target: string[], values: string[]): void {
   for (const value of values) if (!target.includes(value)) target.push(value);
+}
+
+function validateCapabilityPackContracts(packs: JsonObject, resolved: string[], blueprint: JsonObject, checks: BlueprintCheck[], requiredRuleFiles: string[]): void {
+  const privacy = object(blueprint.privacy) ?? {};
+  const workflows = workflowObjects(blueprint);
+  const inputRoles = blueprintInputRoles(blueprint);
+  const testing = object(blueprint.testing) ?? {};
+  const moduleType = String(object(blueprint.module_class)?.type ?? "");
+  for (const id of resolved) {
+    const contract = object(object(packs[id])?.contract);
+    if (!contract) continue;
+    addUnique(requiredRuleFiles, strings(contract.required_rules));
+    const requiredTests = strings(contract.required_tests);
+    const missingTests = requiredTests.filter((name) => testing[name] !== "required");
+    checks.push(missingTests.length === 0
+      ? check("CAPABILITY_PACK_TESTS_BOUND", "pass", `${id} requires and received its executable test scenarios.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_TESTS_MISSING", "fail", `${id} requires testing.${missingTests.join(", ")}: required.`, `capability_packs.${id}`));
+    const allowedTypes = strings(contract.module_types);
+    if (allowedTypes.length) checks.push(allowedTypes.includes(moduleType)
+      ? check("CAPABILITY_PACK_MODULE_TYPE_VALID", "pass", `${id} is valid for ${moduleType}.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_MODULE_TYPE_DENIED", "fail", `${id} requires module_class.type to be one of ${allowedTypes.join(", ")}.`, `capability_packs.${id}`));
+    const policy = object(contract.privacy);
+    if (!policy) continue;
+    const networkValid = policy.network_allowed === undefined || privacy.network_allowed === policy.network_allowed;
+    const mutableValid = policy.user_original_content_mutable === undefined || privacy.user_original_content_mutable === policy.user_original_content_mutable;
+    const sensitivityValid = typeof policy.min_sensitivity_class !== "number" || Number(privacy.default_sensitivity_class) >= policy.min_sensitivity_class;
+    const unsafeSummary = policy.forbid_summary_for_sensitive_roles === true && workflows.some((workflow) =>
+      String(object(workflow.read)?.representation ?? "metadata") === "summary"
+      && strings(workflow.input_roles).some((role) => Number(object(inputRoles[role])?.sensitivity_class ?? 0) >= 2));
+    checks.push(networkValid && mutableValid && sensitivityValid && !unsafeSummary
+      ? check("CAPABILITY_PACK_PRIVACY_BOUND", "pass", `${id} privacy and Workflow restrictions are satisfied.`, `capability_packs.${id}`)
+      : check("CAPABILITY_PACK_PRIVACY_DENIED", "fail", `${id} requires its declared privacy and Workflow restrictions.`, `capability_packs.${id}`));
+  }
 }
 
 export async function validateModuleBlueprint(engineRoot: string, blueprintPath: string): Promise<ResolvedBlueprint> {
@@ -104,6 +183,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
 
   const resolvedCapabilities: string[] = [];
   const requiredComponents: JsonObject = {};
+  const requiredRuleFiles: string[] = [];
   for (const id of resolved) {
     const pack = object(packs[id])!;
     addUnique(resolvedCapabilities, strings(pack.capabilities));
@@ -115,6 +195,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
     }
   }
   if (!checks.some((item) => item.code.startsWith("CAPABILITY_") && item.status === "fail")) checks.push(check("CAPABILITY_PACKS_RESOLVED", "pass", `Resolved ${resolved.length} Capability Packs.`, "capability_packs"));
+  validateCapabilityPackContracts(packs, resolved, blueprint, checks, requiredRuleFiles);
 
   for (const format of strings(blueprint.inputs)) {
     const adapter = availableIngestionAdapter(format);
@@ -156,6 +237,7 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
     resolved_capability_packs: resolved,
     resolved_capabilities: resolvedCapabilities,
     required_components: requiredComponents,
+    required_rule_files: requiredRuleFiles,
     overall: failed ? "FAIL" : warnings ? "PASS WITH WARNINGS" : "PASS",
   };
   return { blueprint, report, scaffoldTemplate: String(template?.scaffold_template ?? "minimal-config") as ModuleTemplate };
@@ -167,11 +249,33 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   const review = object(blueprint.review_policy);
   const criticalFields = strings(review?.critical_fields);
   const privacy = object(blueprint.privacy);
-  const inputRoles = object(privacy?.input_roles) ?? {};
+  const inputRoles = blueprintInputRoles(blueprint);
+  const inbox = object(blueprint.inbox);
+  const inboxRoles = object(inbox?.roles) ?? {};
   const workflows = workflowObjects(blueprint);
   const workflowIds = workflows.map((workflow) => String(workflow.id));
   const events = object(blueprint.events);
   const publishedEvents = blueprintEventNames(events?.publishes);
+  const subscriptions = subscriptionObjects(events?.subscribes);
+
+  if (Object.keys(inboxRoles).length) {
+    const defaultRole = String(inbox?.default_asset_role ?? "");
+    checks.push(Object.prototype.hasOwnProperty.call(inboxRoles, defaultRole)
+      ? check("SEMANTIC_INBOX_DEFAULT_ROLE_VALID", "pass", `Default Inbox role ${defaultRole} is declared.`, "inbox.default_asset_role")
+      : check("SEMANTIC_INBOX_DEFAULT_ROLE_INVALID", "fail", "Inbox roles require inbox.default_asset_role to name a declared role.", "inbox.default_asset_role"));
+    for (const [roleId, rawRole] of Object.entries(inboxRoles)) {
+      const role = object(rawRole);
+      const access = object(role?.access_policy);
+      const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : "";
+      const action = typeof role?.required_user_action === "string" ? role.required_user_action : "";
+      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action))
+        ? check("SEMANTIC_INBOX_ROLE_CONTRACT_VALID", "pass", `${roleId} declares path, access policy, and a continuation.`, `inbox.roles.${roleId}`)
+        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and entrypoint or required_user_action.`, `inbox.roles.${roleId}`));
+      if (entrypoint) checks.push(workflowIds.includes(entrypoint)
+        ? check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_VALID", "pass", `${roleId} routes to ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`)
+        : check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_UNKNOWN", "fail", `${roleId} routes to unknown Workflow ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`));
+    }
+  }
 
   for (const entity of entities) {
     const entityId = String(entity.id);
@@ -195,9 +299,12 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     if (lifecycle) {
       const initial = String(lifecycle.initial ?? "");
       const transitions = object(lifecycle.transitions) ?? {};
-      checks.push(initial && Object.prototype.hasOwnProperty.call(transitions, initial)
+      const stateField = object(entity.schema)?.fields && object(object(entity.schema)?.fields)?.status ? "status" : null;
+      const states = new Set(Object.keys(transitions));
+      const transitionsValid = Object.values(transitions).every((targets) => Array.isArray(targets) && targets.every((target) => typeof target === "string" && states.has(target)));
+      checks.push(initial && stateField && Object.prototype.hasOwnProperty.call(transitions, initial) && transitionsValid
         ? check("SEMANTIC_LIFECYCLE_VALID", "pass", `${entityId} lifecycle has an initial state and transitions.`, `entities.${entityId}.lifecycle`)
-        : check("SEMANTIC_LIFECYCLE_INVALID", "fail", `${entityId} lifecycle initial state must be a transition key.`, `entities.${entityId}.lifecycle`));
+        : check("SEMANTIC_LIFECYCLE_INVALID", "fail", `${entityId} lifecycle must use a declared status field, an initial state, and only declared transition targets.`, `entities.${entityId}.lifecycle`));
     }
   }
   for (const fieldRef of criticalFields) {
@@ -225,11 +332,13 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   for (const workflow of workflows) {
     const id = String(workflow.id);
     const inputEntities = strings(workflow.input_entities);
+    const sources = sourceObjects(workflow);
     const outputEntity = String(workflow.output_entity ?? "");
     const roles = strings(workflow.input_roles);
     const read = object(workflow.read);
     const operation = object(workflow.operation);
     const prompt = object(workflow.prompt);
+    const reviewWhen = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
     const fieldsPresent = inputEntities.length > 0 && entityIds.includes(outputEntity) && read && operation;
     checks.push(fieldsPresent
       ? check("SEMANTIC_WORKFLOW_CONTRACT_VALID", "pass", `${id} declares inputs, output, read policy, and Operation target.`, `workflows.${id}`)
@@ -241,12 +350,50 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
       ? check("SEMANTIC_CAPTURE_ROLE_DECLARED", "pass", `${id} declares an input role.`, `workflows.${id}.input_roles`)
       : check("SEMANTIC_CAPTURE_ROLE_REQUIRED", "fail", `${id} is capture-triggered and must declare input_roles.`, `workflows.${id}.input_roles`));
     for (const role of roles) {
+      const inboxRole = object(inboxRoles[role]);
+      const routedToWorkflow = inboxRole?.entrypoint === id;
+      checks.push(!Object.keys(inboxRoles).length || routedToWorkflow
+        ? check("SEMANTIC_CAPTURE_ROLE_ROUTED", "pass", `${id} is selected by the Inbox role contract for ${role}.`, `inbox.roles.${role}.entrypoint`)
+        : check("SEMANTIC_CAPTURE_ROLE_UNROUTED", "fail", `${id} uses ${role}, but that Inbox role does not route to this Workflow.`, `inbox.roles.${role}.entrypoint`));
+    }
+    for (const rule of reviewWhen) {
+      const reference = String(rule.field ?? "");
+      const [entityId, fieldId] = reference.split(".", 2);
+      const entity = entities.find((candidate) => candidate.id === entityId);
+      const fieldExists = Boolean(object(object(entity?.schema)?.fields)?.[fieldId ?? ""]);
+      const condition = String(rule.condition ?? "");
+      const validCondition = ["missing", "conflicting", "missing-or-conflicting", "always"].includes(condition);
+      checks.push(fieldExists && validCondition && entityId === outputEntity
+        ? check("SEMANTIC_REVIEW_WHEN_VALID", "pass", `${id} has an executable review rule for ${reference}.`, `workflows.${id}.review_when`)
+        : check("SEMANTIC_REVIEW_WHEN_INVALID", "fail", `${id} review_when must reference an output Entity field and a supported condition.`, `workflows.${id}.review_when`));
+    }
+    if (workflow.trigger === "schedule") {
+      checks.push(sources.length > 0
+        ? check("SEMANTIC_SCHEDULE_SOURCES_DECLARED", "pass", `${id} declares the source query contract for its scheduled input.`, `workflows.${id}.sources`)
+        : check("SEMANTIC_SCHEDULE_SOURCES_REQUIRED", "fail", `${id} is scheduled and must declare sources that Core will query before prompting.`, `workflows.${id}.sources`));
+      for (const source of sources) {
+        const entityId = String(source.entity ?? "");
+        const entity = entities.find((candidate) => candidate.id === entityId);
+        const dateField = String(source.date_field ?? "");
+        const fieldExists = Boolean(object(object(entity?.schema)?.fields)?.[dateField]);
+        const outputExists = outputs.some((output) => output.entity === entityId);
+        const window = String(source.window ?? "");
+        const validWindow = ["current-day", "current-week", "active-or-upcoming", "all"].includes(window);
+        checks.push(entity && fieldExists && outputExists && validWindow
+          ? check("SEMANTIC_SCHEDULE_SOURCE_VALID", "pass", `${id} queries ${entityId} using ${window}.`, `workflows.${id}.sources`)
+          : check("SEMANTIC_SCHEDULE_SOURCE_INVALID", "fail", `${id} source ${entityId || "unknown"} must reference an output Entity, declared date field, and supported window.`, `workflows.${id}.sources`));
+      }
+    }
+    for (const role of roles) {
       const policy = object(inputRoles[role]);
       const requested = String(read?.representation ?? "metadata");
       const allowed = String(policy?.max_representation ?? "");
       checks.push(policy && representationRank(requested) <= representationRank(allowed)
         ? check("SEMANTIC_ROLE_READ_POLICY_VALID", "pass", `${id} read policy is allowed for ${role}.`, `workflows.${id}.read`)
         : check("SEMANTIC_ROLE_READ_POLICY_DENIED", "fail", `${id} requests ${requested} for ${role}, but no compatible input role policy exists.`, `workflows.${id}.read`));
+      if (workflow.requires_ai === true) checks.push(policy?.allow_codex !== false
+        ? check("SEMANTIC_ROLE_CODEX_ALLOWED", "pass", `${id} may use Codex for ${role}.`, `workflows.${id}.input_roles`)
+        : check("SEMANTIC_ROLE_CODEX_DENIED", "fail", `${id} requires AI but ${role} explicitly sets allow_codex: false.`, `workflows.${id}.input_roles`));
     }
     const publishes = Array.isArray(workflow.publishes) ? workflow.publishes.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
     for (const publication of publishes) {
@@ -265,10 +412,24 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   for (const job of jobs) {
     const jobId = String(job.id);
     const workflowId = String(job.workflow_id ?? "");
-    const valid = workflowIds.includes(workflowId) && typeof job.scope === "string" && (job.schedule === "event" || job.schedule === "startup" || (typeof job.timezone === "string" && typeof job.at === "string"));
+    const schedule = String(job.schedule ?? "");
+    const hasClock = typeof job.timezone === "string" && typeof job.at === "string";
+    const scheduleValid = schedule === "daily" ? hasClock
+      : schedule === "weekly" ? hasClock
+        : schedule === "monthly" ? hasClock && Number.isInteger(job.day ?? 1) && Number(job.day ?? 1) >= 1 && Number(job.day ?? 1) <= 31
+          : schedule === "startup" ? (job.dedupe === undefined || job.dedupe === "startup" || (job.dedupe === "daily" && typeof job.timezone === "string"))
+            : schedule === "field-due" ? typeof job.source_root === "string" && !String(job.source_root).includes("{") && typeof job.field === "string" && typeof job.id_field === "string"
+              : schedule === "event" ? typeof job.event === "string" && ["instance", "module", "global"].includes(String(job.subscription_scope))
+                && (job.subscription_scope !== "global" || Array.isArray(job.source_modules) && job.source_modules.length > 0)
+                && subscriptions.some((subscription) => subscription.event === job.event && subscription.scope === job.subscription_scope
+                  && subscription.workflow_id === workflowId
+                  && (job.subscription_scope !== "global" || JSON.stringify(subscription.source_modules ?? []) === JSON.stringify(job.source_modules ?? [])))
+                : false;
+    const instanceScopeValid = job.subscription_scope !== "instance" || job.scope === "instance";
+    const valid = workflowIds.includes(workflowId) && typeof job.scope === "string" && scheduleValid && instanceScopeValid;
     checks.push(valid
-      ? check("SEMANTIC_JOB_WORKFLOW_BOUND", "pass", `${jobId} explicitly binds ${workflowId}.`, `jobs.${jobId}`)
-      : check("SEMANTIC_JOB_WORKFLOW_REQUIRED", "fail", `${jobId} must bind a declared Workflow and provide scope and schedule details.`, `jobs.${jobId}`));
+      ? check("SEMANTIC_JOB_WORKFLOW_BOUND", "pass", `${jobId} fully materializes ${schedule} for ${workflowId}.`, `jobs.${jobId}`)
+      : check("SEMANTIC_JOB_TRIGGER_INCOMPLETE", "fail", `${jobId} must bind a declared Workflow and provide the complete ${schedule || "unknown"} Trigger contract.`, `jobs.${jobId}`));
   }
 }
 
@@ -300,16 +461,31 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
     allow_global_routing: inbox.global_routing === true,
     asset_access_policy: { sensitivity_class: Number(privacy.default_sensitivity_class), max_representation: String(privacy.default_max_representation) },
   };
+  const roleContracts = object(inbox.roles);
+  if (roleContracts) {
+    (manifest.inbox as JsonObject).default_asset_role = inbox.default_asset_role ?? null;
+    (manifest.inbox as JsonObject).asset_roles = Object.fromEntries(Object.entries(roleContracts).map(([roleId, rawRole]) => {
+      const role = object(rawRole) ?? {};
+      return [roleId, {
+        inbox_subpath: role.inbox_subpath ?? null,
+        asset_access_policy: object(role.access_policy) ?? {},
+        ...(typeof role.entrypoint === "string" ? { entrypoint: role.entrypoint } : {}),
+        ...(typeof role.required_user_action === "string" ? { required_user_action: role.required_user_action } : {}),
+        allow_codex: role.allow_codex !== false,
+      } as JsonObject];
+    })) as JsonObject;
+  }
   manifest.permissions = {
     ...(object(manifest.permissions) ?? {}),
     max_sensitivity_class: Number(privacy.default_sensitivity_class),
     network: privacy.network_allowed === true,
     allow_external_network: privacy.network_allowed === true,
   };
-  manifest.events = { publishes: blueprintEventNames(events.publishes), subscribes: blueprintEventNames(events.subscribes) };
+  manifest.events = { publishes: blueprintEventNames(events.publishes), subscribes: materializedSubscriptions(events.subscribes) };
   if (strings(resolved.blueprint.inputs).includes("pdf")) manifest.pdf_policy = { accepted_statuses: ["completed"], partial_policy: "review" };
   writeYaml(moduleRoot, manifestPath, manifest);
   if (isSemanticBlueprint(resolved.blueprint)) await materializeSemanticEntities(moduleRoot, resolved.blueprint, manifest);
+  await ensureCapabilityPackRules(moduleRoot, resolved.blueprint, resolved.report.required_rule_files);
   await materializeDeclaredWorkflows(moduleRoot, resolved.blueprint, manifest);
   await materializeBlueprintTestContract(moduleRoot, resolved.blueprint);
   writeYaml(moduleRoot, manifestPath, manifest);
@@ -317,6 +493,26 @@ export async function scaffoldModuleFromBlueprint(engineRoot: string, blueprintP
   await fs.writeFile(path.join(moduleRoot, "docs", "blueprint-boundary.md"), renderBoundaryDocument(resolved.blueprint), "utf8");
   await fs.writeFile(path.join(moduleRoot, "blueprint-validation-report.json"), `${JSON.stringify(resolved.report, null, 2)}\n`, "utf8");
   return { ...result, module_id: moduleId, blueprint: path.join(moduleRoot, "module.blueprint.yaml"), validation: resolved.report.overall };
+}
+
+async function ensureCapabilityPackRules(moduleRoot: string, blueprint: JsonObject, requiredRules: string[]): Promise<void> {
+  for (const rule of requiredRules) {
+    const target = path.join(moduleRoot, "rules", `${rule}.yaml`);
+    if (await exists(target)) continue;
+    if (rule === "ownership") {
+      writeYaml(moduleRoot, target, {
+        user_original_content_mutable: object(blueprint.privacy)?.user_original_content_mutable === true,
+        generated_entities: [],
+        forbidden_operations: ["update-user-original", "overwrite-source"],
+      });
+      continue;
+    }
+    if (rule === "permissions") {
+      writeYaml(moduleRoot, target, object(blueprint.privacy) ?? {});
+      continue;
+    }
+    throw new PkbError("CAPABILITY_PACK_RULE_UNSUPPORTED", `Capability Pack requires unknown rule ${rule}.`);
+  }
 }
 
 function blueprintOutputObjects(blueprint: JsonObject): JsonObject[] {
@@ -343,7 +539,11 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   const manifestSchemas = object(manifest.schemas) ?? {};
   const promptRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml"));
   const prompts = object(promptRegistry.prompts) ?? {};
-  const workflowPrompts = workflowObjects(blueprint).map((workflow) => String(object(workflow.prompt)?.id ?? "")).filter(Boolean);
+  const workflows = workflowObjects(blueprint);
+  const workflowPrompts = workflows.map((workflow) => String(object(workflow.prompt)?.id ?? "")).filter(Boolean);
+  const summarySourceEntities = new Set(workflows
+    .filter((workflow) => String(object(workflow.read)?.representation) === "summary")
+    .flatMap((workflow) => sourceObjects(workflow).map((source) => String(source.entity))));
   const baseRequired = ["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "title", "source_refs", "created", "updated"];
   for (const entity of entities) {
     const entityId = String(entity.id);
@@ -352,8 +552,10 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
       id: { type: "string" }, type: { const: `${moduleId}-${entityId}` }, schema_id: { const: entityId }, schema_version: { const: 1 }, module_version: { type: "string" },
       instance_id: { type: "string" }, title: { type: "string", minLength: 1 }, source_refs: { type: "array", items: { type: "string" } }, generation: { type: ["object", "null"] },
       created: { type: "string", format: "date-time" }, updated: { type: "string", format: "date-time" },
+      // Summary access is opt-in and must not be derived from a document's first paragraph.
+      safe_summary: { type: ["string", "null"] },
     };
-    const required = [...baseRequired];
+    const required = [...baseRequired, ...(summarySourceEntities.has(entityId) ? ["safe_summary"] : [])];
     for (const [fieldId, raw] of Object.entries(declaredFields)) {
       const field = object(raw)!;
       properties[fieldId] = schemaProperty(field);
@@ -370,12 +572,15 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
 
   for (const promptId of workflowPrompts) {
     if (prompts[promptId]) continue;
-    const workflow = workflowObjects(blueprint).find((item) => object(item.prompt)?.id === promptId)!;
+    const workflow = workflows.find((item) => object(item.prompt)?.id === promptId)!;
     const entityId = String(workflow.output_entity);
     const relative = `generated/${promptId}/v1.0.0.md`;
     prompts[promptId] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative }, status: "active" };
     await fs.mkdir(path.dirname(path.join(moduleRoot, "prompts", relative)), { recursive: true });
-    await fs.writeFile(path.join(moduleRoot, "prompts", relative), `---\nprompt_id: ${promptId}\nprompt_version: 1.0.0\nmodule: ${moduleId}\ntask_type: normalization\noutput_schema: https://pkb.local/schemas/${moduleId}/${entityId}.schema.json\nstatus: active\n---\n\nReturn only a valid ${entityId} result. Preserve facts, references, and uncertainty.\n`, "utf8");
+    const safeSummaryInstruction = summarySourceEntities.has(entityId)
+      ? " Include safe_summary: an explicit concise representation safe for later periodic summaries; never derive it from hidden or sensitive text."
+      : "";
+    await fs.writeFile(path.join(moduleRoot, "prompts", relative), `---\nprompt_id: ${promptId}\nprompt_version: 1.0.0\nmodule: ${moduleId}\ntask_type: normalization\noutput_schema: https://pkb.local/schemas/${moduleId}/${entityId}.schema.json\nstatus: active\n---\n\nReturn only a valid ${entityId} result. Preserve facts, references, and uncertainty.${safeSummaryInstruction}\n`, "utf8");
   }
   promptRegistry.prompts = prompts;
   writeYaml(moduleRoot, path.join(moduleRoot, "prompts", "index.yaml"), promptRegistry);
@@ -389,22 +594,94 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   reviewPolicy.critical_fields = strings(object(blueprint.review_policy)?.critical_fields);
   reviewPolicy.critical_field_action = "review-required";
   writeYaml(moduleRoot, path.join(moduleRoot, "rules", "review-policy.yaml"), reviewPolicy);
+  const qualityFields: JsonObject = {};
+  for (const entity of entities) {
+    const entityId = String(entity.id);
+    for (const [fieldId, raw] of Object.entries(object(object(entity.schema)?.fields) ?? {})) {
+      const field = object(raw) ?? {};
+      const contract: JsonObject = {};
+      if (field.critical === true) contract.critical = true;
+      if (field.provenance_required === true) contract.provenance = "required";
+      if (typeof field.freshness_days === "number") contract.verification_interval_days = field.freshness_days;
+      if (Object.keys(contract).length) qualityFields[`${entityId}.${fieldId}`] = contract;
+    }
+  }
+  const qualityPolicy: JsonObject = {
+    critical_fields: Object.entries(qualityFields).filter(([, field]) => object(field)?.critical === true).map(([field]) => field),
+    provenance_required: Object.entries(qualityFields).filter(([, field]) => object(field)?.provenance === "required").map(([field]) => field),
+    freshness: {}, field_policies: qualityFields,
+    ownership: {}, audits: ["stale-fields", "missing-provenance", "schema-version", "instance-task"], orphan_exempt_entity_types: [],
+    default_verification_interval_days: 30,
+  };
+  writeYaml(moduleRoot, path.join(moduleRoot, "rules", "quality-policy.yaml"), qualityPolicy);
+  manifest.quality = { policy: "rules/quality-policy.yaml" };
   writeYaml(moduleRoot, path.join(moduleRoot, "rules", "ownership.yaml"), {
     user_original_content_mutable: object(blueprint.privacy)?.user_original_content_mutable === true,
     generated_entities: entityIdsForOwnership(entities),
     forbidden_operations: object(blueprint.privacy)?.user_original_content_mutable === true ? [] : ["update-user-original", "overwrite-source"],
   });
+  const machines = Object.fromEntries(entities.flatMap((entity) => {
+    const lifecycle = object(entity.lifecycle);
+    return lifecycle ? [[String(entity.id), {
+      status_field: "status",
+      initial: typeof lifecycle.initial === "string" ? lifecycle.initial : "",
+      transitions: object(lifecycle.transitions) ?? {},
+    }]] : [];
+  }));
+  if (Object.keys(machines).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "state-machines.yaml"), { machines });
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
-  dashboard.items = strings(object(blueprint.dashboard)?.sections);
+  dashboard.items = dashboardProviderItems(strings(object(blueprint.dashboard)?.sections), entities);
+  dashboard.version = "2.0.0";
   writeYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"), dashboard);
 }
 
 function entityIdsForOwnership(entities: JsonObject[]): string[] { return entities.map((entity) => String(entity.id)); }
 
+function dashboardProviderItems(sections: string[], entities: JsonObject[]): JsonObject[] {
+  const entityIds = new Set(entities.map((entity) => String(entity.id)));
+  const items: JsonObject[] = [];
+  for (const section of sections) {
+    if (section === "upcoming-deadlines" && entityIds.has("assignment")) {
+      items.push({ id: section, kind: "due", entity: "assignment", due_field: "deadline", filters: { status: ["planned"] }, window_days: 14, category: "deadline", priority: { overdue: "critical", within_3_days: "high", default: "medium" }, title: "{title}", description: "截止日期：{deadline}", actions: ["open"] });
+    } else if (section === "recent-lectures" && entityIds.has("lecture")) {
+      items.push({ id: section, kind: "recent", entity: "lecture", date_field: "lecture_date", limit: 5, category: "summary", priority: "low", title: "{title}", description: "课程资料日期：{lecture_date}", actions: ["open"] });
+    } else if (section === "waiting-reviews") {
+      items.push({ id: section, kind: "review-summary", category: "status", priority: "high", title: "{count} 项事项等待审核", description: "有 {count} 项等待你的决定。", actions: ["open"] });
+    }
+  }
+  return items;
+}
+
+function sourceQuerySteps(workflow: JsonObject, outputs: JsonObject[], representation: string): JsonObject[] {
+  return sourceObjects(workflow).map((source, index) => {
+    const entity = String(source.entity);
+    const output = outputs.find((candidate) => candidate.entity === entity);
+    const root = typeof source.root === "string" ? source.root : path.posix.dirname(String(output?.target ?? ""));
+    const window = String(source.window);
+    const timeWindow = window === "all" ? null
+      : window === "current-day" ? { field: String(source.date_field), unit: "day", reference: "{schedule.date}" }
+        : window === "current-week" ? { field: String(source.date_field), unit: "week", reference: "{schedule.iso_week}" }
+          : { field: String(source.date_field), unit: "on-or-after", reference: "{schedule.date}" };
+    return {
+      id: `query-${entity}-${index + 1}`,
+      uses: "core.query-documents",
+      with: {
+        root,
+        filters: { ...(object(source.filters) ?? {}), instance_id: { equals: "{instance.instance_id}" } },
+        time_window: timeWindow,
+        schema: entity,
+        read: { representation },
+      },
+    };
+  });
+}
+
 async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject): Promise<void> {
   const declared = Array.isArray(blueprint.workflows) ? blueprint.workflows.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
   const semantic = isSemanticBlueprint(blueprint);
   const outputs = blueprintOutputObjects(blueprint);
+  const inputRoles = blueprintInputRoles(blueprint);
+  const inboxRoles = object(object(blueprint.inbox)?.roles) ?? {};
   const requestedRepresentation = String(object(blueprint.privacy)?.default_max_representation ?? "metadata");
   const registryPath = path.join(moduleRoot, "workflows", "index.yaml");
   const registry = parseYaml(moduleRoot, registryPath);
@@ -419,6 +696,9 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     const id = String(workflow.id);
     const outputEntity = String(workflow.output_entity ?? "record");
     const output = outputs.find((item) => item.entity === outputEntity);
+    const lifecycle = object(entityObjects(blueprint).find((entity) => entity.id === outputEntity)?.lifecycle);
+    const operation = object(workflow.operation) ?? {};
+    const operationType = String(operation.type ?? "create-record");
     const representation = String(object(workflow.read)?.representation ?? requestedRepresentation);
     const promptId = String(object(workflow.prompt)?.id ?? (workflow.trigger === "schedule" ? "weekly-summary" : "normalize-record"));
     const publications = Array.isArray(workflow.publishes) ? workflow.publishes.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
@@ -433,7 +713,9 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     if (semantic) {
       const blueprintContract: JsonObject = {
       trigger: String(workflow.trigger ?? ""),
-      input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles), output_entity: outputEntity,
+        input_entities: strings(workflow.input_entities), input_roles: strings(workflow.input_roles),
+        role_policies: Object.fromEntries(strings(workflow.input_roles).map((role) => [role, { allow_codex: object(inputRoles[role])?.allow_codex !== false }])),
+        sources: sourceObjects(workflow), output_entity: outputEntity,
       read: { representation }, prompt_id: promptId,
       operation: object(workflow.operation) ?? {}, publishes: publications.map((publication) => ({ event: String(publication.event), payload: object(publication.payload) ?? {} })),
       };
@@ -453,11 +735,46 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
         with: {
           output: workflow.trigger === "schedule" ? "summarize" : "normalize",
           output_schema: String(output.schema), target: String(output.target), template: String(output.template),
-          idempotency_key: `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{task.payload.item_id}`, summary: `Create ${outputEntity} from ${id}`,
+          operation_type: operationType,
+          ...(typeof operation.section === "string" ? { section: operation.section } : {}),
+          idempotency_key: workflow.trigger === "schedule"
+            ? `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{schedule.iso_week}`
+            : `${String(object(blueprint.module)?.id)}:{instance.instance_id}:${id}:{task.payload.item_id}`,
+          summary: `${operationType === "append-record" ? "Append to" : operationType === "update-record" ? "Update" : "Create"} ${outputEntity} from ${id}`,
         },
       }];
       return [step];
     });
+    if (semantic && workflow.trigger !== "capture") {
+      const queries = sourceQuerySteps(workflow, outputs, representation);
+      if (queries.length) {
+        const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+        const promptIndex = steps.findIndex((step) => step.uses === "codex.prompt");
+        generated.steps = promptIndex < 0 ? [...queries, ...steps] : [...steps.slice(0, promptIndex), ...queries, ...steps.slice(promptIndex)];
+      }
+    }
+    if (semantic && lifecycle && output) {
+      const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+      const planIndex = steps.findIndex((step) => step.uses === "core.build-operation-plan");
+      const validation = {
+        id: `validate-${outputEntity}-transition`, uses: "component.state-transition-validation",
+        with: {
+          target: String(output.target), proposed_from: workflow.trigger === "schedule" ? "summarize" : "normalize", status_field: "status",
+          lifecycle: { initial: typeof lifecycle.initial === "string" ? lifecycle.initial : "", transitions: object(lifecycle.transitions) ?? {} },
+        },
+      };
+      generated.steps = planIndex < 0 ? [...steps, validation] : [...steps.slice(0, planIndex), validation, ...steps.slice(planIndex)];
+    }
+    const reviewWhen = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+    if (semantic && reviewWhen.length && output) {
+      const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+      const planIndex = steps.findIndex((step) => step.uses === "core.build-operation-plan");
+      const ruleStep = {
+        id: `require-${outputEntity}-review`, uses: "core.require-review-if",
+        with: { target: String(output.target), proposed_from: workflow.trigger === "schedule" ? "summarize" : "normalize", rules: reviewWhen.map((rule) => ({ field: String(rule.field), condition: String(rule.condition) })) },
+      };
+      generated.steps = planIndex < 0 ? [...steps, ruleStep] : [...steps.slice(0, planIndex), ruleStep, ...steps.slice(planIndex)];
+    }
     if (workflow.trigger === "schedule" && !semantic) {
       const steps = Array.isArray(generated.steps) ? generated.steps.map((item) => object(item)).filter((item): item is JsonObject => item !== null) : [];
       generated.steps = steps.map((step) => step.uses === "core.build-operation-plan" ? {
@@ -492,10 +809,18 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     writeYaml(moduleRoot, path.join(moduleRoot, "workflows", id, "v1.0.0.yaml"), generated);
     nextRegistry[id] = { active_version: "1.0.0", path: relative, versions: { "1.0.0": relative } };
     if (workflow.trigger === "capture" && Object.keys(captureEntrypoints).length === 0) captureEntrypoints.capture = `workflows/${relative}`;
+    for (const role of strings(workflow.input_roles)) {
+      if (object(inboxRoles[role])?.entrypoint === id) captureEntrypoints[id] = `workflows/${relative}`;
+    }
   }
   registry.workflows = nextRegistry;
   writeYaml(moduleRoot, registryPath, registry);
   manifest.entry_workflows = { ...(object(manifest.entry_workflows) ?? {}), ...captureEntrypoints };
+  const reviewConditions = Object.fromEntries(declared.flatMap((workflow) => {
+    const rules = Array.isArray(workflow.review_when) ? workflow.review_when.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
+    return rules.length ? [[String(workflow.id), rules.map((rule) => ({ field: String(rule.field), condition: String(rule.condition) }))]] : [];
+  }));
+  if (Object.keys(reviewConditions).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "review-conditions.yaml"), { workflows: reviewConditions });
 
   const jobs = Array.isArray(blueprint.jobs) ? blueprint.jobs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
   const scheduledWorkflow = declared.find((workflow) => workflow.trigger === "schedule");
@@ -505,9 +830,16 @@ async function materializeDeclaredWorkflows(moduleRoot: string, blueprint: JsonO
     const workflow = declared.find((item) => item.id === workflowId) ?? scheduledWorkflow;
     const schedule = String(job.schedule);
     const trigger: JsonObject = schedule === "weekly"
-      ? { type: "weekly", weekday: "Sun", at: String(job.at ?? "18:00"), timezone: String(job.timezone ?? "instance") }
-      : schedule === "daily" ? { type: "cron", expression: `0 ${String(job.at ?? "08:00").split(":")[0]} * * *`, timezone: String(job.timezone ?? "instance") }
-        : { type: schedule };
+      ? { type: "weekly", weekday: String(job.weekday ?? "Sun"), at: String(job.at), timezone: String(job.timezone) }
+      : schedule === "daily" ? { type: "daily", at: String(job.at), timezone: String(job.timezone) }
+        : schedule === "monthly" ? { type: "monthly", day: Number(job.day ?? 1), at: String(job.at), timezone: String(job.timezone) }
+          : schedule === "startup" ? { type: "startup", ...(job.dedupe === "daily" ? { dedupe: "daily", timezone: String(job.timezone) } : {}) }
+            : schedule === "field-due" ? { type: "field-due", source_root: String(job.source_root), field: String(job.field), id_field: String(job.id_field) }
+              : schedule === "event" ? {
+                type: "event", event: String(job.event), subscription_scope: String(job.subscription_scope),
+                ...(Array.isArray(job.source_modules) ? { source_modules: job.source_modules } : {}),
+              }
+                : (() => { throw new PkbError("BLUEPRINT_TRIGGER_UNSUPPORTED", `Unsupported Blueprint Job schedule ${schedule}.`); })();
     return {
       id, scope: String(job.scope ?? "instance"), enabled: true, task_type: "workflow", workflow: `${String(object(blueprint.module)?.id)}:${workflowId}`,
       workflow_id: workflowId, workflow_version: "1.0.0", trigger,

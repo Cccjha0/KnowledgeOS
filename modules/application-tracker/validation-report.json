@@ -3,13 +3,53 @@
   "module_id": "application-tracker",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-05T17:25:51.732Z",
+  "generated_at": "2026-08-08T17:03:39.248Z",
   "checks": [
     {
       "category": "manifest",
       "code": "MANIFEST_V1_VALID",
       "status": "pass",
       "message": "Manifest v1 schema passed.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "markdown is backed by markdown-frontmatter@1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "json is backed by json-structured@1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "yaml is backed by yaml-structured@1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "pdf is backed by pdf-sidecar@1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INBOX_ROLE_CONTRACTS_VALID",
+      "status": "pass",
+      "message": "Inbox asset roles and their entrypoints were checked.",
       "critical": false,
       "path": "module.yaml"
     },
@@ -334,10 +374,18 @@
       "path": "fixtures/sample-instance/module-test.yaml"
     },
     {
-      "category": "prompt-regression",
-      "code": "PROMPT_INVARIANTS_VALID",
+      "category": "behavior",
+      "code": "MODULE_TEST_CAPABILITY_SCENARIOS_ENABLED",
       "status": "pass",
-      "message": "Prompt regression fixture protects facts, uncertainty, and schema validity.",
+      "message": "Every declared dynamic capability has an enabled executable fixture scenario.",
+      "critical": false,
+      "path": "fixtures/sample-instance/module-test.yaml"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_VALID",
+      "status": "pass",
+      "message": "Deterministic Prompt Contract fixture protects facts, uncertainty, and schema validity; it is not a real-model evaluation.",
       "critical": false,
       "path": "tests/prompt-regression/facts.yaml"
     },
@@ -345,13 +393,13 @@
       "category": "migration",
       "code": "MIGRATION_FIXTURE_DECLARED",
       "status": "pass",
-      "message": "Migration fixture declares apply/repeat/rollback coverage.",
+      "message": "Migration fixture declares apply, repeat, and rollback coverage.",
       "critical": false,
       "path": "fixtures/sample-instance/module-test.yaml"
     }
   ],
   "counts": {
-    "pass": 30,
+    "pass": 36,
     "warning": 13,
     "fail": 0,
     "critical": 0

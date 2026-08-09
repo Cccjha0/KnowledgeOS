@@ -9,6 +9,34 @@ resources:
   codex: required
   user: not-required
 steps:
+- id: query-lecture-1
+  uses: core.query-documents
+  with:
+    root: '{instance.content_root}/Lectures'
+    filters:
+      instance_id:
+        equals: '{instance.instance_id}'
+    time_window:
+      field: lecture_date
+      unit: week
+      reference: '{schedule.iso_week}'
+    schema: lecture
+    read:
+      representation: summary
+- id: query-assignment-2
+  uses: core.query-documents
+  with:
+    root: '{instance.content_root}/Assignments'
+    filters:
+      instance_id:
+        equals: '{instance.instance_id}'
+    time_window:
+      field: deadline
+      unit: on-or-after
+      reference: '{schedule.date}'
+    schema: assignment
+    read:
+      representation: summary
 - id: summarize
   uses: codex.prompt
   with:
@@ -21,6 +49,7 @@ steps:
     output_schema: weekly-summary
     target: '{instance.content_root}/Summaries/{schedule.iso_week}.md'
     template: templates/weekly-summary.md
+    operation_type: create-record
     idempotency_key: course:{instance.instance_id}:generate-weekly-summary:{schedule.iso_week}
     summary: Create generate-weekly-summary
 outputs:
@@ -28,6 +57,13 @@ outputs:
 blueprint_contract:
   trigger: schedule
   input_entities: [lecture, assignment]
+  sources:
+    - entity: lecture
+      window: current-week
+      date_field: lecture_date
+    - entity: assignment
+      window: active-or-upcoming
+      date_field: deadline
   input_roles: []
   output_entity: weekly-summary
   read: { representation: summary }

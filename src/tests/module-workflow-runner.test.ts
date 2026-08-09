@@ -5,14 +5,17 @@ import path from "node:path";
 import test from "node:test";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { updateAssetAccessPolicy } from "../core/ingestion.js";
-import type { JsonObject } from "../core/types.js";
+import { executeOperationPlan } from "../core/operationExecutor.js";
+import type { JsonObject, OperationPlan } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
-import { createInstance } from "../platform/lifecycleWorkflow.js";
-import { createModuleWorkflowRunner } from "../modules/workflowRunner.js";
+import { createInstance, manageModule } from "../platform/lifecycleWorkflow.js";
+import { assertCodexRolePermitted, createModuleWorkflowRunner, operationPlanTypeForRecordMode } from "../modules/workflowRunner.js";
 import { discoverInboxItems } from "../platform/inboxDiscovery.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import { locateReviewItem } from "../core/reviews.js";
+import { decideReview } from "../platform/reviewWorkflow.js";
 
 function makePdf(text: string): Buffer {
   const stream = `BT\n/F1 18 Tf\n72 720 Td\n(${text.replace(/[()\\]/g, "\\$&")}) Tj\nET\n`;
@@ -35,6 +38,108 @@ function makePdf(text: string): Buffer {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(pdf, "binary");
 }
+
+test("Blueprint record operation modes map only to executable Core operations", () => {
+  assert.equal(operationPlanTypeForRecordMode("create-record"), "create-file");
+  assert.equal(operationPlanTypeForRecordMode("update-record"), "update-frontmatter");
+  assert.equal(operationPlanTypeForRecordMode("append-record"), "append-section");
+  assert.throws(() => operationPlanTypeForRecordMode("replace-record"), /Unsupported Blueprint operation.type/);
+});
+
+test("Codex is denied at runtime when either role policy forbids it", () => {
+  assert.throws(() => assertCodexRolePermitted(
+    { asset_role: "private-diary" },
+    { inbox: { asset_roles: { "private-diary": { allow_codex: false } } } },
+    { role_policies: { "private-diary": { allow_codex: true } } },
+  ), /does not permit Codex/);
+  assert.throws(() => assertCodexRolePermitted(
+    { asset_role: "private-diary" },
+    { inbox: { asset_roles: { "private-diary": { allow_codex: true } } } },
+    { role_policies: { "private-diary": { allow_codex: false } } },
+  ), /does not permit Codex/);
+  assert.doesNotThrow(() => assertCodexRolePermitted(
+    { asset_role: "lecture-material" },
+    { inbox: { asset_roles: { "lecture-material": { allow_codex: true } } } },
+    { role_policies: { "lecture-material": { allow_codex: true } } },
+  ));
+});
+
+test("a Blueprint review_when rule blocks the write, creates a Review, and executes only after approval", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-review-rule-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await manageModule(vault, { module_id: "course", action: "enable", preview_only: false });
+    const instanceId = "course-review-2026";
+    await createInstance(vault, {
+      module_id: "course", instance_id: instanceId, display_name: "Course Review",
+      fields: { course_code: "COMP9000", course_name: "Course Review", semester: "2026-S2", timezone: "Asia/Shanghai" },
+    });
+    const sourceRelative = `20-Workspace/课程管理/${instanceId}/Inbox/Assignments/brief.md`;
+    const source = path.join(vault, ...sourceRelative.split("/"));
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(source, "# Essay brief\n\nPlease track the deadline.", "utf8");
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({
+      job_id: `course.normalize-assignment.${instanceId}`, module: "course", instance_id: instanceId, task_type: "workflow", workflow: "course:normalize-assignment",
+      priority: "high", scheduled_for: "2020-08-09T10:00:00.000Z", resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
+      trigger: { type: "inbox", workflow_id: "normalize-assignment", workflow_version: "1.0.0" }, catch_up_policy: "none", idempotency_key: `course:${instanceId}:review-rule`,
+      payload: { source_file: sourceRelative, item_id: "assignment-001", asset_role: "assignment-brief" },
+    }).task;
+    repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
+    repository.close();
+    const output = {
+      id: "ASSIGN-2026-000001", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
+      title: "Essay", source_refs: [sourceRelative], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief", status: "planned",
+    };
+    await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
+    const after = await RuntimeRepository.open(vault);
+    assert.equal(after.getTask(task.task_id)?.status, "waiting-for-user", JSON.stringify(after.getTask(task.task_id)?.last_error));
+    after.close();
+    const pending = await fs.readdir(path.join(vault, "90-System", "Review Queue", "Pending"));
+    const reviewFile = pending.find((file) => parseMarkdown(vault, path.join(vault, "90-System", "Review Queue", "Pending", file)).data.origin_task_id === task.task_id);
+    assert.ok(reviewFile, "The review rule must create a Review tied to this Task.");
+    const reviewId = path.basename(reviewFile, ".md");
+    const review = await locateReviewItem(vault, reviewId);
+    assert.equal(review.item.action, "module-operation");
+    assert.equal((review.item.proposed_value as JsonObject).field, "assignment.deadline");
+    const target = path.join(vault, "20-Workspace", "课程管理", instanceId, "Assignments", "assignment-001.md");
+    await assert.rejects(fs.access(target), "Review-gated output must not be written before a user decision.");
+    const approved = { ...output, deadline: "2026-09-01T09:00:00+08:00" };
+    await decideReview({ vaultRoot: vault, reviewId, decision: "approve-with-modification", modifiedValue: approved, userComment: "Confirmed the official deadline." });
+    assert.equal(parseMarkdown(vault, target).data.deadline, "2026-09-01T09:00:00+08:00");
+    const completed = await RuntimeRepository.open(vault);
+    assert.equal(completed.getTask(task.task_id)?.status, "completed");
+    completed.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("update-record and append-record use controlled executable Operations", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-record-operation-modes-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const target = "20-Workspace/Journal/demo/Entries/today.md";
+    const absolute = path.join(vault, ...target.split("/"));
+    await fs.mkdir(path.dirname(absolute), { recursive: true });
+    writeMarkdown(vault, absolute, { data: { title: "Before", _ownership: { sections: { "AI Updates": "ai-managed" } } }, content: "# Today\n" });
+    const plan = (planId: string, operation: OperationPlan["operations"][number]): OperationPlan => ({
+      plan_id: planId, task_id: "TASK-2026-000901", source_module: "reading-log", instance_id: "demo", summary: "Test record operation mode", operations: [operation], review_items: [],
+    });
+    await executeOperationPlan(vault, plan("PLAN-2026-000901", {
+      operation_id: "OP-001", type: operationPlanTypeForRecordMode("update-record"), target, risk: "green", confidence: 1,
+      idempotency_key: "test:update-record:000901", requires_review_id: null, payload: { patch: { title: "After" }, replace_top_level: ["title"], actor: "ai" },
+    }), { allowedTypes: ["update-frontmatter"], allowedTargets: [target], requiredReviewId: null });
+    const append = plan("PLAN-2026-000902", {
+      operation_id: "OP-001", type: operationPlanTypeForRecordMode("append-record"), target, risk: "green", confidence: 1,
+      idempotency_key: "test:append-record:000902", requires_review_id: null,
+      payload: { section: "AI Updates", content: "Normalized journal entry.", marker: "test:append-record:000902", actor: "ai" },
+    });
+    await executeOperationPlan(vault, append, { allowedTypes: ["append-section"], allowedTargets: [target], requiredReviewId: null });
+    await executeOperationPlan(vault, append, { allowedTypes: ["append-section"], allowedTargets: [target], requiredReviewId: null });
+    const document = parseMarkdown(vault, absolute);
+    assert.equal(document.data.title, "After");
+    assert.equal((document.content.match(/Normalized journal entry\./g) ?? []).length, 1, "Append mode remains idempotent through the Core ledger and section marker.");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
 
 test("a declared experience-log workflow executes through the generic Runner without a platform Handler", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-workflow-runner-"));

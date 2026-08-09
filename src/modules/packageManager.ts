@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,10 +11,26 @@ import type { JsonObject } from "../core/types.js";
 import type { ModuleLockEntry, ModuleValidationReport } from "./types.js";
 import { validateModule } from "./validator.js";
 import { discoverModules } from "../core/discovery.js";
+import { engineProvenance, fileChecksum, fixtureChecksum, moduleContentChecksum } from "./readinessEvidence.js";
 
 interface BridgeResult { ok: boolean; sha256?: string; files?: number; message?: string; }
 interface ModuleLock { schema_version: 1; modules: Record<string, ModuleLockEntry>; }
-interface PackageMetadata { package_format: number; module_id: string; version: string; content_checksum: string; }
+interface PackageMetadata extends JsonObject {
+  package_format: 2;
+  module_id: string;
+  version: string;
+  content_checksum: string;
+  readiness: {
+    module_checksum: string;
+    validation_report_checksum: string | null;
+    module_test_report_checksum: string | null;
+    sandbox_report_checksum: string | null;
+    fixture_checksum: string | null;
+    engine_version: string | null;
+    engine_commit: string | null;
+    developer_unsafe: boolean;
+  };
+}
 
 function bridge(engineRoot: string, command: "pack" | "unpack", source: string, destination: string): BridgeResult {
   const result = spawnSync("python", ["-X", "utf8", path.join(engineRoot, "tools", "module_bridge.py"), command, source, destination], { encoding: "utf8", windowsHide: true });
@@ -23,32 +39,79 @@ function bridge(engineRoot: string, command: "pack" | "unpack", source: string, 
   return parsed;
 }
 
-async function checksumDirectory(root: string): Promise<string> {
-  const hash = createHash("sha256");
-  const visit = async (directory: string): Promise<void> => {
-    for (const entry of (await fs.readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-      const absolute = path.join(directory, entry.name); const relative = path.relative(root, absolute).replaceAll(path.sep, "/");
-      if (entry.isDirectory()) await visit(absolute); else if (entry.name !== "package-metadata.json") { hash.update(relative); hash.update(await fs.readFile(absolute)); }
-    }
-  };
-  await visit(root); return hash.digest("hex");
+async function checksumDirectory(root: string): Promise<string> { return moduleContentChecksum(root); }
+
+interface ReadinessEvidence extends JsonObject {
+  module_checksum: string;
+  validation_report_checksum: string;
+  module_test_report_checksum: string;
+  sandbox_report_checksum: string;
+  fixture_checksum: string;
+  engine_version: string;
+  engine_commit: string | null;
 }
 
-export async function packModuleDirectory(engineRoot: string, source: string, outputPath?: string): Promise<JsonObject> {
+function evidenceFailure(message: string, details: JsonObject): never {
+  throw new PkbError("MODULE_READINESS_STALE", message, details);
+}
+
+async function requireReadinessEvidence(engineRoot: string, source: string, moduleId: string, version: string): Promise<ReadinessEvidence> {
+  const validationPath = path.join(source, "validation-report.json");
+  const testPath = path.join(source, "module-test-report.json");
+  const sandboxPath = path.join(source, "sandbox-report.json");
+  if (!(await exists(validationPath)) || !(await exists(testPath)) || !(await exists(sandboxPath))) {
+    evidenceFailure("Module requires current validation, Module Test, and Sandbox reports before packaging.", { module_id: moduleId, version, required_reports: ["validation-report.json", "module-test-report.json", "sandbox-report.json"] });
+  }
+  const validation = await readJson<ModuleValidationReport | null>(validationPath, null);
+  const test = await readJson<{ module_id?: string; module_version?: string; overall?: string; beta_eligible?: boolean; environment?: JsonObject } | null>(testPath, null);
+  const sandbox = await readJson<{ module_id?: string; overall?: string; environment?: JsonObject } | null>(sandboxPath, null);
+  const currentModuleChecksum = await moduleContentChecksum(source);
+  const currentFixtureChecksum = await fixtureChecksum(source);
+  const provenance = await engineProvenance(engineRoot);
+  const testEnvironment = test?.environment ?? {};
+  const sandboxEnvironment = sandbox?.environment ?? {};
+  if (!validation || validation.module_id !== moduleId || validation.module_version !== version || validation.beta_eligible !== true) {
+    evidenceFailure("Validation evidence is missing, belongs to another module version, or is not Beta eligible.", { module_id: moduleId, version, validation });
+  }
+  if (!test || test.module_id !== moduleId || test.module_version !== version || test.overall !== "PASS") {
+    evidenceFailure("Module Test evidence must be a passing report for this module version.", { module_id: moduleId, version, test });
+  }
+  if (!sandbox || sandbox.module_id !== moduleId || sandbox.overall !== "PASS") {
+    evidenceFailure("Sandbox evidence must be a passing report for this module.", { module_id: moduleId, version, sandbox });
+  }
+  const expected = { module_checksum: currentModuleChecksum, fixture_checksum: currentFixtureChecksum, engine_version: provenance.engine_version, git_commit: provenance.engine_commit };
+  for (const [label, environment] of [["module-test", testEnvironment], ["sandbox", sandboxEnvironment]] as const) {
+    if (environment.module_checksum !== expected.module_checksum || environment.fixture_checksum !== expected.fixture_checksum || environment.engine_version !== expected.engine_version || environment.git_commit !== expected.git_commit) {
+      evidenceFailure(`${label} evidence no longer matches current module, fixtures, or Engine provenance.`, { module_id: moduleId, version, expected, actual: environment, report: label });
+    }
+  }
+  return {
+    module_checksum: currentModuleChecksum,
+    validation_report_checksum: await fileChecksum(validationPath),
+    module_test_report_checksum: await fileChecksum(testPath),
+    sandbox_report_checksum: await fileChecksum(sandboxPath),
+    fixture_checksum: currentFixtureChecksum,
+    engine_version: provenance.engine_version,
+    engine_commit: provenance.engine_commit,
+  };
+}
+
+export async function packModuleDirectory(engineRoot: string, source: string, outputPath?: string, options: { developerUnsafe?: boolean } = {}): Promise<JsonObject> {
   if (!(await exists(path.join(source, "module.yaml")))) throw new PkbError("MODULE_NOT_FOUND", `Module source was not found: ${source}.`);
   const report = await validateModule(engineRoot, source);
   if (report.overall === "FAIL") throw new PkbError("MODULE_VALIDATION_FAILED", "Module cannot be packed because validation failed.", report);
   const manifest = parseYaml(source, path.join(source, "module.yaml"));
-  const moduleId = String(manifest.id);
+  const moduleId = String(manifest.id); const version = String(manifest.version);
+  const evidence = options.developerUnsafe ? null : await requireReadinessEvidence(engineRoot, source, moduleId, version);
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-module-${moduleId}-`));
   try {
     const staging = path.join(temporary, moduleId); await fs.cp(source, staging, { recursive: true });
-    await writeJsonAtomic(path.join(staging, "validation-report.json"), report);
     const contentChecksum = await checksumDirectory(staging);
-    await writeJsonAtomic(path.join(staging, "package-metadata.json"), { package_format: 1, module_id: moduleId, version: manifest.version, content_checksum: `sha256:${contentChecksum}`, created_at: new Date().toISOString() });
-    const destination = outputPath ?? path.join(engineRoot, "packages", `${moduleId}-${String(manifest.version)}.pkb-module`);
+    const readiness = evidence ?? { module_checksum: contentChecksum, validation_report_checksum: null, module_test_report_checksum: null, sandbox_report_checksum: null, fixture_checksum: null, engine_version: null, engine_commit: null, developer_unsafe: true };
+    await writeJsonAtomic(path.join(staging, "package-metadata.json"), { package_format: 2, module_id: moduleId, version, content_checksum: contentChecksum, readiness: { ...readiness, developer_unsafe: options.developerUnsafe === true }, created_at: new Date().toISOString() });
+    const destination = outputPath ?? path.join(engineRoot, "packages", `${moduleId}-${version}.pkb-module`);
     const result = bridge(engineRoot, "pack", staging, destination);
-    return { module_id: moduleId, version: String(manifest.version), package: destination, checksum: `sha256:${String(result.sha256)}`, files: result.files ?? 0, validation: report.overall };
+    return { module_id: moduleId, version, package: destination, checksum: `sha256:${String(result.sha256)}`, files: result.files ?? 0, validation: report.overall, readiness: { ...readiness, developer_unsafe: options.developerUnsafe === true } };
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
@@ -66,7 +129,7 @@ async function installedManifest(vaultRoot: string, entry: ModuleLockEntry | nul
   return await exists(path.join(root, "module.yaml")) ? parseYaml(root, path.join(root, "module.yaml")) : null;
 }
 
-export async function installModulePackage(engineRoot: string, vaultRoot: string, packagePath: string, options: { enable?: boolean; upgrade?: boolean; confirmBreaking?: boolean } = {}): Promise<JsonObject> {
+export async function installModulePackage(engineRoot: string, vaultRoot: string, packagePath: string, options: { enable?: boolean; upgrade?: boolean; confirmBreaking?: boolean; developerUnsafe?: boolean } = {}): Promise<JsonObject> {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-install-"));
   try {
     const unpacked = bridge(engineRoot, "unpack", packagePath, temporary);
@@ -76,11 +139,25 @@ export async function installModulePackage(engineRoot: string, vaultRoot: string
       throw new PkbError("MODULE_ID_RESERVED", `${moduleId} is an official Engine Module ID and cannot be installed as a user module.`);
     }
     const metadata = await readJson<PackageMetadata | null>(path.join(temporary, "package-metadata.json"), null);
-    if (!metadata || metadata.package_format !== 1 || metadata.module_id !== moduleId || metadata.version !== version) {
+    if (!metadata || metadata.package_format !== 2 || metadata.module_id !== moduleId || metadata.version !== version) {
       throw new PkbError("MODULE_PACKAGE_METADATA_INVALID", "Package metadata does not match its manifest.");
     }
-    const contentChecksum = `sha256:${await checksumDirectory(temporary)}`;
+    const contentChecksum = await checksumDirectory(temporary);
     if (metadata.content_checksum !== contentChecksum) throw new PkbError("MODULE_PACKAGE_CHECKSUM_MISMATCH", "Package content checksum is invalid.");
+    if (metadata.readiness.developer_unsafe && options.developerUnsafe !== true) {
+      throw new PkbError("MODULE_READINESS_UNSAFE_PACKAGE", "This package was created with --developer-unsafe and cannot be installed through the normal path.", { module_id: moduleId, version });
+    }
+    if (!metadata.readiness.developer_unsafe) {
+      const reportChecksums = await Promise.all([
+        fileChecksum(path.join(temporary, "validation-report.json")), fileChecksum(path.join(temporary, "module-test-report.json")), fileChecksum(path.join(temporary, "sandbox-report.json")),
+      ]).catch(() => null);
+      const test = await readJson<{ overall?: string; environment?: JsonObject } | null>(path.join(temporary, "module-test-report.json"), null);
+      const sandbox = await readJson<{ overall?: string; environment?: JsonObject } | null>(path.join(temporary, "sandbox-report.json"), null);
+      const packagedFixtureChecksum = await fixtureChecksum(temporary);
+      if (!reportChecksums || metadata.readiness.module_checksum !== contentChecksum || metadata.readiness.validation_report_checksum !== reportChecksums[0] || metadata.readiness.module_test_report_checksum !== reportChecksums[1] || metadata.readiness.sandbox_report_checksum !== reportChecksums[2] || metadata.readiness.fixture_checksum !== packagedFixtureChecksum || test?.overall !== "PASS" || sandbox?.overall !== "PASS" || test.environment?.module_checksum !== contentChecksum || sandbox?.environment?.module_checksum !== contentChecksum || test.environment?.fixture_checksum !== packagedFixtureChecksum || sandbox?.environment?.fixture_checksum !== packagedFixtureChecksum) {
+        throw new PkbError("MODULE_READINESS_STALE", "Package readiness evidence is missing or does not match packaged content.", { module_id: moduleId, version, readiness: metadata.readiness });
+      }
+    }
     const report = await validateModule(engineRoot, temporary);
     if (!report.beta_eligible) throw new PkbError("MODULE_QUALITY_GATE_FAILED", `${moduleId}@${version} is not Beta eligible.`, report);
     const lock = await loadLock(vaultRoot); const previous = lock.modules[moduleId] ?? null;

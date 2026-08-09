@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { compareApplicationUpdate } from "../application/compare.js";
-import { collectApplicationDashboardItems } from "../application/dashboard.js";
+import { collectModuleDashboardItems } from "../modules/dashboardProvider.js";
 import { applyReportToResearchRequest, createResearchRequest, researchRequestKey } from "../application/researchRequest.js";
 import { assertApplicationTransition } from "../application/stateMachine.js";
 import { writeMarkdown } from "../core/bridge.js";
@@ -115,14 +115,14 @@ test("an open Research Request replaces the overdue application action in Today"
     await fs.mkdir(path.dirname(requestPath), { recursive: true });
     writeMarkdown(vault, requestPath, { data: request, content: "# Research Request\n" });
 
-    const items = await collectApplicationDashboardItems(vault);
-    const project = items.find((item) => item.item_id.includes("PROJECT"));
-    const requestItem = items.find((item) => item.item_id.includes("REQUEST"));
+    const items = await collectModuleDashboardItems(vault, Date.parse("2026-07-30T00:00:00Z"));
+    const project = items.find((item) => item.item_id.includes("current-project"));
+    const requestItem = items.find((item) => item.item_id.includes("research-request"));
     assert.equal(project?.category, "status");
     assert.equal(project?.due_at, null);
-    assert.match(project?.description ?? "", /Research request: pending/);
-    assert.equal(requestItem?.title, "Monash University — Master of Information Technology 核验");
-    assert.match(requestItem?.description ?? "", /^Research pending:/);
+    assert.match(project?.description ?? "", /2000-01-01/);
+    assert.match(requestItem?.title ?? "", /REQ-2026-000001/);
+    assert.match(requestItem?.description ?? "", /application_open/);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

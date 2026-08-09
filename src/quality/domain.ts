@@ -93,6 +93,8 @@ export interface QualityPolicy extends JsonObject {
   critical_fields: string[];
   provenance_required: string[];
   freshness: JsonObject;
+  /** Entity-qualified rules emitted by Blueprint v1.1, e.g. assignment.deadline. */
+  field_policies: JsonObject | null;
   ownership: JsonObject;
   audits: string[];
   orphan_exempt_entity_types: string[];

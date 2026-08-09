@@ -32,6 +32,17 @@ function fieldMeta(data: JsonObject, field: string): JsonObject | null {
   if (!fact) return null;
   return { evidence_refs: Array.isArray(fact.source_refs) ? fact.source_refs : [], verification: { last_verified: fact.checked_at ?? null } };
 }
+function qualityFieldRules(policy: QualityPolicy, moduleId: string, entityType: string): Map<string, JsonObject> {
+  const rules = new Map<string, JsonObject>();
+  const entityId = entityType.startsWith(`${moduleId}-`) ? entityType.slice(moduleId.length + 1) : entityType;
+  const declared = object(policy.field_policies);
+  for (const [reference, raw] of Object.entries(declared ?? {})) {
+    const [entity, field] = reference.split(".", 2);
+    const config = object(raw);
+    if (entity === entityId && field && config) rules.set(field, config);
+  }
+  return rules;
+}
 function normalizeContent(value: string): string { return value.toLowerCase().replace(/<!--.*?-->/gs, "").replace(/\s+/g, " ").trim(); }
 function contentShingles(value: string): Set<string> { const compact = value.replace(/\s+/g, ""); const output = new Set<string>(); for (let index = 0; index <= compact.length - 5; index += 1) output.add(compact.slice(index, index + 5)); return output; }
 function jaccard(left: Set<string>, right: Set<string>): number { let intersection = 0; for (const value of left) if (right.has(value)) intersection += 1; const union = left.size + right.size - intersection; return union ? intersection / union : 0; }
@@ -168,14 +179,25 @@ async function auditDocuments(vaultRoot: string, frequency: AuditFrequency, modu
     }
     const requiredSchemaVersion = policy.schemaVersions.get(entityType) ?? policy.schemaVersion;
     if (Number(document.data.schema_version ?? 0) < requiredSchemaVersion) candidates.push({ issue_type: "outdated-schema", dimension: "validity", severity: "medium", module: moduleId, instance_id: instanceId, target: { path: relative }, evidence: { current: document.data.schema_version ?? null, required: requiredSchemaVersion, entity_type: entityType || null }, recommended_action: { type: "plan-migration" }, detector: "schema-version-auditor" });
-    for (const field of policy.policy.provenance_required ?? []) {
+    const declaredRules = qualityFieldRules(policy.policy, moduleId, entityType);
+    const provenanceFields = new Set([
+      ...(policy.policy.provenance_required ?? []),
+      ...[...declaredRules.entries()].filter(([, config]) => config.provenance === "required").map(([field]) => field),
+    ]);
+    const criticalFields = new Set([
+      ...(policy.policy.critical_fields ?? []),
+      ...[...declaredRules.entries()].filter(([, config]) => config.critical === true).map(([field]) => field),
+    ]);
+    for (const field of provenanceFields) {
       const value = fieldValue(document.data, field); if (value === undefined || value === null) continue;
       const meta = fieldMeta(document.data, field); const refs = meta?.evidence_refs;
-      if (!Array.isArray(refs) || refs.length === 0) candidates.push({ issue_type: "missing-provenance", dimension: "provenance", severity: (policy.policy.critical_fields ?? []).includes(field) ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: { value_present: true }, recommended_action: { type: "attach-evidence" }, detector: "missing-provenance-auditor" });
+      if (!Array.isArray(refs) || refs.length === 0) candidates.push({ issue_type: "missing-provenance", dimension: "provenance", severity: criticalFields.has(field) ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: { value_present: true }, recommended_action: { type: "attach-evidence" }, detector: "missing-provenance-auditor" });
     }
-    for (const [field, raw] of Object.entries(object(policy.policy.freshness) ?? {})) {
+    const freshnessRules = new Map<string, JsonObject>(Object.entries(object(policy.policy.freshness) ?? {}).map(([field, raw]) => [field, object(raw) ?? {}]));
+    for (const [field, config] of declaredRules) if (typeof config.verification_interval_days === "number") freshnessRules.set(field, { interval_days: config.verification_interval_days });
+    for (const [field, configured] of freshnessRules) {
       const value = fieldValue(document.data, field); if (value === undefined || value === null) continue;
-      const meta = fieldMeta(document.data, field); const verification = object(meta?.verification); const configured = object(raw);
+      const meta = fieldMeta(document.data, field); const verification = object(meta?.verification);
       const interval = resolveVerificationInterval({ field: Number(configured?.interval_days) || null, module: Number(policy.policy.default_verification_interval_days) || null });
       const freshness = evaluateFreshness({ lastVerified: typeof verification?.last_verified === "string" ? verification.last_verified : typeof meta?.checked_at === "string" ? meta.checked_at : null, intervalDays: interval, now: new Date(now) });
       if (["stale", "due-soon"].includes(freshness.verification_status)) candidates.push({ issue_type: freshness.stale ? "stale-critical-field" : "due-soon-field", dimension: "freshness", severity: freshness.stale ? "high" : "medium", module: moduleId, instance_id: instanceId, target: { path: relative, entity_ref: relative, field }, evidence: freshness, recommended_action: { type: moduleId === "application-tracker" ? "create-research-request" : "verify-field" }, detector: "stale-field-auditor" });

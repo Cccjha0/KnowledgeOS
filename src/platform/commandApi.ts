@@ -40,6 +40,7 @@ import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { analyzeGuidedModuleRequirement } from "../modules/guidedBuilder.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -279,6 +280,17 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   const { vaultRoot, requestId, method, params } = context;
   const obsidianOpenPaths = Array.isArray(params.obsidian_open_paths) ? params.obsidian_open_paths : null;
   if (obsidianOpenPaths !== null) await syncObsidianOpenFiles(vaultRoot, obsidianOpenPaths);
+  if (method === "analyzeModuleRequirement") {
+    const brief = stringParam(params, "brief");
+    const analysis = await analyzeGuidedModuleRequirement({
+      brief,
+      codexModel: typeof params.codex_model === "string" ? params.codex_model : undefined,
+      codexReasoningEffort: typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
+    });
+    if (!analysis.proposed_blueprint) return analysis;
+    const preview = await withTemporaryBlueprint(vaultRoot, requestId, analysis.proposed_blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
+    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate } } as unknown as JsonValue;
+  }
   if (method === "previewModuleBlueprint") {
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");

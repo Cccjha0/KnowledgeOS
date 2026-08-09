@@ -12,7 +12,10 @@
     "inbox_path",
     "created",
     "updated",
-    "timezone"
+    "timezone",
+    "course_code",
+    "course_name",
+    "semester"
   ],
   "properties": {
     "instance_id": {
@@ -49,6 +52,21 @@
       "format": "date-time"
     },
     "timezone": {
+      "type": "string"
+    },
+    "course_code": {
+      "type": "string",
+      "minLength": 1
+    },
+    "course_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semester": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instructor": {
       "type": "string"
     }
   }

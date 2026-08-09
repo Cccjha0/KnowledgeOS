@@ -42,6 +42,7 @@ import {
 } from "../core/reviews.js";
 import { QualityRepository } from "../quality/repository.js";
 import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
+import { RuntimeRepository } from "../runtime/repository.js";
 
 const SCHEMAS = {
   decision: "https://pkb.local/schemas/core/review-decision.schema.json",
@@ -345,6 +346,82 @@ function withDecision(item: ReviewItem, decision: ReviewDecision, status: Review
   };
 }
 
+function moduleOperationPlanId(item: ReviewItem): string {
+  const planId = proposedObject(item).operation_plan_id;
+  if (typeof planId !== "string" || !/^PLAN-\d{4}-\d+$/.test(planId)) throw new PkbError("INVALID_REVIEW", "Module operation Review is missing its Operation Plan reference.", item.review_id);
+  return planId;
+}
+
+function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonValue): void {
+  if (!modifiedValue || typeof modifiedValue !== "object" || Array.isArray(modifiedValue)) throw new PkbError("INVALID_MODIFIED_VALUE", "A module-operation Review modification must be a record object.");
+  const replacement = structuredClone(modifiedValue) as JsonObject;
+  for (const operation of plan.operations) {
+    if (operation.type === "create-file") {
+      const document = operation.payload.document;
+      if (!document || typeof document !== "object" || Array.isArray(document)) throw new PkbError("INVALID_REVIEW_PLAN", "Module create operation has no document payload.");
+      (document as JsonObject).data = replacement;
+    } else if (operation.type === "update-frontmatter") {
+      operation.payload.patch = replacement;
+      operation.payload.replace_top_level = Object.keys(replacement);
+    }
+  }
+}
+
+async function finishOriginTask(vaultRoot: string, item: ReviewItem, completionReason: string): Promise<void> {
+  if (!item.origin_task_id) return;
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try {
+    if (repository.getTask(item.origin_task_id)?.status === "waiting-for-user") {
+      repository.transitionTask(item.origin_task_id, "completed", { completionReason });
+    }
+  } finally { repository.close(); }
+}
+
+async function decideModuleOperationReview(
+  vaultRoot: string,
+  located: LocatedReview,
+  decision: ReviewDecision,
+): Promise<ReviewActionResult> {
+  const planId = moduleOperationPlanId(located.item);
+  const planPath = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
+  const plan = await readJson<OperationPlan | null>(planPath, null);
+  if (!plan || plan.source_module !== located.item.source_module || plan.task_id !== located.item.origin_task_id) {
+    throw new PkbError("INVALID_REVIEW_PLAN", "Module operation Review does not reference its originating Operation Plan.", located.item.review_id);
+  }
+  if (decision.decision === "reject") {
+    const item = withDecision(located.item, decision, "rejected", "User rejected the module Operation Plan; no file was changed.");
+    const reviewPath = await persistReviewItem(vaultRoot, located, item);
+    await recordReviewOutcome(vaultRoot, item, decision, null);
+    await finishOriginTask(vaultRoot, item, "workflow-review-rejected");
+    const todayPath = await rebuildTodayDashboard(vaultRoot);
+    return { status: item.status, reviewId: item.review_id, runId: null, planPath: toVaultPath(vaultRoot, planPath), snapshot: null, reviewPath: toVaultPath(vaultRoot, reviewPath), todayPath: toVaultPath(vaultRoot, todayPath) };
+  }
+  if (decision.decision === "approve-with-modification") applyModuleReviewModification(plan, decision.modified_value);
+  const runId = await allocateId(vaultRoot, "RUN");
+  const snapshot = await createGitSnapshot(vaultRoot, runId);
+  await writeJsonAtomic(planPath, plan);
+  try {
+    await executeOperationPlan(vaultRoot, plan, {
+      allowedTypes: [...new Set(plan.operations.map((operation) => operation.type))],
+      allowedTargets: plan.operations.map((operation) => operation.target).filter((target): target is string => Boolean(target)),
+      requiredReviewId: located.item.review_id, gitSnapshot: snapshot,
+    });
+    const status: ReviewStatus = decision.decision === "approve" ? "approved" : "approved-with-modification";
+    const item = withDecision(located.item, decision, status, `Reviewed module Operation Plan ${planId} executed.`);
+    const reviewPath = await persistReviewItem(vaultRoot, located, item);
+    await writeReviewRunLog(vaultRoot, runId, item, decision, plan, snapshot);
+    await recordReviewOutcome(vaultRoot, item, decision, runId);
+    await finishOriginTask(vaultRoot, item, "workflow-review-approved");
+    const todayPath = await rebuildTodayDashboard(vaultRoot);
+    return { status, reviewId: item.review_id, runId, planPath: toVaultPath(vaultRoot, planPath), snapshot, reviewPath: toVaultPath(vaultRoot, reviewPath), todayPath: toVaultPath(vaultRoot, todayPath) };
+  } catch (error) {
+    const item = withDecision(located.item, decision, "error", `Module Operation Plan failed: ${error instanceof Error ? error.message : String(error)}`);
+    await persistReviewItem(vaultRoot, located, item);
+    await rebuildTodayDashboard(vaultRoot);
+    throw error;
+  }
+}
+
 async function recordReviewOutcome(vaultRoot: string, item: ReviewItem, decision: ReviewDecision, runId: string | null): Promise<void> {
   const repository = await QualityRepository.open(vaultRoot);
   try {
@@ -418,6 +495,10 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
       reviewPath: toVaultPath(vaultRoot, reviewPath),
       todayPath: toVaultPath(vaultRoot, todayPath),
     };
+  }
+
+  if (located.item.action === "module-operation") {
+    return decideModuleOperationReview(vaultRoot, located, decision);
   }
 
   const targetPath = targetAbsolute(vaultRoot, located.item);
