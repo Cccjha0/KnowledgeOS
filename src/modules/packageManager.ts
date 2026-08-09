@@ -12,6 +12,7 @@ import type { ModuleLockEntry, ModuleValidationReport } from "./types.js";
 import { validateModule } from "./validator.js";
 import { discoverModules } from "../core/discovery.js";
 import { engineProvenance, fileChecksum, fixtureChecksum, moduleContentChecksum } from "./readinessEvidence.js";
+import { diffPermissionRisk, type PermissionRiskChange } from "./permissionRiskDiff.js";
 
 interface BridgeResult { ok: boolean; sha256?: string; files?: number; message?: string; }
 interface ModuleLock { schema_version: 1; modules: Record<string, ModuleLockEntry>; }
@@ -121,12 +122,21 @@ export async function packModule(engineRoot: string, moduleId: string, outputPat
 
 async function loadLock(vaultRoot: string): Promise<ModuleLock> { return readJson(path.join(vaultRoot, "90-System", "Modules", "module-lock.json"), { schema_version: 1, modules: {} }); }
 
-function enabledPermission(value: JsonObject, key: "network" | "delete" | "cross_module_write"): boolean { return value[key] === true; }
-
 async function installedManifest(vaultRoot: string, entry: ModuleLockEntry | null): Promise<JsonObject | null> {
   if (!entry) return null;
   const root = path.join(vaultRoot, ...entry.installed_path.split("/"));
   return await exists(path.join(root, "module.yaml")) ? parseYaml(root, path.join(root, "module.yaml")) : null;
+}
+
+async function moduleReviewPolicy(root: string | null): Promise<JsonObject> {
+  if (!root) return {};
+  const reviewPath = path.join(root, "rules", "review-policy.yaml");
+  return await exists(reviewPath) ? parseYaml(root, reviewPath) : {};
+}
+
+async function installedReviewPolicy(vaultRoot: string, entry: ModuleLockEntry | null): Promise<JsonObject> {
+  if (!entry) return {};
+  return moduleReviewPolicy(path.join(vaultRoot, ...entry.installed_path.split("/")));
 }
 
 export async function installModulePackage(engineRoot: string, vaultRoot: string, packagePath: string, options: { enable?: boolean; upgrade?: boolean; confirmBreaking?: boolean; developerUnsafe?: boolean } = {}): Promise<JsonObject> {
@@ -162,12 +172,13 @@ export async function installModulePackage(engineRoot: string, vaultRoot: string
     if (!report.beta_eligible) throw new PkbError("MODULE_QUALITY_GATE_FAILED", `${moduleId}@${version} is not Beta eligible.`, report);
     const lock = await loadLock(vaultRoot); const previous = lock.modules[moduleId] ?? null;
     if (previous && !options.upgrade && previous.version !== version) throw new PkbError("MODULE_ALREADY_INSTALLED", `${moduleId}@${previous.version} is already installed; use upgrade.`);
-    const permissions = manifest.permissions as JsonObject;
-    const oldPermissions = ((await installedManifest(vaultRoot, previous))?.permissions as JsonObject | undefined) ?? {};
-    const expandedPermissions = (["network", "delete", "cross_module_write"] as const)
-      .filter((key) => previous && enabledPermission(permissions, key) && !enabledPermission(oldPermissions, key));
-    if (expandedPermissions.length && options.confirmBreaking !== true) {
-      throw new PkbError("MODULE_UPGRADE_CONFIRMATION_REQUIRED", "Permission-expanding upgrades require explicit approval.", { module_id: moduleId, version, expanded_permissions: expandedPermissions });
+    const oldManifest = (await installedManifest(vaultRoot, previous)) ?? {};
+    const riskChanges: PermissionRiskChange[] = previous
+      ? diffPermissionRisk(oldManifest, manifest, await installedReviewPolicy(vaultRoot, previous), await moduleReviewPolicy(temporary))
+      : [];
+    const expandedPermissions = riskChanges.map((risk) => risk.id);
+    if (riskChanges.length && options.confirmBreaking !== true) {
+      throw new PkbError("MODULE_UPGRADE_CONFIRMATION_REQUIRED", "Permission- or risk-expanding upgrades require explicit approval.", { module_id: moduleId, version, expanded_permissions: expandedPermissions, risk_changes: riskChanges });
     }
     const snapshot = await createGitSnapshot(vaultRoot, `module-install-${moduleId}-${version}`);
     const destination = path.join(vaultRoot, "90-System", "Modules", "Installed", moduleId, version);
@@ -183,7 +194,7 @@ export async function installModulePackage(engineRoot: string, vaultRoot: string
     const modules = (installed.modules ?? []).filter((entry) => entry.id !== moduleId);
     modules.push({ id: moduleId, version, installed_path: lock.modules[moduleId]!.installed_path, status: options.enable === false ? "disabled" : "enabled", checksum: lock.modules[moduleId]!.checksum });
     await writeJsonAtomic(installedFile, { schema_version: 1, modules: modules.sort((a, b) => String(a.id).localeCompare(String(b.id))) });
-    return { status: previous ? "upgraded" : "installed", module_id: moduleId, version, previous_version: previous?.version ?? null, snapshot, checksum: lock.modules[moduleId]!.checksum, content_checksum: metadata.content_checksum, expanded_permissions: expandedPermissions, validation: report.overall };
+    return { status: previous ? "upgraded" : "installed", module_id: moduleId, version, previous_version: previous?.version ?? null, snapshot, checksum: lock.modules[moduleId]!.checksum, content_checksum: metadata.content_checksum, expanded_permissions: expandedPermissions, risk_changes: riskChanges, validation: report.overall };
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 

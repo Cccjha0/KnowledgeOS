@@ -22,6 +22,7 @@ import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
 import { runModuleSandbox } from "../modules/sandbox.js";
 import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
+import { diffPermissionRisk } from "../modules/permissionRiskDiff.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const { buildQuickBlueprint } = createRequire(import.meta.url)(path.join(SOURCE_ROOT, "plugins", "knowledgeos-obsidian", "views", "module-builder-modal.js")) as {
@@ -260,6 +261,24 @@ test("Core security gate derives, binds, and enforces Blueprint approvals", asyn
     assert.equal(stale.ok, false);
     assert.equal(stale.error?.code, "BLUEPRINT_APPROVAL_STALE");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Permission/Risk Diff Engine detects every privilege expansion from one shared contract", () => {
+  const previous: JsonObject = {
+    permissions: { network: false, delete: false, cross_module_write: false, global_event_subscription: false, max_sensitivity_class: 1 },
+    inbox: { asset_access_policy: { sensitivity_class: 1, max_representation: "summary" }, asset_roles: { private: { allow_codex: false, asset_access_policy: { sensitivity_class: 1, max_representation: "summary" } } } },
+    events: { subscribes: [{ event: "record.changed", scope: "instance" }] },
+  };
+  const next: JsonObject = {
+    permissions: { network: true, delete: true, cross_module_write: true, global_event_subscription: true, max_sensitivity_class: 3 },
+    inbox: { asset_access_policy: { sensitivity_class: 3, max_representation: "sensitive-original" }, asset_roles: { private: { allow_codex: true, asset_access_policy: { sensitivity_class: 3, max_representation: "sensitive-original" } } } },
+    events: { subscribes: [{ event: "record.changed", scope: "global" }] },
+  };
+  const changes = diffPermissionRisk(previous, next, { destructive_operations: "forbidden" }, { destructive_operations: "allowed" });
+  assert.deepEqual(changes.map((item) => item.id), [
+    "network-access", "delete", "cross-module-write", "global-event-subscription", "max-sensitivity-class", "representation-range", "role-codex:private", "destructive-policy",
+  ]);
+  assert.equal(changes.filter((item) => item.severity === "critical").length >= 4, true);
 });
 
 test("Module workspace readiness keeps a scaffold separate from validation and installation", async () => {

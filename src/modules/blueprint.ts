@@ -8,6 +8,7 @@ import { exists } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import { createModuleScaffold } from "./scaffold.js";
 import { loadModuleBuilderRegistry } from "./platformContract.js";
+import { creationPermissionRisks } from "./permissionRiskDiff.js";
 import type { ModuleTemplate } from "./types.js";
 
 const BLUEPRINT_SCHEMA = "https://pkb.local/schemas/core/module-blueprint.schema.json";
@@ -33,7 +34,7 @@ export interface BlueprintValidationReport extends JsonObject {
 }
 
 export interface BlueprintApprovalRequirement extends JsonObject {
-  id: "network-access" | "sensitive-full-read" | "mutable-user-original" | "global-event-subscription" | "destructive-operation" | "critical-fields";
+  id: string;
   title: string;
   impact: string;
 }
@@ -149,14 +150,13 @@ export function deriveBlueprintApproval(blueprint: JsonObject): BlueprintApprova
     const policy = object(raw) ?? {};
     return Number(policy.sensitivity_class) >= 2 && representationRank(String(policy.max_representation ?? "metadata")) >= representationRank("full");
   }) || Number(privacy.default_sensitivity_class) >= 2 && representationRank(String(privacy.default_max_representation ?? "metadata")) >= representationRank("full");
-  const hasGlobalSubscription = subscriptionObjects(events.subscribes).some((subscription) => subscription.scope === "global")
-    || (Array.isArray(blueprint.jobs) && blueprint.jobs.some((job) => object(job)?.subscription_scope === "global"));
+  const risks = creationPermissionRisks(blueprint, reviewPolicy);
   const requirements: BlueprintApprovalRequirement[] = [];
-  if (privacy.network_allowed === true || workflows.some((workflow) => workflow.requires_network === true)) requirements.push(approvalRequirement("network-access", "Allow network access", "This module may contact external services while processing its declared workflows."));
+  if (risks.some((risk) => risk.id === "network-access") || workflows.some((workflow) => workflow.requires_network === true)) requirements.push(approvalRequirement("network-access", "Allow network access", "This module may contact external services while processing its declared workflows."));
   if (sensitiveFullRead) requirements.push(approvalRequirement("sensitive-full-read", "Allow sensitive full-text access", "One or more input roles may provide sensitive content in full to a workflow or Codex."));
   if (privacy.user_original_content_mutable === true) requirements.push(approvalRequirement("mutable-user-original", "Allow editing user original content", "A workflow may modify content owned directly by the user."));
-  if (hasGlobalSubscription) requirements.push(approvalRequirement("global-event-subscription", "Allow global event subscriptions", "This module may receive explicitly declared events from other modules or instances."));
-  if (reviewPolicy.destructive_operations === "review-required") requirements.push(approvalRequirement("destructive-operation", "Allow review-gated destructive operations", "The Blueprint permits destructive behavior after a separate review decision."));
+  if (risks.some((risk) => risk.id === "global-event-subscription")) requirements.push(approvalRequirement("global-event-subscription", "Allow global event subscriptions", "This module may receive explicitly declared events from other modules or instances."));
+  if (risks.some((risk) => risk.id === "destructive-policy")) requirements.push(approvalRequirement("destructive-operation", "Allow review-gated destructive operations", "The Blueprint permits destructive behavior after a separate review decision."));
   if (strings(reviewPolicy.critical_fields).length > 0 || entityCriticalFields) requirements.push(approvalRequirement("critical-fields", "Accept critical field policy", "Declared critical fields will be protected by the module Review Policy and Quality checks."));
   return { blueprint_hash: createHash("sha256").update(canonicalJson(blueprint), "utf8").digest("hex"), requirements };
 }
