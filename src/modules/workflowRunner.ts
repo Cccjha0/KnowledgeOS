@@ -8,7 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import { authorizedEvidenceSources, criticalFieldsMissingEvidence, fieldQualityContracts, materializeFieldProvenance, parseEvidenceSelections, selectedEvidenceRefs, type FieldEvidenceSelections } from "../quality/fieldProvenance.js";
+import { authorizedEvidenceSources, fieldsMissingRequiredEvidence, fieldQualityContracts, materializeFieldProvenance, parseEvidenceSelections, selectedEvidenceRefs, type EvidenceLocator, type FieldEvidenceSelections } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -53,6 +53,8 @@ interface DocumentInput extends JsonObject {
   sensitivity_class: SensitivityClass;
   max_representation: RepresentationLevel;
   policy_source: DocumentAccessPolicy["policy_source"];
+  /** Exact locations Core can substantiate for this admitted document. */
+  evidence_locators: EvidenceLocator[];
 }
 
 interface WorkflowState {
@@ -362,7 +364,31 @@ function assertDocumentReadable(state: WorkflowState, sourcePath: string, reques
   }
 }
 
-function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: RepresentationLevel; policy: DocumentAccessPolicy & { sensitivity_class: SensitivityClass } }): DocumentInput {
+function markdownEvidenceLocators(content: string, representation: RepresentationLevel): EvidenceLocator[] {
+  if (representation === "metadata" || representation === "summary") return [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+  const headings = [...content.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)].map((match, index) => ({
+    locator_id: `LOC-HEADING-${String(index + 1).padStart(3, "0")}`,
+    locator: { section: match[1]!.trim() },
+  }));
+  return headings.length ? headings : [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+}
+
+function extractionEvidenceLocators(format: string | null, extraction: { page_text?: Array<{ page: number }>; slide_text?: Array<{ slide: number }> }, representation: RepresentationLevel): EvidenceLocator[] {
+  if (representation === "metadata" || representation === "summary") return [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+  if (format === "pdf") {
+    const pages = (extraction.page_text ?? []).filter((entry) => Number.isInteger(entry.page) && entry.page > 0)
+      .map((entry) => ({ locator_id: `LOC-PAGE-${String(entry.page).padStart(4, "0")}`, locator: { page: entry.page } }));
+    return pages.length ? pages : [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+  }
+  if (format === "pptx") {
+    const slides = (extraction.slide_text ?? []).filter((entry) => Number.isInteger(entry.slide) && entry.slide > 0)
+      .map((entry) => ({ locator_id: `LOC-SLIDE-${String(entry.slide).padStart(4, "0")}`, locator: { slide: entry.slide } }));
+    return slides.length ? slides : [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+  }
+  return [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+}
+
+function materializeDocument(input: { path: string; data: JsonObject; content: string; format: string | null; requested: RepresentationLevel; policy: DocumentAccessPolicy & { sensitivity_class: SensitivityClass }; evidenceLocators?: EvidenceLocator[] }): DocumentInput {
   return {
     path: input.path,
     data: input.data,
@@ -373,6 +399,7 @@ function materializeDocument(input: { path: string; data: JsonObject; content: s
     sensitivity_class: input.policy.sensitivity_class,
     max_representation: input.policy.max_representation,
     policy_source: input.policy.policy_source,
+    evidence_locators: input.evidenceLocators ?? markdownEvidenceLocators(input.content, input.requested),
   };
 }
 
@@ -411,7 +438,7 @@ async function sourceDocument(vaultRoot: string, state: WorkflowState, task: Par
     const extraction = await readExtractionCache(vaultRoot, envelope);
     state.sourceFiles.add(normalized); state.sourceFiles.add(envelope.sidecar_path);
     state.sourceFiles.add(envelope.extraction_cache_path);
-    return materializeDocument({ path: normalized, data: extraction.structured_data ?? {}, content: extraction.extracted_text, format: envelope.format, requested, policy });
+    return materializeDocument({ path: normalized, data: extraction.structured_data ?? {}, content: extraction.extracted_text, format: envelope.format, requested, policy, evidenceLocators: extractionEvidenceLocators(envelope.format, extraction, requested) });
   }
   const document = parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, normalized));
   const policy = resolveDocumentAccessPolicy(document.data);
@@ -528,12 +555,16 @@ function authorizedSourceRefs(state: WorkflowState): string[] {
   return [...new Set(approvedDocuments(state).map((document) => document.path))];
 }
 
+function authorizedEvidenceSourcesForState(state: WorkflowState) {
+  return authorizedEvidenceSources(approvedDocuments(state).map((document) => ({ source_ref: document.path, locators: document.evidence_locators })));
+}
+
 /** `_field_meta` and source_refs are Core-managed output. A model may describe
  * facts, but it cannot manufacture an evidence chain or claim it read a file. */
 function coreManagedOutput(output: JsonObject, state: WorkflowState): { output: JsonObject; evidenceSelections: FieldEvidenceSelections } {
   const managed = structuredClone(output);
   delete managed._field_meta;
-  const evidenceSelections = parseEvidenceSelections(managed._evidence_selection, authorizedEvidenceSources(authorizedSourceRefs(state)));
+  const evidenceSelections = parseEvidenceSelections(managed._evidence_selection, authorizedEvidenceSourcesForState(state));
   delete managed._evidence_selection;
   // `source_refs` is not a universal output field. Research reports, for
   // example, use a structured `sources` array, while some summaries deliberately
@@ -571,6 +602,7 @@ function criticalUpdateReviewRequirements(
     .map(([field]) => ({
       field: `${entityId}.${field}`,
       condition: "critical-field-update",
+      priority: "high",
       current_value: current[field] ?? null,
       reason: `Core protection: ${entityId}.${field} is a Critical Field and requires user approval.`,
     }));
@@ -613,13 +645,13 @@ function contextBudget(workflow: JsonObject): CodexContextBudget {
 
 async function createPromptContext(state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], promptText: string): Promise<ReturnType<typeof createCodexContextWorkspace>> {
   const documents = approvedDocuments(state);
-  const evidenceSources = authorizedEvidenceSources(documents.map((document) => document.path));
+  const evidenceSources = authorizedEvidenceSources(documents.map((document) => ({ source_ref: document.path, locators: document.evidence_locators })));
   const sourceIdFor = (document: DocumentInput): string => evidenceSources.find((source) => source.source_ref === document.path)?.source_id ?? "SRC-RUNTIME-INPUT";
   const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
     : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
   const primary = (sourcePath ? documents.find((document) => document.path === sourcePath) : undefined) ?? documents[0] ?? {
     path: "runtime-input.md", data: {}, content: "# Workflow input\n\nNo document body was supplied. Use the instance and runtime context only.\n", format: null,
-    representation: "metadata", requested_representation: "metadata", sensitivity_class: 0, max_representation: "metadata", policy_source: "default",
+    representation: "metadata", requested_representation: "metadata", sensitivity_class: 0, max_representation: "metadata", policy_source: "default", evidence_locators: [{ locator_id: "LOC-DOCUMENT", locator: {} }],
   } satisfies DocumentInput;
   const related = documents.filter((document) => document.path !== primary.path);
   const context = await createCodexContextWorkspace({
@@ -634,8 +666,8 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
       approved_input_files: [primary.path, ...related.map((document) => document.path)],
       evidence_selection_contract: {
         output_field: "_evidence_selection",
-        format: { field_name: [{ source_id: "SRC-…", locator: { page: 3, section: "Optional heading" } }] },
-        allowed_sources: evidenceSources.map((source) => ({ source_id: source.source_id, allowed_locator_keys: ["page", "pages", "slide", "slides", "section", "anchor", "excerpt_ref", "line_start", "line_end"] })),
+        format: { field_name: [{ source_id: "SRC-…", locator_id: "LOC-PAGE-0003" }] },
+        allowed_sources: evidenceSources.map((source) => ({ source_id: source.source_id, locators: source.locators.map((locator) => ({ locator_id: locator.locator_id, locator: locator.locator })) })),
       },
       pdf_inputs: [...state.pdfDecisions.values()],
     },
@@ -686,7 +718,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const sourceFile = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
           : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
         const result = await definition.execute({
-          vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
+          vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"), manifest: resolved.manifest,
           instance: resolved.instance, with: fixedValue(step.with, state, task) as JsonObject, sourceFile, getValue: (key) => state.values.get(key),
           allocateId: (prefix) => allocateId(vaultRoot, prefix),
         });
@@ -731,7 +763,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           const request = [
             "Read global-rules.md, module-prompt.md, instance-context.yaml, runtime-context.json, primary-input.md, and any files in related/ before answering.",
             "Only those files are authorized input. Return only the structured JSON required by module-prompt.md.",
-            "When you can identify support for an output field, include the reserved _evidence_selection object using only source_id values listed in runtime-context.json. Never include a file path or invent a source ID. Critical fields without a selected source will be sent for user Review.",
+            "When you can identify support for an output field, include the reserved _evidence_selection object using only the source_id and Core-issued locator_id pairs listed in runtime-context.json. Never include a file path, raw locator, or invented ID. Fields requiring provenance without a selected source location will be sent for user Review.",
             repair_format ? "Repair the previous result format and return JSON that conforms to the declared schema." : "",
           ].filter(Boolean).join("\n");
           let result: Awaited<ReturnType<CodexJsonExecutor>>;
@@ -847,13 +879,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const entityId = typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema);
         const planData = operationMode === "update-record" ? coreManagedUpdatePatch(output) : output;
         const currentData = operationMode === "update-record" ? parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, target)).data : {};
+        const qualityContracts = fieldQualityContracts(resolved.moduleRoot, resolved.manifest, entityId);
         const reviewRequirements = uniqueReviewRequirements([
           ...pendingReviewRequirements(state),
           ...(operationMode === "update-record" ? criticalUpdateReviewRequirements(resolved.moduleRoot, resolved.manifest, entityId, planData, currentData) : []),
-          ...criticalFieldsMissingEvidence(resolved.moduleRoot, resolved.manifest, entityId, planData, evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))).map((field) => ({
+          ...fieldsMissingRequiredEvidence(resolved.moduleRoot, resolved.manifest, entityId, planData, evidenceSelections, authorizedEvidenceSourcesForState(state)).map((field) => ({
             field: `${entityId}.${field}`,
-            condition: "missing-evidence-selection",
-            reason: `Core protection: Critical Field ${entityId}.${field} has no selected supporting evidence from this Workflow's authorized inputs.`,
+            condition: "missing-required-evidence",
+            priority: qualityContracts.get(field)?.critical === true ? "high" : "medium",
+            reason: `Core protection: ${entityId}.${field} requires selected supporting evidence from this Workflow's authorized inputs.`,
           })),
         ]);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
@@ -866,7 +900,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             entityId,
             target,
             output: planData,
-            authorizedSources: authorizedEvidenceSources(authorizedSourceRefs(state)),
+            authorizedSources: authorizedEvidenceSourcesForState(state),
             evidenceSelections,
             runId,
             generation: generated,
@@ -896,9 +930,9 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
               field: String(primary.field ?? "record"), old_value: primary.current_value ?? null, new_value: output,
               operation_plan_id: planId, matching_rules: reviewRequirements, evidence_selection: evidenceSelections as unknown as JsonObject,
             }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
-            priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
+            priority: reviewRequirements.some((item) => item.condition === "conflicting" || item.priority === "high") ? "high" : "medium",
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
-            evidence: selectedEvidenceRefs(evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            evidence: selectedEvidenceRefs(evidenceSelections, authorizedEvidenceSourcesForState(state)), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,
             ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
             ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),

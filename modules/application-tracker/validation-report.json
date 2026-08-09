@@ -3,7 +3,7 @@
   "module_id": "application-tracker",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-09T10:58:39.357Z",
+  "generated_at": "2026-08-09T15:25:15.474Z",
   "checks": [
     {
       "category": "manifest",
@@ -286,6 +286,38 @@
       "path": "dashboard/today-provider.yaml"
     },
     {
+      "category": "contracts",
+      "code": "RESEARCH_REQUEST_SCHEMAS_VALID",
+      "status": "pass",
+      "message": "Research Request Contract record/request schemas are registered.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "RESEARCH_RECONCILIATION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "application-deterministic is installed.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "schema",
+      "code": "QUALITY_POLICY_VALID",
+      "status": "pass",
+      "message": "rules/quality-policy.yaml satisfies Quality Policy v1.",
+      "critical": false,
+      "path": "rules/quality-policy.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "QUALITY_STALE_ACTIONS_VALID",
+      "status": "pass",
+      "message": "Quality stale actions reference registered Workflows and valid dedupe targets.",
+      "critical": false,
+      "path": "rules/quality-policy.yaml"
+    },
+    {
       "category": "events",
       "code": "EVENT_CONTRACTS_VALID",
       "status": "pass",
@@ -407,7 +439,7 @@
     }
   ],
   "counts": {
-    "pass": 37,
+    "pass": 41,
     "warning": 13,
     "fail": 0,
     "critical": 0

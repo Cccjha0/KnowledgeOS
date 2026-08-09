@@ -24,32 +24,63 @@ export interface FieldQualityContract {
 export interface AuthorizedEvidenceSource {
   source_id: string;
   source_ref: string;
+  /** Locators are issued by Core from the exact material admitted to Context. */
+  locators: EvidenceLocator[];
+}
+
+export interface EvidenceLocator extends JsonObject {
+  locator_id: string;
+  locator: JsonObject;
 }
 
 export interface EvidenceSelection extends JsonObject {
   source_id: string;
+  locator_id: string;
   locator: JsonObject;
 }
 
 export type FieldEvidenceSelections = Record<string, EvidenceSelection[]>;
 
-const LOCATOR_KEYS = new Set(["page", "pages", "slide", "slides", "section", "anchor", "excerpt_ref", "line_start", "line_end"]);
+export interface EvidenceSourceInput {
+  source_ref: string;
+  locators?: EvidenceLocator[];
+}
 
 export function evidenceSourceId(sourceRef: string): string {
   return `SRC-${createHash("sha256").update(sourceRef, "utf8").digest("hex").slice(0, 12).toUpperCase()}`;
 }
 
-export function authorizedEvidenceSources(sourceRefs: string[]): AuthorizedEvidenceSource[] {
-  return strings(sourceRefs).sort((left, right) => left.localeCompare(right)).map((sourceRef) => ({ source_id: evidenceSourceId(sourceRef), source_ref: sourceRef }));
+function normalizedLocators(locators: EvidenceLocator[] | undefined): EvidenceLocator[] {
+  const source = Array.isArray(locators) && locators.length ? locators : [{ locator_id: "LOC-DOCUMENT", locator: {} }];
+  const seen = new Set<string>();
+  return source.map((entry) => {
+    const locatorId = typeof entry?.locator_id === "string" ? entry.locator_id.trim() : "";
+    const locator = object(entry?.locator);
+    if (!locatorId || !locator) throw new Error("Core-issued evidence locators require locator_id and locator.");
+    if (seen.has(locatorId)) throw new Error(`Duplicate Core-issued evidence locator ${locatorId}.`);
+    seen.add(locatorId);
+    return { locator_id: locatorId, locator: structuredClone(locator) };
+  });
+}
+
+/** Builds the immutable source/locator catalog that a model may choose from. */
+export function authorizedEvidenceSources(inputs: Array<string | EvidenceSourceInput>): AuthorizedEvidenceSource[] {
+  const bySource = new Map<string, EvidenceLocator[]>();
+  for (const input of inputs) {
+    const sourceRef = typeof input === "string" ? input.trim() : typeof input?.source_ref === "string" ? input.source_ref.trim() : "";
+    if (!sourceRef || bySource.has(sourceRef)) continue;
+    bySource.set(sourceRef, normalizedLocators(typeof input === "string" ? undefined : input.locators));
+  }
+  return [...bySource.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([sourceRef, locators]) => ({ source_id: evidenceSourceId(sourceRef), source_ref: sourceRef, locators }));
 }
 
 /** Parses the model's evidence proposal. It deliberately accepts source IDs
- * only; Core resolves them against the exact, audited context inputs. */
-export function parseEvidenceSelections(value: unknown, sources: AuthorizedEvidenceSource[]): FieldEvidenceSelections {
+ * plus Core-issued locator IDs; Core resolves both against the audited Context. */
+export function parseEvidenceSelections(value: unknown, sources: AuthorizedEvidenceSource[], options: { allowLegacyLocator?: boolean } = {}): FieldEvidenceSelections {
   if (value === undefined) return {};
   const raw = object(value);
   if (!raw) throw new Error("_evidence_selection must be an object keyed by output field.");
-  const allowed = new Set(sources.map((source) => source.source_id));
+  const allowed = new Map(sources.map((source) => [source.source_id, source]));
   const result: FieldEvidenceSelections = {};
   for (const [field, rawSelections] of Object.entries(raw)) {
     if (!field.trim() || !Array.isArray(rawSelections)) throw new Error(`_evidence_selection.${field} must be an array.`);
@@ -57,10 +88,22 @@ export function parseEvidenceSelections(value: unknown, sources: AuthorizedEvide
     for (const rawSelection of rawSelections) {
       const selection = object(rawSelection);
       const sourceId = typeof selection?.source_id === "string" ? selection.source_id.trim() : "";
-      if (!sourceId || !allowed.has(sourceId)) throw new Error(`_evidence_selection.${field} references an input that Core did not authorize.`);
-      const locator = selection?.locator === undefined ? {} : object(selection.locator);
-      if (!locator || Object.keys(locator).some((key) => !LOCATOR_KEYS.has(key))) throw new Error(`_evidence_selection.${field} has an unsupported locator.`);
-      selections.push({ source_id: sourceId, locator: structuredClone(locator) });
+      const source = allowed.get(sourceId);
+      if (!sourceId || !source) throw new Error(`_evidence_selection.${field} references an input that Core did not authorize.`);
+      const locatorId = typeof selection?.locator_id === "string" ? selection.locator_id.trim() : "";
+      const issued = locatorId ? source.locators.find((locator) => locator.locator_id === locatorId) : undefined;
+      if (issued) {
+        selections.push({ source_id: sourceId, locator_id: issued.locator_id, locator: structuredClone(issued.locator) });
+      } else if (options.allowLegacyLocator) {
+        const locator = selection?.locator === undefined ? {} : object(selection.locator);
+        if (!locator) throw new Error(`_evidence_selection.${field} has an invalid legacy locator.`);
+        // A Review can predate Locator Contract v1. Its selection was already
+        // Core-validated before being persisted, so retain it only on the
+        // approval migration path; normal Codex output is always strict.
+        selections.push({ source_id: sourceId, locator_id: locatorId || "LOC-LEGACY", locator: structuredClone(locator) });
+      } else {
+        throw new Error(`_evidence_selection.${field} must select a Core-issued locator_id for its authorized source.`);
+      }
     }
     result[field] = selections;
   }
@@ -72,7 +115,7 @@ function selectionsForField(field: string, selections: FieldEvidenceSelections, 
   const seen = new Set<string>();
   return (selections[field] ?? []).flatMap((selection) => {
     const sourceRef = sourcesById.get(selection.source_id);
-    const fingerprint = `${selection.source_id}:${JSON.stringify(selection.locator)}`;
+    const fingerprint = `${selection.source_id}:${selection.locator_id}`;
     if (!sourceRef || seen.has(fingerprint)) return [];
     seen.add(fingerprint);
     return [{ ...selection, source_ref: sourceRef }];
@@ -83,12 +126,12 @@ export function selectedEvidenceRefs(selections: FieldEvidenceSelections, source
   return [...new Set(Object.keys(selections).flatMap((field) => selectionsForField(field, selections, sources).map((selection) => selection.source_ref)))];
 }
 
-/** Critical output must name at least one actual supporting input. This turns
- * missing support into a user Review instead of silently treating every read
- * file as evidence. */
-export function criticalFieldsMissingEvidence(moduleRoot: string, manifest: JsonObject, entityId: string, output: JsonObject, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
+/** A field that declares provenance as required must name an actual supporting
+ * input. Criticality controls the risk of changing a value; it does not make a
+ * source mandatory by itself. */
+export function fieldsMissingRequiredEvidence(moduleRoot: string, manifest: JsonObject, entityId: string, output: JsonObject, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
   return [...fieldQualityContracts(moduleRoot, manifest, entityId)]
-    .filter(([field, contract]) => contract.critical && output[field] !== undefined && output[field] !== null && selectionsForField(field, selections, sources).length === 0)
+    .filter(([field, contract]) => contract.provenanceRequired && output[field] !== undefined && output[field] !== null && selectionsForField(field, selections, sources).length === 0)
     .map(([field]) => field);
 }
 
@@ -134,6 +177,11 @@ export interface MaterializeFieldProvenanceOptions {
   runId: string;
   generation: JsonObject | null;
   review: JsonObject | null;
+  /**
+   * Values changed by an approve-with-modification decision are user-authored.
+   * They must not inherit evidence selected for the original AI proposal.
+   */
+  userConfirmedFields?: ReadonlySet<string>;
   now?: string;
 }
 
@@ -153,9 +201,30 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
     const fieldMeta: JsonObject = {};
     for (const [field, contract] of contracts) {
       const value: JsonValue | undefined = options.output[field];
-      if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null)) continue;
+      const userConfirmed = options.userConfirmedFields?.has(field) === true;
+      if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null && !userConfirmed)) continue;
       const evidenceRefs: string[] = [];
-      if (contract.provenanceRequired) {
+      if (userConfirmed) {
+        const reviewId = typeof options.review?.review_id === "string" ? options.review.review_id : "unknown";
+        const sourceRef = `review:${reviewId}`;
+        const locator = { review_id: reviewId, field };
+        const match = existing.find((entry) => entry.source_type === "user-confirmation"
+          && entry.source_ref === sourceRef
+          && entry.supports.some((support) => support.entity_ref === options.target && support.field === field)
+          && JSON.stringify(entry.locator) === JSON.stringify(locator));
+        const evidence = match ?? repository.upsertEvidence({
+          source_type: "user-confirmation",
+          source_ref: sourceRef,
+          supports: [{ entity_ref: options.target, field }],
+          locator,
+          observed_at: now,
+          captured_at: now,
+          collector: { type: "user-review", run_id: options.runId, review_id: reviewId },
+          quality: { authority: "user-observation", freshness: "current", extraction_confidence: 1 },
+          status: "active",
+        });
+        evidenceRefs.push(evidence.evidence_id);
+      } else if (contract.provenanceRequired) {
         for (const selection of selectionsForField(field, options.evidenceSelections, sources)) {
           const match = existing.find((entry) => entry.source_ref === selection.source_ref
             && entry.supports.some((support) => support.entity_ref === options.target && support.field === field)
@@ -176,9 +245,9 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
       }
       const verification = evaluateFreshness({ lastVerified: evidenceRefs.length ? now : null, intervalDays: contract.verificationIntervalDays, now: new Date(now) });
       fieldMeta[field] = {
-        authorship: options.generation ? "ai" : "system",
+        authorship: userConfirmed ? "user" : options.generation ? "ai" : "system",
         evidence_refs: evidenceRefs,
-        generation: options.generation,
+        generation: userConfirmed ? null : options.generation,
         review: options.review,
         verification,
       };

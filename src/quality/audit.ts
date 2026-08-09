@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown, parseYaml, validateSchema, writeMarkdown } from "../core/bridge.js";
-import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
+import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 import { ensureDir, exists, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { JsonObject, JsonValue, ReviewItem } from "../core/types.js";
 import { persistReviewItem } from "../core/reviews.js";
@@ -13,6 +13,7 @@ import type { QualityIssue, QualityPolicy, QualitySeverity } from "./domain.js";
 import { evaluateFreshness, resolveVerificationInterval } from "./freshness.js";
 import { qualityFingerprint } from "./fingerprint.js";
 import { QualityRepository } from "./repository.js";
+import { resolveWorkflowResourceContract } from "../modules/workflowResources.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ACTIVE_ISSUE_STATUSES = ["open", "acknowledged", "scheduled", "suppressed"] as const;
@@ -20,7 +21,7 @@ const TERMINAL_TASKS = new Set(["completed", "failed", "cancelled"]);
 export type AuditFrequency = "daily" | "weekly" | "monthly";
 export type ExternalLinkFetcher = (url: string, init: RequestInit) => Promise<Response>;
 
-interface ModuleQuality { id: string; schemaVersion: number; policy: QualityPolicy; root: string; promptRegistry: JsonObject | null; schemaIds: Map<string, string>; schemaVersions: Map<string, number>; }
+interface ModuleQuality { id: string; module: DiscoveredDocument; schemaVersion: number; policy: QualityPolicy; root: string; promptRegistry: JsonObject | null; schemaIds: Map<string, string>; schemaVersions: Map<string, number>; }
 interface CandidateIssue { issue_type: string; dimension: QualityIssue["dimension"]; severity: QualitySeverity; module: string; instance_id: string | null; target: JsonObject; evidence: JsonObject; recommended_action: JsonObject; detector: string; }
 
 function object(value: unknown): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null; }
@@ -79,13 +80,13 @@ function staleFollowupAction(config: JsonObject): JsonObject | null {
   return action?.type === "workflow" && typeof action.workflow_id === "string" && action.workflow_id.trim() ? action : null;
 }
 
-function followupResources(action: JsonObject): TaskResources {
-  const declared = object(action.resources) ?? {};
-  const resource = (name: string, fallback: ResourceRequirement): ResourceRequirement => {
-    const value = declared[name];
-    return value === "required" || value === "not-required" ? value : fallback;
-  };
-  return { filesystem: resource("filesystem", "required"), network: resource("network", "not-required"), codex: resource("codex", "not-required"), user: resource("user", "required") };
+/** Additional gates may only make a Workflow more restrictive, never less. */
+function followupResources(module: DiscoveredDocument, action: JsonObject): TaskResources {
+  const workflowId = String(action.workflow_id);
+  const base = resolveWorkflowResourceContract(module, workflowId).resources;
+  const gates = object(action.additional_gates) ?? {};
+  const merge = (name: keyof TaskResources): ResourceRequirement => gates[name] === "required" || base[name] === "required" ? "required" : "not-required";
+  return { filesystem: merge("filesystem"), network: merge("network"), codex: merge("codex"), user: merge("user") };
 }
 
 function followupDedupe(action: JsonObject): JsonObject | null {
@@ -142,7 +143,7 @@ async function policies(vaultRoot: string): Promise<Map<string, ModuleQuality>> 
       const schemas = object(module.data.schemas); const registryPath = path.join(root, ...String(schemas?.registry).split("/")); const registry = parseYaml(root, registryPath); const entries = object(registry.schemas) ?? {};
       for (const descriptor of Object.values(entries)) { const item = object(descriptor); if (!item || typeof item.path !== "string" || typeof item.entity_type !== "string") continue; const schema = await readJson<JsonObject>(path.join(path.dirname(registryPath), ...item.path.split("/")), {}); if (typeof schema.$id === "string") schemaIds.set(item.entity_type, schema.$id); if (Number.isInteger(item.version)) schemaVersions.set(item.entity_type, Number(item.version)); }
     } catch { /* Module validation reports malformed registries. */ }
-    output.set(String(module.data.id), { id: String(module.data.id), schemaVersion: Number(object(module.data.data)?.schema_version ?? 1), policy, root, promptRegistry, schemaIds, schemaVersions });
+    output.set(String(module.data.id), { id: String(module.data.id), module, schemaVersion: Number(object(module.data.data)?.schema_version ?? 1), policy, root, promptRegistry, schemaIds, schemaVersions });
   }
   return output;
 }
@@ -409,11 +410,13 @@ export async function runQualityAudit(vaultRoot: string, frequency: AuditFrequen
       for (const stored of issues.filter((item) => item.recommended_action.type === "workflow")) {
         const targetPath = typeof stored.target.path === "string" ? stored.target.path.replaceAll("\\", "/").toLowerCase() : "";
         if ((await targetsFor(stored.recommended_action)).has(targetPath)) continue;
-        const workflowId = String(stored.recommended_action.workflow_id);
-        const workflowVersion = typeof stored.recommended_action.workflow_version === "string" ? stored.recommended_action.workflow_version : "active";
-        followups.createTask({
+          const workflowId = String(stored.recommended_action.workflow_id);
+          const workflowVersion = typeof stored.recommended_action.workflow_version === "string" ? stored.recommended_action.workflow_version : "active";
+          const module = modulePolicies.get(stored.module)?.module;
+          if (!module) continue;
+          followups.createTask({
         job_id: "quality.stale-field-followup", module: stored.module, instance_id: stored.instance_id, task_type: "workflow", workflow: `module:${stored.module}:${workflowId}`, priority: "high", scheduled_for: now, available_after: now,
-        resources: followupResources(stored.recommended_action), trigger: { type: "quality-issue", issue_id: stored.issue_id, workflow_id: workflowId, workflow_version: workflowVersion }, catch_up_policy: "latest",
+        resources: followupResources(module, stored.recommended_action), trigger: { type: "quality-issue", issue_id: stored.issue_id, workflow_id: workflowId, workflow_version: workflowVersion }, catch_up_policy: "latest",
         idempotency_key: `quality:${stored.fingerprint}:followup:${workflowId}`, max_attempts: 1, payload: { quality_issue_id: stored.issue_id, target: stored.target, quality_followup: stored.recommended_action }, concurrency_key: `quality:${stored.instance_id ?? "global"}:${workflowId}`, concurrency_policy: "merge",
         });
       }

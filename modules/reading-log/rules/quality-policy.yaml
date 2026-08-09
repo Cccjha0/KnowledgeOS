@@ -10,4 +10,4 @@ ownership:
       用户笔记: user-owned
       用户确认结论: mixed
 audits: [broken-links, orphan-files, missing-provenance, schema-version, ownership, duplicate-content]
-default_verification_interval_days: null
+orphan_exempt_entity_types: []

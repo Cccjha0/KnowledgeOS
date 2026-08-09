@@ -1,6 +1,8 @@
 import type { JsonObject, JsonValue } from "../core/types.js";
 
 export type Authorship = "user" | "ai" | "system" | "official-source" | "external-research";
+/** Evidence origin is intentionally separate from document authorship. */
+export type EvidenceSourceType = Authorship | "user-confirmation";
 export type SourceAuthority = "primary-official" | "secondary-official" | "authoritative-third-party" | "user-observation" | "external-research" | "unverified-third-party" | "unknown";
 export type EvidenceStatus = "active" | "superseded" | "conflicting" | "unavailable" | "withdrawn";
 export type VerificationStatus = "verified" | "due-soon" | "stale" | "unverifiable" | "historical" | "unknown";
@@ -27,7 +29,7 @@ export interface ProvenanceRecord extends JsonObject {
 
 export interface EvidenceRecord extends JsonObject {
   evidence_id: string;
-  source_type: Authorship;
+  source_type: EvidenceSourceType;
   source_ref: string;
   supports: JsonObject[];
   locator: JsonObject;

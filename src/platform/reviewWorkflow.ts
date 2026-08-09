@@ -3,12 +3,9 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type {
-  ApplicationFact,
-  ApplicationRecord,
   JsonObject,
   JsonValue,
   MarkdownDocument,
-  Operation,
   OperationPlan,
   ReviewDecision,
   ReviewDecisionKind,
@@ -27,7 +24,6 @@ import {
   listFilesRecursive,
   readJson,
   toVaultPath,
-  uniqueJsonValues,
   writeJsonAtomic,
 } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
@@ -35,7 +31,7 @@ import { allocateId } from "../core/ids.js";
 import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { discoverModulesForVault } from "../core/discovery.js";
-import { APPLICATION_STATE_MACHINE, assertApplicationTransition, type ApplicationStatus } from "../application/stateMachine.js";
+import { resolveReviewResolutionAdapter } from "../modules/reviewResolutionAdapterRegistry.js";
 import {
   locateReviewItem,
   persistReviewItem,
@@ -56,7 +52,6 @@ const SCHEMAS = {
   decision: "https://pkb.local/schemas/core/review-decision.schema.json",
   review: "https://pkb.local/schemas/core/review-item.schema.json",
   plan: "https://pkb.local/schemas/core/operation-plan.schema.json",
-  record: "https://pkb.local/schemas/application-tracker/application-record.schema.json",
 } as const;
 
 export const REVIEW_STATE_MACHINE: Record<ReviewStatus, {
@@ -169,84 +164,6 @@ function targetAbsolute(vaultRoot: string, item: ReviewItem): string {
   return absolute;
 }
 
-function currentFieldValue(record: ApplicationRecord, field: string): JsonValue {
-  if (field === "application_status") {
-    return record.application_status;
-  }
-  return record.facts[field]?.value ?? null;
-}
-
-function expectedApplicationStatus(field: string, value: JsonValue, proposed: JsonObject): string | null {
-  if (field === "application_status" && typeof value === "string") {
-    return value;
-  }
-  if (field === "application_open") {
-    if (value === true) {
-      return "open";
-    }
-    if (value === false) {
-      return "not-open";
-    }
-  }
-  return typeof proposed.application_status === "string" ? proposed.application_status : null;
-}
-
-function buildRecordPatch(
-  record: ApplicationRecord,
-  item: ReviewItem,
-  decision: ReviewDecision,
-  runId: string,
-  sourceEvidence: JsonValue[],
-): { patch: JsonObject; effectiveValue: JsonValue; field: string } {
-  const proposed = proposedObject(item);
-  const field = fieldFromReview(item);
-  const effectiveValue = decision.decision === "approve-with-modification"
-    ? structuredClone(decision.modified_value ?? null)
-    : structuredClone(proposed.new_value ?? null);
-  const patch: JsonObject = { updated: decision.decided_at };
-  const currentMeta = record._field_meta && typeof record._field_meta === "object" && !Array.isArray(record._field_meta) ? record._field_meta as JsonObject : {};
-  const originGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
-  const originModule = originGeneration?.module && typeof originGeneration.module === "object" && !Array.isArray(originGeneration.module) ? originGeneration.module as JsonObject : null;
-  patch._field_meta = { ...currentMeta, [field]: {
-    authorship: "external-research", evidence_refs: item.evidence,
-    generation: { run_id: runId, module: { id: item.source_module, version: typeof originModule?.version === "string" ? originModule.version : "unknown" }, workflow: { id: "review-resolve", version: "1.0.0" }, prompt: originGeneration?.prompt ?? null, processor: { id: "review-executor", version: "1.0.0", source_generation: originGeneration }, adapter: typeof originGeneration?.adapter === "string" ? originGeneration.adapter : null, model: typeof originGeneration?.model === "string" ? originGeneration.model : null, generated_at: decision.decided_at },
-    review: { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision },
-    verification: { last_verified: decision.decided_at, verification_interval_days: null, stale_after: null, stale: false, verification_status: "verified" },
-  } };
-  const status = expectedApplicationStatus(field, effectiveValue, proposed);
-  if (status !== null && status !== record.application_status) {
-    assertApplicationTransition(record.application_status as ApplicationStatus, status as ApplicationStatus);
-    const rule = APPLICATION_STATE_MACHINE[status as ApplicationStatus];
-    patch.monitoring = { active: !rule.terminal, stopped: rule.stopMonitoring };
-  }
-
-  if (field === "application_status") {
-    if (typeof effectiveValue !== "string") {
-      throw new PkbError("INVALID_MODIFIED_VALUE", "application_status 必须是字符串。", effectiveValue);
-    }
-    patch.application_status = effectiveValue;
-  } else {
-    const current = record.facts[field];
-    const sourceRefs = uniqueJsonValues([
-      ...(current?.source_refs ?? []),
-      ...sourceEvidence,
-    ]).filter((value): value is string => typeof value === "string");
-    const fact: ApplicationFact = {
-      value: effectiveValue,
-      status: "confirmed",
-      confidence: item.confidence,
-      checked_at: decision.decided_at,
-      source_refs: sourceRefs,
-      notes: decision.user_comment || `由审核 ${item.review_id} 批准。`,
-    };
-    patch.facts = { [field]: fact };
-    if (status !== null) {
-      patch.application_status = status;
-    }
-  }
-  return { patch, effectiveValue, field };
-}
-
 async function materializeReviewEvidence(vaultRoot: string, item: ReviewItem, field: string, observedAt: string): Promise<string[]> {
   const repository = await QualityRepository.open(vaultRoot);
   try {
@@ -259,56 +176,6 @@ async function materializeReviewEvidence(vaultRoot: string, item: ReviewItem, fi
     }
     return [...new Set(ids)];
   } finally { repository.close(); }
-}
-
-function buildReviewPlan(
-  item: ReviewItem,
-  decision: ReviewDecision,
-  record: ApplicationRecord,
-  ids: { taskId: string; planId: string; runId: string; sourceEvidence: JsonValue[] },
-): OperationPlan {
-  const operations: Operation[] = [];
-  if (decision.decision === "approve" || decision.decision === "approve-with-modification") {
-    const { patch, effectiveValue, field } = buildRecordPatch(record, item, decision, ids.runId, ids.sourceEvidence);
-    operations.push(
-      {
-        operation_id: "OP-001",
-        type: "update-frontmatter",
-        target: item.target,
-        risk: "yellow",
-        confidence: 1,
-        idempotency_key: `${item.review_id}:${decision.decided_at}:frontmatter`,
-        payload: {
-          patch,
-          schema_id: SCHEMAS.record,
-        },
-        requires_review_id: item.review_id,
-      },
-      {
-        operation_id: "OP-002",
-        type: "append-section",
-        target: item.target,
-        risk: "green",
-        confidence: 1,
-        idempotency_key: `${item.review_id}:${decision.decided_at}:change-log`,
-        payload: {
-          section: "变更记录",
-          marker: `<!-- pkb-review:${item.review_id} -->`,
-          content: `- ${decision.decided_at.slice(0, 10)}：审核 ${item.review_id} 已批准，${field} 更新为 ${JSON.stringify(effectiveValue)}。`,
-        },
-        requires_review_id: item.review_id,
-      },
-    );
-  }
-  return {
-    plan_id: ids.planId,
-    task_id: ids.taskId,
-    source_module: item.source_module,
-    instance_id: item.instance_id,
-    summary: `落实审核决定 ${item.review_id}: ${decision.decision}`,
-    operations,
-    review_items: [],
-  };
 }
 
 async function writeReviewRunLog(
@@ -380,6 +247,18 @@ function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonV
   }
 }
 
+/** Returns only user-visible values that differ from the original AI proposal. */
+function userModifiedModuleFields(item: ReviewItem, decision: ReviewDecision, record: JsonObject): Set<string> {
+  if (decision.decision !== "approve-with-modification") return new Set();
+  const proposed = item.proposed_value && typeof item.proposed_value === "object" && !Array.isArray(item.proposed_value)
+    ? item.proposed_value as JsonObject : {};
+  const original = proposed.new_value && typeof proposed.new_value === "object" && !Array.isArray(proposed.new_value)
+    ? proposed.new_value as JsonObject : {};
+  return new Set(Object.keys(record).filter((field) => !MODULE_UPDATE_PROTECTED_FIELDS.has(field)
+    && field !== "source_refs" && field !== "generation" && field !== "_field_meta"
+    && !deepEqual(record[field], original[field])));
+}
+
 /** Apply Core-owned field provenance only after a module operation is approved. */
 async function materializeApprovedModuleFieldProvenance(
   vaultRoot: string,
@@ -398,8 +277,8 @@ async function materializeApprovedModuleFieldProvenance(
   // single-field Reviews already treat `item.evidence` as the field's actual
   // evidence, so preserve that narrower historical contract during migration.
   const evidenceSelections = proposed.evidence_selection === undefined
-    ? item.action === "module-operation" ? {} : { [fieldFromReview(item)]: authorizedSources.map((source) => ({ source_id: source.source_id, locator: {} })) }
-    : parseEvidenceSelections(proposed.evidence_selection, authorizedSources);
+    ? item.action === "module-operation" ? {} : { [fieldFromReview(item)]: authorizedSources.map((source) => ({ source_id: source.source_id, locator_id: "LOC-DOCUMENT", locator: {} })) }
+    : parseEvidenceSelections(proposed.evidence_selection, authorizedSources, { allowLegacyLocator: true });
   const sourceGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
   const generation: JsonObject = { ...(sourceGeneration ?? {}), review_resolution: { run_id: runId, review_id: item.review_id, decided_at: decision.decided_at } };
   const review: JsonObject = { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision };
@@ -421,9 +300,10 @@ async function materializeApprovedModuleFieldProvenance(
     }
     const entityId = typeof record.schema_id === "string" ? record.schema_id : typeof operation.payload.schema_id === "string" ? operation.payload.schema_id : null;
     if (!entityId) continue;
+    const userConfirmedFields = userModifiedModuleFields(item, decision, record);
     const fieldMeta = await materializeFieldProvenance({
       vaultRoot, moduleRoot, manifest: module.data, entityId, target: operation.target, output: record,
-      authorizedSources, evidenceSelections, runId, generation, review, now: decision.decided_at,
+      authorizedSources, evidenceSelections, runId, generation, review, userConfirmedFields, now: decision.decided_at,
     });
     if (Object.keys(fieldMeta).length) record._field_meta = fieldMeta;
   }
@@ -564,15 +444,15 @@ async function decideReviewUnlocked(options: DecideReviewOptions): Promise<Revie
     return decideModuleOperationReview(vaultRoot, located, decision);
   }
 
+  const adapter = await resolveReviewResolutionAdapter(vaultRoot, located.item.source_module);
   const targetPath = targetAbsolute(vaultRoot, located.item);
   const recordDocument = parseMarkdown(vaultRoot, targetPath);
-  validateSchema(vaultRoot, SCHEMAS.record, recordDocument.data);
-  const record = recordDocument.data as unknown as ApplicationRecord;
+  validateSchema(vaultRoot, adapter.schemaId, recordDocument.data);
   const taskId = await allocateId(vaultRoot, "TASK");
   const planId = await allocateId(vaultRoot, "PLAN");
   const runId = await allocateId(vaultRoot, "RUN");
   const tracedItem: ReviewItem = { ...located.item, evidence: await materializeReviewEvidence(vaultRoot, located.item, fieldFromReview(located.item), decidedAt) };
-  const plan = buildReviewPlan(tracedItem, decision, record, { taskId, planId, runId, sourceEvidence: located.item.evidence });
+  const plan = adapter.buildPlan({ item: tracedItem, decision, record: recordDocument.data, taskId, planId, runId, sourceEvidence: located.item.evidence });
   const planAbsolute = path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`);
   await writeJsonAtomic(planAbsolute, plan);
   const snapshot = await createGitSnapshot(vaultRoot, runId);
@@ -653,24 +533,6 @@ export async function decideReview(options: DecideReviewOptions): Promise<Review
   }
 }
 
-function observationFor(item: ReviewItem, record: ApplicationRecord, now: string): ReviewTargetObservation {
-  const proposed = proposedObject(item);
-  const field = fieldFromReview(item);
-  const observed = currentFieldValue(record, field);
-  const newValue = proposed.new_value ?? null;
-  const oldValue = proposed.old_value ?? null;
-  let matches: "old" | "proposed" | "neither" = deepEqual(observed, newValue)
-    ? "proposed"
-    : deepEqual(observed, oldValue)
-      ? "old"
-      : "neither";
-  const expectedStatus = expectedApplicationStatus(field, newValue, proposed);
-  if (matches === "proposed" && expectedStatus !== null && record.application_status !== expectedStatus) {
-    matches = "neither";
-  }
-  return { field, observed_value: structuredClone(observed), checked_at: now, matches };
-}
-
 export async function reconcileReviews(vaultPath: string, reviewId?: string, now = new Date().toISOString()): Promise<ReconcileResult> {
   const vaultRoot = path.resolve(vaultPath);
   const requeued = await requeueDueReviews(vaultRoot, new Date(now));
@@ -690,8 +552,9 @@ export async function reconcileReviews(vaultPath: string, reviewId?: string, now
     }
     const target = targetAbsolute(vaultRoot, located.item);
     const recordDocument = parseMarkdown(vaultRoot, target);
-    validateSchema(vaultRoot, SCHEMAS.record, recordDocument.data);
-    const observation = observationFor(located.item, recordDocument.data as unknown as ApplicationRecord, now);
+    const adapter = await resolveReviewResolutionAdapter(vaultRoot, located.item.source_module);
+    validateSchema(vaultRoot, adapter.schemaId, recordDocument.data);
+    const observation = adapter.observe(located.item, recordDocument.data, now);
     if (observation.matches === "proposed") {
       const item: ReviewItem = {
         ...located.item,

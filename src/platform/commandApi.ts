@@ -371,7 +371,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     return withTemporaryBlueprint(vaultRoot, requestId, blueprint, async (file) => ({
       ...await scaffoldModuleFromBlueprint(ENGINE_ROOT, file, { modulesRoot }),
       workspace_path: `90-System/Module Development/${moduleId}`,
-      next_state: "implementation-required",
+      next_state: "implementation-preparation",
     })) as Promise<JsonValue>;
   }
   if (method === "getModuleReadiness") {
@@ -379,8 +379,8 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "runModuleReadinessAction") {
     const action = typeof params.action === "string" ? params.action : "";
-    if (!(["implement", "validate", "test", "sandbox", "pack", "install"] as string[]).includes(action)) {
-      throw new PkbError("INVALID_REQUEST", "action must be implement, validate, test, sandbox, pack, or install.");
+    if (!(["implement-with-ai", "validate-manual", "test", "sandbox", "pack", "install", "implement", "validate"] as string[]).includes(action)) {
+      throw new PkbError("INVALID_REQUEST", "action must be implement-with-ai, validate-manual, test, sandbox, pack, or install.");
     }
     return runModuleReadinessAction(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"), action as ModuleReadinessAction, {
       confirmBreaking: params.confirm_breaking === true,

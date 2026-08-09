@@ -25,9 +25,4 @@ capture:
     _evidence_selection:
       deadline:
       - source_id: SRC-4FB42DAFF836
-        locator:
-          section: Assignment brief
-      status:
-      - source_id: SRC-4FB42DAFF836
-        locator:
-          section: Assignment brief
+        locator_id: LOC-HEADING-001

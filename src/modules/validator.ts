@@ -7,9 +7,12 @@ import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } fr
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterRegistry.js";
 import { validateBlueprintCompliance } from "./blueprintCompliance.js";
+import { parseResearchRequestContract } from "../components/researchRequest.js";
+import { hasResearchReconciliationAdapter } from "./researchReconciliationAdapterRegistry.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
+const QUALITY_POLICY_SCHEMA = "https://pkb.local/schemas/core/quality-policy.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 function object(value: JsonValue | undefined): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value : null; }
 
@@ -61,6 +64,75 @@ async function validateDashboardProvider(moduleRoot: string, manifest: JsonObjec
   } catch (error) {
     checks.push(check("schema", "DASHBOARD_PROVIDER_INVALID", "fail", error instanceof Error ? error.message : String(error), providerRelative, true));
   }
+}
+
+/** Validates policy-owned stale follow-ups before an Audit can schedule them. */
+async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+  const descriptor = object(manifest.quality);
+  const relative = typeof descriptor?.policy === "string" ? descriptor.policy : null;
+  if (!relative) return;
+  const policyFile = path.join(moduleRoot, ...relative.split("/"));
+  if (!(await exists(policyFile))) {
+    checks.push(check("references", "QUALITY_POLICY_NOT_FOUND", "fail", `${relative} does not exist.`, relative, true));
+    return;
+  }
+  let policy: JsonObject;
+  try {
+    policy = parseYaml(moduleRoot, policyFile);
+    validateSchema(moduleRoot, QUALITY_POLICY_SCHEMA, policy);
+    checks.push(check("schema", "QUALITY_POLICY_VALID", "pass", `${relative} satisfies Quality Policy v1.`, relative));
+  } catch (error) {
+    checks.push(check("schema", "QUALITY_POLICY_INVALID", "fail", error instanceof Error ? error.message : String(error), relative, true));
+    return;
+  }
+  const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
+  let schemas: JsonObject = {};
+  try {
+    const schemaRegistry = typeof object(manifest.schemas)?.registry === "string" ? String(object(manifest.schemas)!.registry) : null;
+    if (schemaRegistry) schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, ...schemaRegistry.split("/"))).schemas) ?? {};
+  } catch { /* Registry validation reports this independently. */ }
+  const entitySchemas = new Map<string, JsonObject>();
+  for (const raw of Object.values(schemas)) {
+    const entry = object(raw); if (!entry || typeof entry.entity_type !== "string" || typeof entry.path !== "string") continue;
+    try { entitySchemas.set(entry.entity_type, JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject); } catch { /* Registry validation reports this independently. */ }
+  }
+  const rules = [object(policy.freshness) ?? {}, object(policy.field_policies) ?? {}];
+  for (const raw of rules.flatMap((section) => Object.values(section))) {
+    const action = object(object(raw)?.stale_action); if (!action) continue;
+    const workflowId = typeof action.workflow_id === "string" ? action.workflow_id : "";
+    const workflowVersion = typeof action.workflow_version === "string" ? action.workflow_version : "";
+    const registered = object(workflows[workflowId]);
+    if (!registered || registered.active_version !== workflowVersion) checks.push(check("contracts", "QUALITY_STALE_WORKFLOW_UNREGISTERED", "fail", `stale_action references unregistered ${workflowId}@${workflowVersion}.`, relative, true));
+    const dedupe = object(action.dedupe); const entityType = typeof dedupe?.entity_type === "string" ? dedupe.entity_type : ""; const targetField = typeof dedupe?.target_field === "string" ? dedupe.target_field : "";
+    const targetSchema = entitySchemas.get(entityType); const properties = object(targetSchema?.properties);
+    if (!targetSchema) checks.push(check("contracts", "QUALITY_STALE_DEDUPE_ENTITY_UNKNOWN", "fail", `stale_action.dedupe.entity_type ${entityType} is not a registered module entity.`, relative, true));
+    else if (!properties?.[targetField]) checks.push(check("contracts", "QUALITY_STALE_DEDUPE_TARGET_UNKNOWN", "fail", `stale_action.dedupe.target_field ${targetField} is absent from ${entityType}.`, relative, true));
+  }
+  checks.push(check("contracts", "QUALITY_STALE_ACTIONS_VALID", "pass", "Quality stale actions reference registered Workflows and valid dedupe targets.", relative));
+}
+
+async function validateResearchRequestContract(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+  const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((value): value is string => typeof value === "string") : []);
+  if (!capabilities.has("research-request")) return;
+  let contract;
+  try { contract = parseResearchRequestContract(manifest); }
+  catch (error) { checks.push(check("contracts", "RESEARCH_REQUEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "module.yaml", true)); return; }
+  const registryRelative = typeof object(manifest.schemas)?.registry === "string" ? String(object(manifest.schemas)!.registry) : null;
+  const schemaIds = new Set<string>();
+  if (registryRelative) {
+    try {
+      const schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, ...registryRelative.split("/"))).schemas) ?? {};
+      for (const raw of Object.values(schemas)) {
+        const entry = object(raw); if (typeof entry?.path !== "string") continue;
+        const schema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject;
+        if (typeof schema.$id === "string") schemaIds.add(schema.$id);
+      }
+    } catch { /* Registry errors are reported separately. */ }
+  }
+  const missing = [contract.record.schema, contract.request.schema].filter((id) => !schemaIds.has(id));
+  checks.push(check("contracts", missing.length ? "RESEARCH_REQUEST_SCHEMA_UNREGISTERED" : "RESEARCH_REQUEST_SCHEMAS_VALID", missing.length ? "fail" : "pass", missing.length ? `Research Request Contract references unregistered schemas: ${missing.join(", ")}.` : "Research Request Contract record/request schemas are registered.", "module.yaml", missing.length > 0));
+  const raw = object(manifest.research_request); const reconciliation = object(raw?.reconciliation); const adapter = typeof reconciliation?.adapter === "string" ? reconciliation.adapter : null;
+  if (adapter !== null) checks.push(check("contracts", hasResearchReconciliationAdapter(adapter) ? "RESEARCH_RECONCILIATION_ADAPTER_AVAILABLE" : "RESEARCH_RECONCILIATION_ADAPTER_UNAVAILABLE", hasResearchReconciliationAdapter(adapter) ? "pass" : "fail", hasResearchReconciliationAdapter(adapter) ? `${adapter} is installed.` : `${adapter} is not an installed reconciliation adapter.`, "module.yaml", !hasResearchReconciliationAdapter(adapter)));
 }
 
 async function validateRegistry(moduleRoot: string, manifest: JsonObject, section: "schemas" | "prompts" | "workflows", checks: ModuleValidationCheck[]): Promise<void> {
@@ -316,6 +388,8 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   await validateRegistry(moduleRoot, manifest, "prompts", checks);
   await validateRegistry(moduleRoot, manifest, "workflows", checks);
   await validateDashboardProvider(moduleRoot, manifest, checks);
+  await validateResearchRequestContract(moduleRoot, manifest, checks);
+  await validateQualityPolicy(moduleRoot, manifest, checks);
   await validateEventContracts(moduleRoot, manifest, checks);
 
   const permissions = object(manifest.permissions);

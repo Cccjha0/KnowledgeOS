@@ -3,13 +3,29 @@
   "module_id": "experience-log",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-05T14:48:13.991Z",
+  "generated_at": "2026-08-09T16:17:40.307Z",
   "checks": [
     {
       "category": "manifest",
       "code": "MANIFEST_V1_VALID",
       "status": "pass",
       "message": "Manifest v1 schema passed.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "markdown is backed by markdown-frontmatter@1.0.0.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "INGESTION_ADAPTER_AVAILABLE",
+      "status": "pass",
+      "message": "text is backed by plain-text@1.0.0.",
       "critical": false,
       "path": "module.yaml"
     },
@@ -102,6 +118,30 @@
       "path": "workflows/index.yaml"
     },
     {
+      "category": "schema",
+      "code": "DASHBOARD_PROVIDER_VALID",
+      "status": "pass",
+      "message": "dashboard/today-provider.yaml satisfies Dashboard Provider v1.",
+      "critical": false,
+      "path": "dashboard/today-provider.yaml"
+    },
+    {
+      "category": "schema",
+      "code": "QUALITY_POLICY_VALID",
+      "status": "pass",
+      "message": "rules/quality-policy.yaml satisfies Quality Policy v1.",
+      "critical": false,
+      "path": "rules/quality-policy.yaml"
+    },
+    {
+      "category": "contracts",
+      "code": "QUALITY_STALE_ACTIONS_VALID",
+      "status": "pass",
+      "message": "Quality stale actions reference registered Workflows and valid dedupe targets.",
+      "critical": false,
+      "path": "rules/quality-policy.yaml"
+    },
+    {
       "category": "events",
       "code": "EVENT_CONTRACTS_VALID",
       "status": "pass",
@@ -166,16 +206,24 @@
       "path": "fixtures/sample-instance/module-test.yaml"
     },
     {
-      "category": "prompt-regression",
-      "code": "PROMPT_INVARIANTS_VALID",
+      "category": "behavior",
+      "code": "MODULE_TEST_CAPABILITY_SCENARIOS_ENABLED",
       "status": "pass",
-      "message": "Prompt regression fixture protects facts, uncertainty, and schema validity.",
+      "message": "Every declared dynamic capability has an enabled executable fixture scenario.",
+      "critical": false,
+      "path": "fixtures/sample-instance/module-test.yaml"
+    },
+    {
+      "category": "prompt-regression",
+      "code": "DETERMINISTIC_PROMPT_CONTRACT_INVARIANTS_VALID",
+      "status": "pass",
+      "message": "Deterministic Prompt Contract fixture protects facts, uncertainty, and schema validity; it is not a real-model evaluation.",
       "critical": false,
       "path": "tests/prompt-regression/facts.yaml"
     }
   ],
   "counts": {
-    "pass": 21,
+    "pass": 27,
     "warning": 0,
     "fail": 0,
     "critical": 0
