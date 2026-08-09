@@ -532,7 +532,13 @@ function authorizedSourceRefs(state: WorkflowState): string[] {
 function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject {
   const managed = structuredClone(output);
   delete managed._field_meta;
-  managed.source_refs = authorizedSourceRefs(state);
+  // `source_refs` is not a universal output field. Research reports, for
+  // example, use a structured `sources` array, while some summaries deliberately
+  // use only domain references. Adding an unknown top-level property corrupts
+  // schemas with `additionalProperties: false` and used to make deterministic
+  // fixture outputs appear like failed Codex calls. Where a module does declare
+  // source_refs, Core remains authoritative and replaces model-supplied paths.
+  if (Object.hasOwn(managed, "source_refs")) managed.source_refs = authorizedSourceRefs(state);
   return managed;
 }
 
