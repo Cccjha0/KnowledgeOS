@@ -9,12 +9,13 @@ import { testModule } from "./testRunner.js";
 import type { ModuleTestReport, ModuleValidationReport } from "./types.js";
 import { validateModule } from "./validator.js";
 import { validateModuleBlueprint } from "./blueprint.js";
+import { implementModuleWorkspace, moduleImplementationReportPath, type ModuleImplementationReport } from "./implementation.js";
 
-export type ModuleReadinessAction = "validate" | "test" | "sandbox" | "pack" | "install";
+export type ModuleReadinessAction = "implement" | "validate" | "test" | "sandbox" | "pack" | "install";
 type ReadinessStatus = "complete" | "pending" | "failed";
 
 interface ReadinessStep extends JsonObject {
-  id: "blueprint" | "scaffold" | "validation" | "test" | "sandbox" | "package" | "installation";
+  id: "blueprint" | "scaffold" | "implementation" | "validation" | "test" | "sandbox" | "package" | "installation";
   status: ReadinessStatus;
   message: string;
   report_path: string | null;
@@ -28,8 +29,10 @@ function stateFor(steps: ReadinessStep[]): string {
   const step = (id: ReadinessStep["id"]) => steps.find((candidate) => candidate.id === id)!;
   if (step("installation").status === "complete") return "installed";
   if (step("scaffold").status === "failed") return "draft";
+  if (step("implementation").status === "failed") return "implementation-failed";
   if (step("validation").status === "failed" || step("test").status === "failed" || step("sandbox").status === "failed") return "test-failed";
   if (step("validation").status === "complete" && step("test").status === "complete" && step("sandbox").status === "complete") return "ready-to-package";
+  if (step("blueprint").status === "complete" && step("scaffold").status === "complete" && step("implementation").status === "complete") return "implementation-complete";
   if (step("blueprint").status === "complete" && step("scaffold").status === "complete") return "implementation-required";
   return "draft";
 }
@@ -37,6 +40,7 @@ function stateFor(steps: ReadinessStep[]): string {
 function availableActions(steps: ReadinessStep[]): ModuleReadinessAction[] {
   const byId = Object.fromEntries(steps.map((step) => [step.id, step])) as Record<ReadinessStep["id"], ReadinessStep>;
   if (byId.scaffold.status !== "complete") return [];
+  if (byId.implementation.status !== "complete") return ["implement"];
   const actions: ModuleReadinessAction[] = ["validate"];
   if (byId.validation.status === "complete") actions.push("test");
   if (byId.test.status === "complete") actions.push("sandbox");
@@ -58,6 +62,7 @@ export async function getModuleReadiness(engineRoot: string, vaultRoot: string, 
   const validationPath = path.join(root, "validation-report.json");
   const testPath = path.join(root, "module-test-report.json");
   const sandboxPath = path.join(root, "sandbox-report.json");
+  const implementationPath = moduleImplementationReportPath(vaultRoot, moduleId);
   const steps: ReadinessStep[] = [];
   if (!(await exists(root))) {
     return { module_id: moduleId, workspace_path: toVaultPath(vaultRoot, root), state: "draft", steps: [{ id: "blueprint", status: "pending", message: "Create or import a Blueprint to begin.", report_path: null }], available_actions: [] };
@@ -74,6 +79,9 @@ export async function getModuleReadiness(engineRoot: string, vaultRoot: string, 
   steps.push(manifest
     ? { id: "scaffold", status: "complete", message: "Scaffold files exist in the development workspace.", report_path: toVaultPath(vaultRoot, manifestPath) }
     : { id: "scaffold", status: "failed", message: "module.yaml is missing; scaffold the Blueprint first.", report_path: null });
+  const implementation = await readJson<ModuleImplementationReport | null>(implementationPath, null);
+  const implementationStatus = reportStatus(implementation);
+  steps.push({ id: "implementation", status: implementationStatus, message: implementationStatus === "pending" ? "Use bounded AI implementation to complete declarative Schema, Prompt, Workflow, Rule, Template, and Fixture files." : implementationStatus === "complete" ? "Bounded AI implementation passed validation and Module Test." : "Implementation did not pass validation or Module Test; run it again to make another bounded attempt.", report_path: implementation ? toVaultPath(vaultRoot, implementationPath) : null });
   const validation = await readJson<ModuleValidationReport | null>(validationPath, null);
   const validationStatus = reportStatus(validation);
   steps.push({ id: "validation", status: validationStatus, message: validationStatus === "pending" ? "Validation has not run." : validationStatus === "complete" ? "Static validation passed." : "Static validation failed.", report_path: validation ? toVaultPath(vaultRoot, validationPath) : null });
@@ -100,12 +108,13 @@ function requireReadyStep(readiness: JsonObject, action: ModuleReadinessAction):
 }
 
 /** Execute exactly one user-initiated delivery gate, then return refreshed readiness. */
-export async function runModuleReadinessAction(engineRoot: string, vaultRoot: string, moduleId: string, action: ModuleReadinessAction, options: { confirmBreaking?: boolean } = {}): Promise<JsonObject> {
+export async function runModuleReadinessAction(engineRoot: string, vaultRoot: string, moduleId: string, action: ModuleReadinessAction, options: { confirmBreaking?: boolean; codexModel?: string; codexReasoningEffort?: string } = {}): Promise<JsonObject> {
   let readiness = await getModuleReadiness(engineRoot, vaultRoot, moduleId);
   requireReadyStep(readiness, action);
   const root = workspaceRoot(vaultRoot, moduleId);
   let result: JsonValue;
-  if (action === "validate") result = await validateModule(engineRoot, root, { writeReport: true });
+  if (action === "implement") result = await implementModuleWorkspace(engineRoot, vaultRoot, moduleId, { codexModel: options.codexModel, codexReasoningEffort: options.codexReasoningEffort });
+  else if (action === "validate") result = await validateModule(engineRoot, root, { writeReport: true });
   else if (action === "test") result = await testModule(engineRoot, moduleId, { writeReport: true, moduleRoot: root });
   else if (action === "sandbox") {
     result = await runModuleSandbox(engineRoot, moduleId, { moduleRoot: root });

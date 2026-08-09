@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { parseYaml } from "../core/bridge.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
@@ -16,6 +17,79 @@ export interface FieldQualityContract {
   critical: boolean;
   provenanceRequired: boolean;
   verificationIntervalDays: number | null;
+}
+
+/** An immutable handle for one source Core admitted to this Workflow. The
+ * model may select this ID, but never invent an arbitrary Vault path. */
+export interface AuthorizedEvidenceSource {
+  source_id: string;
+  source_ref: string;
+}
+
+export interface EvidenceSelection extends JsonObject {
+  source_id: string;
+  locator: JsonObject;
+}
+
+export type FieldEvidenceSelections = Record<string, EvidenceSelection[]>;
+
+const LOCATOR_KEYS = new Set(["page", "pages", "slide", "slides", "section", "anchor", "excerpt_ref", "line_start", "line_end"]);
+
+export function evidenceSourceId(sourceRef: string): string {
+  return `SRC-${createHash("sha256").update(sourceRef, "utf8").digest("hex").slice(0, 12).toUpperCase()}`;
+}
+
+export function authorizedEvidenceSources(sourceRefs: string[]): AuthorizedEvidenceSource[] {
+  return strings(sourceRefs).sort((left, right) => left.localeCompare(right)).map((sourceRef) => ({ source_id: evidenceSourceId(sourceRef), source_ref: sourceRef }));
+}
+
+/** Parses the model's evidence proposal. It deliberately accepts source IDs
+ * only; Core resolves them against the exact, audited context inputs. */
+export function parseEvidenceSelections(value: unknown, sources: AuthorizedEvidenceSource[]): FieldEvidenceSelections {
+  if (value === undefined) return {};
+  const raw = object(value);
+  if (!raw) throw new Error("_evidence_selection must be an object keyed by output field.");
+  const allowed = new Set(sources.map((source) => source.source_id));
+  const result: FieldEvidenceSelections = {};
+  for (const [field, rawSelections] of Object.entries(raw)) {
+    if (!field.trim() || !Array.isArray(rawSelections)) throw new Error(`_evidence_selection.${field} must be an array.`);
+    const selections: EvidenceSelection[] = [];
+    for (const rawSelection of rawSelections) {
+      const selection = object(rawSelection);
+      const sourceId = typeof selection?.source_id === "string" ? selection.source_id.trim() : "";
+      if (!sourceId || !allowed.has(sourceId)) throw new Error(`_evidence_selection.${field} references an input that Core did not authorize.`);
+      const locator = selection?.locator === undefined ? {} : object(selection.locator);
+      if (!locator || Object.keys(locator).some((key) => !LOCATOR_KEYS.has(key))) throw new Error(`_evidence_selection.${field} has an unsupported locator.`);
+      selections.push({ source_id: sourceId, locator: structuredClone(locator) });
+    }
+    result[field] = selections;
+  }
+  return result;
+}
+
+function selectionsForField(field: string, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): Array<EvidenceSelection & { source_ref: string }> {
+  const sourcesById = new Map(sources.map((source) => [source.source_id, source.source_ref]));
+  const seen = new Set<string>();
+  return (selections[field] ?? []).flatMap((selection) => {
+    const sourceRef = sourcesById.get(selection.source_id);
+    const fingerprint = `${selection.source_id}:${JSON.stringify(selection.locator)}`;
+    if (!sourceRef || seen.has(fingerprint)) return [];
+    seen.add(fingerprint);
+    return [{ ...selection, source_ref: sourceRef }];
+  });
+}
+
+export function selectedEvidenceRefs(selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
+  return [...new Set(Object.keys(selections).flatMap((field) => selectionsForField(field, selections, sources).map((selection) => selection.source_ref)))];
+}
+
+/** Critical output must name at least one actual supporting input. This turns
+ * missing support into a user Review instead of silently treating every read
+ * file as evidence. */
+export function criticalFieldsMissingEvidence(moduleRoot: string, manifest: JsonObject, entityId: string, output: JsonObject, selections: FieldEvidenceSelections, sources: AuthorizedEvidenceSource[]): string[] {
+  return [...fieldQualityContracts(moduleRoot, manifest, entityId)]
+    .filter(([field, contract]) => contract.critical && output[field] !== undefined && output[field] !== null && selectionsForField(field, selections, sources).length === 0)
+    .map(([field]) => field);
 }
 
 /**
@@ -54,7 +128,9 @@ export interface MaterializeFieldProvenanceOptions {
   target: string;
   output: JsonObject;
   /** Only documents which Core actually authorized and read for this run. */
-  authorizedSourceRefs: string[];
+  authorizedSources: AuthorizedEvidenceSource[];
+  /** Model-selected supporting sources, validated against authorizedSources. */
+  evidenceSelections: FieldEvidenceSelections;
   runId: string;
   generation: JsonObject | null;
   review: JsonObject | null;
@@ -62,13 +138,14 @@ export interface MaterializeFieldProvenanceOptions {
 }
 
 /**
- * Materialize field provenance from Core-controlled inputs. Model output is
- * deliberately not consulted for evidence, verification time, or review state.
+ * Materialize field provenance from Core-controlled selections. Model output
+ * may choose source IDs and locators, but cannot introduce a path or evidence
+ * outside the context Core authorized for this run.
  */
 export async function materializeFieldProvenance(options: MaterializeFieldProvenanceOptions): Promise<JsonObject> {
   const contracts = fieldQualityContracts(options.moduleRoot, options.manifest, options.entityId);
   if (!contracts.size) return {};
-  const sourceRefs = strings(options.authorizedSourceRefs);
+  const sources = options.authorizedSources.filter((source) => typeof source.source_id === "string" && typeof source.source_ref === "string");
   const now = options.now ?? new Date().toISOString();
   const repository = await QualityRepository.open(options.vaultRoot);
   try {
@@ -79,24 +156,25 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
       if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null)) continue;
       const evidenceRefs: string[] = [];
       if (contract.provenanceRequired) {
-        for (const sourceRef of sourceRefs) {
-          const match = existing.find((entry) => entry.source_ref === sourceRef
-            && entry.supports.some((support) => support.entity_ref === options.target && support.field === field));
+        for (const selection of selectionsForField(field, options.evidenceSelections, sources)) {
+          const match = existing.find((entry) => entry.source_ref === selection.source_ref
+            && entry.supports.some((support) => support.entity_ref === options.target && support.field === field)
+            && JSON.stringify(entry.locator) === JSON.stringify(selection.locator));
           const evidence = match ?? repository.upsertEvidence({
             source_type: "user",
-            source_ref: sourceRef,
+            source_ref: selection.source_ref,
             supports: [{ entity_ref: options.target, field }],
-            locator: {},
+            locator: selection.locator,
             observed_at: now,
             captured_at: now,
-            collector: { type: "workflow-authorized-input", run_id: options.runId },
+            collector: { type: "workflow-evidence-selection", run_id: options.runId, source_id: selection.source_id },
             quality: { authority: "unknown", freshness: "current", extraction_confidence: 1 },
             status: "active",
           });
           evidenceRefs.push(evidence.evidence_id);
         }
       }
-      const verification = evaluateFreshness({ lastVerified: sourceRefs.length ? now : null, intervalDays: contract.verificationIntervalDays, now: new Date(now) });
+      const verification = evaluateFreshness({ lastVerified: evidenceRefs.length ? now : null, intervalDays: contract.verificationIntervalDays, now: new Date(now) });
       fieldMeta[field] = {
         authorship: options.generation ? "ai" : "system",
         evidence_refs: evidenceRefs,

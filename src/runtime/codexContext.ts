@@ -6,6 +6,8 @@ import type { JsonObject } from "../core/types.js";
 import type { DocumentAccessPolicy, RepresentationLevel, SensitivityClass } from "../core/readLevels.js";
 
 export interface CodexContextDocument {
+  /** Stable Core-issued handle used by the Evidence Selection Contract. */
+  source_id?: string;
   source_path: string;
   content: string;
   sensitivity_class?: SensitivityClass;
@@ -23,6 +25,7 @@ export interface CodexContextBudget {
 }
 
 interface ContextInputManifest {
+  source_id: string | null;
   source_path: string;
   context_path: string;
   sha256: string;
@@ -48,7 +51,7 @@ interface ContextBudgetManifest extends CodexContextBudget {
 }
 
 export interface CodexContextManifest {
-  version: 4;
+  version: 5;
   primary_input: ContextInputManifest;
   related_inputs: ContextInputManifest[];
   allowed_read_roots: string[];
@@ -187,6 +190,7 @@ export async function createCodexContextWorkspace(input: {
       const contextPath = `related/${safeName(item.document.source_path, index + 1)}`;
       await writeText(root, contextPath, item.content);
       relatedManifest.push({
+        source_id: item.document.source_id ?? null,
         source_path: item.document.source_path,
         context_path: contextPath,
         sha256: digest(item.content),
@@ -203,8 +207,9 @@ export async function createCodexContextWorkspace(input: {
       ? [{ source_path: item.document.source_path, original_bytes: item.originalBytes, included_bytes: Buffer.byteLength(item.content, "utf8"), reason: item.reason }]
       : []);
     const manifest: CodexContextManifest = {
-      version: 4,
+      version: 5,
       primary_input: {
+        source_id: primary.document.source_id ?? null,
         source_path: primary.document.source_path,
         context_path: primaryPath,
         sha256: digest(primary.content),

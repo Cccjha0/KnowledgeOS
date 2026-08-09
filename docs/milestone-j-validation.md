@@ -16,6 +16,7 @@
 | J10 unfamiliar-user test | pending external participant | protocol below |
 | J13 User module workspace | complete | Vault-owned `Module Development`, `Packages`, `Installed`, and `Official` roots; local packages survive official configuration sync |
 | J15 Delivery pipeline | implemented; visual verification pending | resumable readiness state, report paths, and explicit validate/test/sandbox/package/install actions are exposed through CLI, Command API, and the post-generation Module Builder view |
+| J16 Bounded implementation | implemented; real-model visual verification pending | Core-managed AI implementation may modify only declarative module artifacts in `90-System/Module Development/{module}`; every pass is followed by validation and Module Test, with at most two correction passes before Sandbox/Package/Install remain available |
 
 ## Course challenge feedback
 
@@ -41,15 +42,15 @@ The participant must:
 2. produce a Blueprint without editing Core;
 3. explain the extension boundary and exclusions;
 4. validate and scaffold the module;
-5. complete its declarative fixtures;
-6. run Module validate, test, and sandbox;
+5. run the bounded Implementation gate and inspect its report;
+6. run the remaining sandbox gate;
 7. identify whether any remaining problem is a module defect or a genuine Capability Gap.
 
 Record:
 
 - elapsed time and number of clarification requests;
 - any field or term the participant could not understand;
-- manual edits made outside Schema, Rules, Prompt, Workflow, template, or fixtures;
+- any proposed modification outside Schema, Rules, Prompt, Workflow, template, or fixtures;
 - validation failures and whether their recovery text was actionable;
 - any temptation to add a module script or modify Core;
 - whether the participant could explain privacy and Review behavior before generation;

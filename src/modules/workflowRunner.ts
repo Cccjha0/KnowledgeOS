@@ -8,7 +8,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import { fieldQualityContracts, materializeFieldProvenance } from "../quality/fieldProvenance.js";
+import { authorizedEvidenceSources, criticalFieldsMissingEvidence, fieldQualityContracts, materializeFieldProvenance, parseEvidenceSelections, selectedEvidenceRefs, type FieldEvidenceSelections } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -68,6 +68,7 @@ interface WorkflowState {
   pdfDecisions: Map<string, JsonObject>;
   sdk: ModuleSdk;
   codexContexts: CodexContextManifest[];
+  evidenceSelections: Map<string, FieldEvidenceSelections>;
 }
 
 type RecordOperationMode = "create-record" | "update-record" | "append-record";
@@ -529,9 +530,11 @@ function authorizedSourceRefs(state: WorkflowState): string[] {
 
 /** `_field_meta` and source_refs are Core-managed output. A model may describe
  * facts, but it cannot manufacture an evidence chain or claim it read a file. */
-function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject {
+function coreManagedOutput(output: JsonObject, state: WorkflowState): { output: JsonObject; evidenceSelections: FieldEvidenceSelections } {
   const managed = structuredClone(output);
   delete managed._field_meta;
+  const evidenceSelections = parseEvidenceSelections(managed._evidence_selection, authorizedEvidenceSources(authorizedSourceRefs(state)));
+  delete managed._evidence_selection;
   // `source_refs` is not a universal output field. Research reports, for
   // example, use a structured `sources` array, while some summaries deliberately
   // use only domain references. Adding an unknown top-level property corrupts
@@ -539,7 +542,7 @@ function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject
   // fixture outputs appear like failed Codex calls. Where a module does declare
   // source_refs, Core remains authoritative and replaces model-supplied paths.
   if (Object.hasOwn(managed, "source_refs")) managed.source_refs = authorizedSourceRefs(state);
-  return managed;
+  return { output: managed, evidenceSelections };
 }
 
 const SYSTEM_MANAGED_UPDATE_FIELDS = new Set([
@@ -583,11 +586,11 @@ function uniqueReviewRequirements(requirements: JsonObject[]): JsonObject[] {
   });
 }
 
-function contextDocumentContent(document: DocumentInput): string {
+function contextDocumentContent(document: DocumentInput, sourceId: string): string {
   // parseMarkdown separates frontmatter from the body. Both are approved task
   // input, so materialize them together without copying the original Vault file.
   const label = document.representation === "metadata" ? "No document body was authorized for this context." : document.content;
-  return `# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n# Authorized ${document.representation} content (Sensitivity Class ${document.sensitivity_class})\n\n${label}`;
+  return `# Evidence source ${sourceId}\n\n# KnowledgeOS structured metadata\n\n\`\`\`json\n${JSON.stringify(document.data, null, 2)}\n\`\`\`\n\n# Authorized ${document.representation} content (Sensitivity Class ${document.sensitivity_class})\n\n${label}`;
 }
 
 function contextBudget(workflow: JsonObject): CodexContextBudget {
@@ -610,6 +613,8 @@ function contextBudget(workflow: JsonObject): CodexContextBudget {
 
 async function createPromptContext(state: WorkflowState, task: Parameters<RuntimeHandler>[0]["task"], promptText: string): Promise<ReturnType<typeof createCodexContextWorkspace>> {
   const documents = approvedDocuments(state);
+  const evidenceSources = authorizedEvidenceSources(documents.map((document) => document.path));
+  const sourceIdFor = (document: DocumentInput): string => evidenceSources.find((source) => source.source_ref === document.path)?.source_id ?? "SRC-RUNTIME-INPUT";
   const sourcePath = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
     : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
   const primary = (sourcePath ? documents.find((document) => document.path === sourcePath) : undefined) ?? documents[0] ?? {
@@ -627,10 +632,15 @@ async function createPromptContext(state: WorkflowState, task: Parameters<Runtim
       workflow: { id: state.resolved.workflowId, version: state.resolved.workflowVersion },
       schedule: state.schedule,
       approved_input_files: [primary.path, ...related.map((document) => document.path)],
+      evidence_selection_contract: {
+        output_field: "_evidence_selection",
+        format: { field_name: [{ source_id: "SRC-…", locator: { page: 3, section: "Optional heading" } }] },
+        allowed_sources: evidenceSources.map((source) => ({ source_id: source.source_id, allowed_locator_keys: ["page", "pages", "slide", "slides", "section", "anchor", "excerpt_ref", "line_start", "line_end"] })),
+      },
       pdf_inputs: [...state.pdfDecisions.values()],
     },
-    primary: { source_path: primary.path, content: contextDocumentContent(primary), sensitivity_class: primary.sensitivity_class, requested_representation: primary.requested_representation, representation: primary.representation, policy_source: primary.policy_source },
-    related: related.map((document) => ({ source_path: document.path, content: contextDocumentContent(document), sensitivity_class: document.sensitivity_class, requested_representation: document.requested_representation, representation: document.representation, policy_source: document.policy_source })),
+    primary: { source_id: sourceIdFor(primary), source_path: primary.path, content: contextDocumentContent(primary, sourceIdFor(primary)), sensitivity_class: primary.sensitivity_class, requested_representation: primary.requested_representation, representation: primary.representation, policy_source: primary.policy_source },
+    related: related.map((document) => ({ source_id: sourceIdFor(document), source_path: document.path, content: contextDocumentContent(document, sourceIdFor(document)), sensitivity_class: document.sensitivity_class, requested_representation: document.requested_representation, representation: document.representation, policy_source: document.policy_source })),
     allowedReadRoots: state.sdk.context.allowedReadRoots,
     maxSensitivityClass: state.sdk.context.maxSensitivityClass,
     budget: contextBudget(state.resolved.workflow),
@@ -657,7 +667,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
     const state: WorkflowState = {
       resolved, schedule: scheduleFor(task, resolved.instance), values: new Map([["instance", resolved.instance ?? {}], ["schedule", {}]]),
       sourceFiles: new Set(), outputFiles: new Set(), planId: null, snapshot: null, codexCalls: 0,
-      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [], eventIds: [], pdfDecisions: new Map(),
+      sdk: workflowSdk(vaultRoot, task, resolved), codexContexts: [], eventIds: [], pdfDecisions: new Map(), evidenceSelections: new Map(),
     };
     state.values.set("schedule", state.schedule);
     const steps = (resolved.workflow.steps as unknown[] ?? []).map((raw) => {
@@ -721,6 +731,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           const request = [
             "Read global-rules.md, module-prompt.md, instance-context.yaml, runtime-context.json, primary-input.md, and any files in related/ before answering.",
             "Only those files are authorized input. Return only the structured JSON required by module-prompt.md.",
+            "When you can identify support for an output field, include the reserved _evidence_selection object using only source_id values listed in runtime-context.json. Never include a file path or invent a source ID. Critical fields without a selected source will be sent for user Review.",
             repair_format ? "Repair the previous result format and return JSON that conforms to the declared schema." : "",
           ].filter(Boolean).join("\n");
           let result: Awaited<ReturnType<CodexJsonExecutor>>;
@@ -731,7 +742,9 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             ? fixedValue(step.with.fixed_fields as JsonObject, state, task) as JsonObject : {};
           const nullDefaults = Array.isArray(step.with.default_null_fields)
             ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
-          return { output: coreManagedOutput({ ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) }, state) };
+          const managedOutput = coreManagedOutput({ ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) }, state);
+          state.evidenceSelections.set(step.id, managedOutput.evidenceSelections);
+          return { output: managedOutput.output };
         }, (output) => {
           try { validateSchema(vaultRoot, outputSchema, output); return true; }
           catch { return Boolean(output && typeof output === "object" && !Array.isArray(output) && hasMissingReviewRule(resolved.workflow, output as JsonObject)); }
@@ -797,7 +810,9 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           continue;
         }
         const outputKey = typeof step.with.output === "string" ? step.with.output : steps.slice(0, steps.indexOf(step)).reverse().find((candidate) => candidate.uses === "codex.prompt")?.id;
-        const output = outputKey ? coreManagedOutput(object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING"), state) : null;
+        const managedOutput = outputKey ? coreManagedOutput(object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING"), state) : null;
+        const output = managedOutput?.output ?? null;
+        const evidenceSelections = outputKey ? state.evidenceSelections.get(outputKey) ?? managedOutput?.evidenceSelections ?? {} : {};
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
         try { validateSchema(vaultRoot, outputSchema, output); }
@@ -835,6 +850,11 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const reviewRequirements = uniqueReviewRequirements([
           ...pendingReviewRequirements(state),
           ...(operationMode === "update-record" ? criticalUpdateReviewRequirements(resolved.moduleRoot, resolved.manifest, entityId, planData, currentData) : []),
+          ...criticalFieldsMissingEvidence(resolved.moduleRoot, resolved.manifest, entityId, planData, evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))).map((field) => ({
+            field: `${entityId}.${field}`,
+            condition: "missing-evidence-selection",
+            reason: `Core protection: Critical Field ${entityId}.${field} has no selected supporting evidence from this Workflow's authorized inputs.`,
+          })),
         ]);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
         const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
@@ -846,7 +866,8 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             entityId,
             target,
             output: planData,
-            authorizedSourceRefs: authorizedSourceRefs(state),
+            authorizedSources: authorizedEvidenceSources(authorizedSourceRefs(state)),
+            evidenceSelections,
             runId,
             generation: generated,
             review: { status: "not-required", review_id: null, reviewed_by: null, reviewed_at: null, decision: null },
@@ -873,11 +894,11 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             review_id: reviewId, schema_version: 1, source_module: task.module, instance_id: task.instance_id, target,
             action: "module-operation", proposed_value: {
               field: String(primary.field ?? "record"), old_value: primary.current_value ?? null, new_value: output,
-              operation_plan_id: planId, matching_rules: reviewRequirements,
+              operation_plan_id: planId, matching_rules: reviewRequirements, evidence_selection: evidenceSelections as unknown as JsonObject,
             }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
             priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
-            evidence: authorizedSourceRefs(state), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            evidence: selectedEvidenceRefs(evidenceSelections, authorizedEvidenceSources(authorizedSourceRefs(state))), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,
             ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
             ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),

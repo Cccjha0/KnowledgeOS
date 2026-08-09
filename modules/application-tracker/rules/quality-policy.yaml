@@ -1,12 +1,12 @@
 critical_fields: [application_status, application_open, deadline, tuition, academic_requirement, english_requirement]
 provenance_required: [application_status, application_open, deadline, tuition, academic_requirement, english_requirement]
 freshness:
-  application_open: { interval_days: 7 }
-  application_status: { interval_days: 7 }
-  deadline: { interval_days: 14 }
-  tuition: { interval_days: 60 }
-  academic_requirement: { interval_days: 60 }
-  english_requirement: { interval_days: 60 }
+  application_open: { interval_days: 7, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
+  application_status: { interval_days: 7, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
+  deadline: { interval_days: 14, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
+  tuition: { interval_days: 60, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
+  academic_requirement: { interval_days: 60, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
+  english_requirement: { interval_days: 60, stale_action: { type: workflow, workflow_id: sync-due-research, workflow_version: "1.0.0", resources: { filesystem: required, network: not-required, codex: not-required, user: required }, dedupe: { entity_type: research-request, target_field: record_path, open_statuses: [pending, in-progress, needs-more-information] } } }
 ownership:
   application-record:
     required: true

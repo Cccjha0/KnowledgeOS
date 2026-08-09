@@ -88,6 +88,21 @@ inbox:
     path_pattern: "{instance_root}/Inbox"
   allow_global_routing: true
 
+# The Core Inbox reads this descriptor generically. It does not know what an
+# application research report is, nor where the module will materialize it.
+inbox_processors:
+  research-report:
+    label: Application research report
+    risk: mixed-by-module-plan
+    preview_target: Application Record and Research archive
+    preview_kind: module-processing
+    content_type: research-report
+    instance_field: instance_id
+    matcher:
+      fields:
+        research_type: application-update
+      required_fields: [report_id, instance_id]
+
 routing:
   matcher: workflows/match/v1.0.0.yaml
   auto_route_threshold: 0.90

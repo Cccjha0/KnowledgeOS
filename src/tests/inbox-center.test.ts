@@ -57,6 +57,34 @@ test("Inbox Center discovers only managed inboxes and explains routing without w
   }
 });
 
+test("Inbox processor descriptors provide structured-module previews without application branches in Core", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-processor-descriptor-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await writeCapture(vault, "application-report.md", [
+      "title: Official application update", "research_type: application-update", "report_id: RPT-2026-000001", "instance_id: applications-2027",
+    ], "Official update.");
+    const listed = await invokeCommandApi({ vaultRoot: vault, requestId: "PROCESSOR-LIST", method: "listInboxItems", params: {} });
+    assert.equal(listed.ok, true);
+    const item = ((listed.data as JsonObject).items as JsonObject[])[0]!;
+    assert.equal(item.processor, "module:application-tracker:research-report");
+    const descriptor = item.processor_descriptor as JsonObject;
+    assert.equal(descriptor.label, "Application research report");
+    assert.equal(descriptor.risk, "mixed-by-module-plan");
+
+    const preview = await invokeCommandApi({ vaultRoot: vault, requestId: "PROCESSOR-PREVIEW", method: "processInboxItem", params: { item_id: String(item.item_id), action: "preview" } });
+    assert.equal(preview.ok, true);
+    assert.equal(((preview.data as JsonObject).operation_summary as JsonObject).target, "Application Record and Research archive");
+    assert.equal((preview.data as JsonObject).risk, "mixed-by-module-plan");
+
+    const inboxSource = await fs.readFile(path.join(process.cwd(), "src", "platform", "inboxDiscovery.ts"), "utf8");
+    const previewSource = await fs.readFile(path.join(process.cwd(), "src", "platform", "inboxWorkflow.ts"), "utf8");
+    assert.equal(inboxSource.includes("application-research-report"), false);
+    assert.equal(inboxSource.includes("application-update"), false);
+    assert.equal(previewSource.includes("Application Record and Research archive"), false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Inbox routing uses an Operation Plan and module items wait for Codex instead of pretending success", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-route-"));
   try {

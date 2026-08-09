@@ -22,3 +22,12 @@ capture:
     safe_summary: Fixture assignment summary.
     deadline: '2026-08-02T17:00:00Z'
     status: planned
+    _evidence_selection:
+      deadline:
+      - source_id: SRC-4FB42DAFF836
+        locator:
+          section: Assignment brief
+      status:
+      - source_id: SRC-4FB42DAFF836
+        locator:
+          section: Assignment brief

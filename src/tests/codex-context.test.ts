@@ -40,7 +40,7 @@ test("Codex context budgets cap copied data and surface overflow for review", as
     budget: { max_files: 2, max_total_bytes: 30, max_file_bytes: 20, max_estimated_tokens: 8, overflow_policy: "truncate-and-review" },
   });
   try {
-    assert.equal(context.manifest.version, 4);
+    assert.equal(context.manifest.version, 5);
     assert.equal(context.manifest.budget.candidate_files, 3);
     assert.equal(context.manifest.budget.included_files, 2);
     assert.equal(context.manifest.budget.excluded_file_count, 1);

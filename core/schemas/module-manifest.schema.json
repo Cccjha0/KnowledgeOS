@@ -244,6 +244,39 @@
         }
       }
     },
+    "inbox_processors": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "risk", "preview_target", "matcher"],
+        "properties": {
+          "label": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString" },
+          "risk": { "type": "string", "enum": ["green", "yellow", "red", "mixed-by-module-plan"] },
+          "preview_target": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/nonEmptyString" },
+          "preview_kind": { "type": "string", "enum": ["module-processing", "route", "handoff"] },
+          "content_type": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+          "instance_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "matcher": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["fields"],
+            "properties": {
+              "fields": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": { "type": ["string", "number", "boolean"] }
+              },
+              "required_fields": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+              }
+            }
+          }
+        }
+      }
+    },
     "routing": {
       "type": "object",
       "additionalProperties": false,

@@ -21,19 +21,17 @@ and Components instead.
 
 | ID | Current location | Why it remains | Replacement contract | Removal condition |
 | --- | --- | --- | --- | --- |
-| `application-structured-research-route` | `src/platform/inboxDiscovery.ts` | Existing `research_type: application-update` reports are routed with a trusted instance hint before generic Inbox routing. | `research-request` Capability: manifest-declared capture matcher and entry workflow. | `application-tracker` declares its report matcher and the generic Inbox router resolves it without recognising `application-update`. |
-| `application-stale-research-followup` | `src/quality/audit.ts` | A stale application critical field creates a `create-research-request` action and currently targets `module:application-tracker:sync-due-research`. | `research-request` Component: module-declared freshness follow-up handler, task factory, and deduplication key. | Quality Audit resolves a module's declared follow-up workflow and never names `application-tracker`. |
 | `application-research-schema-component` | `src/components/researchReconciliation.ts`, `src/components/researchRequestScheduler.ts`, `src/platform/researchRequestWorkflow.ts`, `src/platform/reviewWorkflow.ts` | The first implementation was built around Application Record and Research Request schemas. | Versioned generic `research-request` Component with entity schema bindings provided by its consumer module. | The Component accepts module-provided record/request schema IDs and all application schema constants are removed from Core/Platform. |
-| `application-inbox-preview-copy` | `src/platform/inboxWorkflow.ts` | Inbox preview still presents the structured research report route as a special mixed-risk plan. | Generic module-processing preview metadata returned by the route/component contract. | Preview uses a route-supplied operation summary and risk level rather than testing an Application processor name. |
 
 ## Migration sequence
 
 1. Define `research-request` Component manifest and its input/output schemas as
    module parameters.
-2. Add manifest-declared structured capture matchers and generic Inbox route
-   metadata. Migrate the structured research route first.
-3. Add a generic quality follow-up resolver that turns a module quality policy
-   into a managed Task through the Component.
+2. Inbox structured-capture matching and preview metadata are now module-owned
+   `inbox_processors`; keep future processors in the Manifest rather than Core.
+3. Quality Audit now resolves a module-owned `stale_action` into a managed
+   Task and uses the policy's deduplication contract; preserve that generic
+   boundary as the research-request Component evolves.
 4. Move Application's `sync-due-research` behavior behind that Component and
    preserve existing idempotency keys during the data migration.
 5. Remove every entry above only after its focused regression test proves the
