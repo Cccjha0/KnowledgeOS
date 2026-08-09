@@ -91,6 +91,9 @@ research_request:
       record_label: Application
       instructions: Give this request to a web-enabled research assistant. The returned Research Report must set request_id to this request ID and be placed in the instance Inbox.
 
+review_resolution:
+  adapter: application-fact-review
+
 inbox:
   # Legacy/root-Inbox fallback. New files should be placed in one of the role
   # folders below, so their policy is bound to their actual purpose.

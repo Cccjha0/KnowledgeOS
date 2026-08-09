@@ -207,6 +207,12 @@
         }
       }
     },
+    "review_resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter"],
+      "properties": { "adapter": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" } }
+    },
     "inbox": {
       "type": "object",
       "additionalProperties": false,
