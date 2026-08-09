@@ -29,6 +29,35 @@ function check(category: ModuleValidationCheck["category"], code: string, status
   return { category, code, status, message, critical, path: file };
 }
 
+function strings(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").sort() : [];
+}
+
+function qualityLegacyProjection(fieldPolicies: JsonObject): JsonObject {
+  const critical: string[] = []; const provenance: string[] = []; const freshness: JsonObject = {};
+  for (const [reference, raw] of Object.entries(fieldPolicies).sort(([left], [right]) => left.localeCompare(right))) {
+    const policy = object(raw) ?? {};
+    if (policy.critical === true) critical.push(reference);
+    if (policy.provenance === "required") provenance.push(reference);
+    if (typeof policy.verification_interval_days === "number" || object(policy.stale_action)) {
+      const rule: JsonObject = {};
+      if (typeof policy.verification_interval_days === "number") rule.interval_days = policy.verification_interval_days;
+      if (object(policy.stale_action)) rule.stale_action = policy.stale_action!;
+      freshness[reference] = rule;
+    }
+  }
+  return { critical_fields: critical, provenance_required: provenance, freshness };
+}
+
+function normalizedLegacyQuality(policy: JsonObject): JsonObject {
+  const freshness = object(policy.freshness) ?? {};
+  return {
+    critical_fields: strings(policy.critical_fields),
+    provenance_required: strings(policy.provenance_required),
+    freshness: Object.fromEntries(Object.entries(freshness).sort(([left], [right]) => left.localeCompare(right))),
+  };
+}
+
 function compatible(version: string, minimum: string, maximum: string): boolean {
   const parse = (value: string) => value.split(".").slice(0, 3).map((part) => Number(part.replace(/\D.*$/, "")) || 0);
   const compare = (left: number[], right: number[]) => left[0]! - right[0]! || left[1]! - right[1]! || left[2]! - right[2]!;
@@ -85,6 +114,17 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
     checks.push(check("schema", "QUALITY_POLICY_INVALID", "fail", error instanceof Error ? error.message : String(error), relative, true));
     return;
   }
+  const hasCanonicalPolicies = object(policy.field_policies) !== null;
+  const hasLegacyPolicies = ["critical_fields", "provenance_required", "freshness"].some((field) => Object.prototype.hasOwnProperty.call(policy, field));
+  if ((manifest.maturity === "beta" || manifest.maturity === "stable") && !hasCanonicalPolicies) {
+    checks.push(check("contracts", "QUALITY_FIELD_POLICIES_REQUIRED", "fail", "Beta/Stable modules must declare canonical field_policies; legacy Quality Policy fields are compatibility-only.", relative, true));
+  }
+  if (hasCanonicalPolicies && hasLegacyPolicies) {
+    const canonical = qualityLegacyProjection(object(policy.field_policies) ?? {});
+    const legacy = normalizedLegacyQuality(policy);
+    if (JSON.stringify(canonical) !== JSON.stringify(legacy)) checks.push(check("contracts", "QUALITY_POLICY_DUAL_SOURCE_MISMATCH", "fail", "Legacy critical_fields/provenance_required/freshness must exactly match canonical field_policies.", relative, true));
+    else checks.push(check("contracts", "QUALITY_POLICY_LEGACY_EQUIVALENT", "pass", "Legacy Quality Policy compatibility fields match field_policies.", relative));
+  }
   const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
   let schemas: JsonObject = {};
   try {
@@ -96,7 +136,7 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
     const entry = object(raw); if (!entry || typeof entry.entity_type !== "string" || typeof entry.path !== "string") continue;
     try { entitySchemas.set(entry.entity_type, JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject); } catch { /* Registry validation reports this independently. */ }
   }
-  const rules = [object(policy.freshness) ?? {}, object(policy.field_policies) ?? {}];
+  const rules = [object(policy.field_policies) ?? object(policy.freshness) ?? {}];
   for (const raw of rules.flatMap((section) => Object.values(section))) {
     const action = object(object(raw)?.stale_action); if (!action) continue;
     const workflowId = typeof action.workflow_id === "string" ? action.workflow_id : "";

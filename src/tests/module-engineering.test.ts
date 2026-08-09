@@ -581,6 +581,30 @@ test("all scaffold templates generate manifests that satisfy the base contract",
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("Beta modules reject divergent legacy Quality Policy fields", async () => {
+  const engine = await temporaryEngine();
+  try {
+    await createModuleScaffold(engine, "quality-policy-contract", "minimal-config");
+    const root = path.join(engine, "modules", "quality-policy-contract");
+    const manifest = parseYaml(root, path.join(root, "module.yaml"));
+    manifest.maturity = "beta";
+    manifest.quality = { policy: "rules/quality-policy.yaml" };
+    writeYaml(root, path.join(root, "module.yaml"), manifest);
+    const policy: JsonObject = {
+      field_policies: { "record.title": { critical: true, provenance: "required" } },
+      critical_fields: ["record.title"], provenance_required: ["record.title"], freshness: {},
+      ownership: {}, audits: [], orphan_exempt_entity_types: [],
+    };
+    writeYaml(root, path.join(root, "rules", "quality-policy.yaml"), policy);
+    const matching = await validateModule(engine, root);
+    assert.equal(matching.checks.some((item) => item.code === "QUALITY_POLICY_DUAL_SOURCE_MISMATCH" && item.status === "fail"), false);
+    policy.provenance_required = [];
+    writeYaml(root, path.join(root, "rules", "quality-policy.yaml"), policy);
+    const divergent = await validateModule(engine, root);
+    assert.equal(divergent.checks.some((item) => item.code === "QUALITY_POLICY_DUAL_SOURCE_MISMATCH" && item.status === "fail"), true);
+  } finally { await fs.rm(engine, { recursive: true, force: true }); }
+});
+
 test("validation fails before enable when a registered prompt is missing", async () => {
   const engine = await temporaryEngine();
   try {

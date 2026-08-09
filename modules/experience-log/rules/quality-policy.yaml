@@ -1,6 +1,4 @@
-critical_fields: []
-provenance_required: []
-freshness: {}
+field_policies: {}
 ownership:
   experience-entry:
     required: true

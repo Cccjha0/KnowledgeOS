@@ -3,21 +3,14 @@ import path from "node:path";
 import { parseYaml } from "../core/bridge.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import { evaluateFreshness } from "./freshness.js";
+import { resolveFieldQualityPolicies, type FieldQualityPolicy } from "./policy.js";
 import { QualityRepository } from "./repository.js";
 
 function object(value: unknown): JsonObject | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
 }
 
-function strings(value: unknown): string[] {
-  return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim()))] : [];
-}
-
-export interface FieldQualityContract {
-  critical: boolean;
-  provenanceRequired: boolean;
-  verificationIntervalDays: number | null;
-}
+export type FieldQualityContract = FieldQualityPolicy;
 
 /** An immutable handle for one source Core admitted to this Workflow. The
  * model may select this ID, but never invent an arbitrary Vault path. */
@@ -143,24 +136,7 @@ export function fieldQualityContracts(moduleRoot: string, manifest: JsonObject, 
   const relative = typeof object(manifest.quality)?.policy === "string" ? String(object(manifest.quality)!.policy) : null;
   if (!relative) return new Map();
   const policy = parseYaml(moduleRoot, path.join(moduleRoot, ...relative.split("/")));
-  const declared = object(policy.field_policies) ?? {};
-  const declaredCritical = new Set(strings(policy.critical_fields).flatMap((entry) => {
-    const [declaredEntity, field] = entry.split(".", 2);
-    return declaredEntity === entityId && field ? [field] : !entry.includes(".") ? [entry] : [];
-  }));
-  const result = new Map<string, FieldQualityContract>();
-  for (const [qualifiedField, raw] of Object.entries(declared)) {
-    const [declaredEntity, field] = qualifiedField.split(".", 2);
-    if (declaredEntity !== entityId || !field) continue;
-    const config = object(raw) ?? {};
-    const verificationIntervalDays = typeof config.verification_interval_days === "number" && config.verification_interval_days > 0
-      ? config.verification_interval_days : null;
-    const provenanceRequired = config.provenance === "required";
-    const critical = config.critical === true || declaredCritical.has(field);
-    if (critical || provenanceRequired || verificationIntervalDays !== null) result.set(field, { critical, provenanceRequired, verificationIntervalDays });
-  }
-  for (const field of declaredCritical) if (!result.has(field)) result.set(field, { critical: true, provenanceRequired: false, verificationIntervalDays: null });
-  return result;
+  return resolveFieldQualityPolicies(policy, entityId);
 }
 
 export interface MaterializeFieldProvenanceOptions {
