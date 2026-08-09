@@ -363,6 +363,11 @@ function moduleOperationPlanId(item: ReviewItem): string {
 function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonValue): void {
   if (!modifiedValue || typeof modifiedValue !== "object" || Array.isArray(modifiedValue)) throw new PkbError("INVALID_MODIFIED_VALUE", "A module-operation Review modification must be a record object.");
   const replacement = structuredClone(modifiedValue) as JsonObject;
+  // Evidence selection is a transient, Core-validated instruction from the
+  // model. It is never part of a module entity schema and must not be able to
+  // reach the Executor through a user-modified review payload.
+  delete replacement._evidence_selection;
+  delete replacement._field_meta;
   for (const operation of plan.operations) {
     if (operation.type === "create-file") {
       const document = operation.payload.document;
