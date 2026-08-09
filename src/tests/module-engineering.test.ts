@@ -3,10 +3,11 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseYaml, writeYaml } from "../core/bridge.js";
 import { readJson, writeJsonAtomic } from "../core/files.js";
-import type { JsonObject, Operation } from "../core/types.js";
+import type { JsonObject, JsonValue, Operation } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
 import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "../modules/packageManager.js";
@@ -22,6 +23,9 @@ import { runModuleSandbox } from "../modules/sandbox.js";
 import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { buildQuickBlueprint } = createRequire(import.meta.url)(path.join(SOURCE_ROOT, "plugins", "knowledgeos-obsidian", "views", "module-builder-modal.js")) as {
+  buildQuickBlueprint: (form: Record<string, unknown>) => JsonObject;
+};
 
 async function writeReadinessEvidence(engineRoot: string, moduleId: string, moduleRoot: string): Promise<void> {
   const validation = await validateModule(engineRoot, moduleRoot, { writeReport: true });
@@ -56,6 +60,43 @@ test("Module Blueprint resolves templates, Capability Packs, Adapters, and Compo
   assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
   assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
   assert.equal(report.checks.some((item) => item.code === "CAPABILITY_PACK_PRIVACY_BOUND" && item.status === "pass"), true, "high-privacy and immutable-user-content must enforce executable Pack contracts.");
+});
+
+test("Quick Builder emits a complete Blueprint v1.1 Record Module and a recent-records provider", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = buildQuickBlueprint({
+      id: "quick-records", name: "Quick records", description: "Capture concise records.",
+      primary: "Capture a record", excluded: "Delete source files", inputs: "markdown,pdf",
+      sensitivity: "1", representation: "full", critical: "source_url", weekly: true,
+    });
+    const blueprintPath = path.join(engine, "quick-records.blueprint.yaml");
+    writeYaml(engine, blueprintPath, blueprint);
+
+    const preview = await validateModuleBlueprint(engine, blueprintPath);
+    assert.equal(preview.report.overall, "PASS", preview.report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+    assert.deepEqual((blueprint.entities as JsonObject[]).find((entity) => entity.id === "knowledge-record")?.schema, {
+      fields: {
+        created: { type: "datetime", required: true, description: "The time the record was created." },
+        record_kind: { type: "string", description: "The record category, when it can be determined from the capture." },
+        source_url: { type: "string", critical: true, description: "A user-designated critical source_url value." },
+      },
+    });
+    const capture = (blueprint.workflows as JsonObject[]).find((workflow) => workflow.id === "normalize-record")!;
+    assert.deepEqual(capture.input_roles, ["record-input"]);
+    assert.deepEqual(capture.operation, { type: "create-record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/knowledge-record.md" });
+    assert.equal(((blueprint.review_policy as JsonObject).critical_fields as JsonValue[])[0], "knowledge-record.source_url");
+
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprintPath);
+    const provider = parseYaml(String(generated.module_root), path.join(String(generated.module_root), "dashboard", "provider.yaml"));
+    const recent = (provider.items as JsonObject[]).find((item) => item.id === "recent-records");
+    assert.deepEqual(recent, {
+      id: "recent-records", kind: "recent", entity: "knowledge-record", date_field: "created", limit: 5,
+      category: "summary", priority: "low", title: "{title}", description: "记录创建于：{created}", actions: ["open"],
+    });
+  } finally {
+    await fs.rm(engine, { recursive: true, force: true });
+  }
 });
 
 test("Capability Pack contracts reject Blueprint privacy drift before scaffolding", async () => {

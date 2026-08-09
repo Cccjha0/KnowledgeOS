@@ -639,12 +639,15 @@ function entityIdsForOwnership(entities: JsonObject[]): string[] { return entiti
 
 function dashboardProviderItems(sections: string[], entities: JsonObject[]): JsonObject[] {
   const entityIds = new Set(entities.map((entity) => String(entity.id)));
+  const recordEntity = entityIds.has("knowledge-record") ? "knowledge-record" : entityIds.has("record") ? "record" : null;
   const items: JsonObject[] = [];
   for (const section of sections) {
     if (section === "upcoming-deadlines" && entityIds.has("assignment")) {
       items.push({ id: section, kind: "due", entity: "assignment", due_field: "deadline", filters: { status: ["planned"] }, window_days: 14, category: "deadline", priority: { overdue: "critical", within_3_days: "high", default: "medium" }, title: "{title}", description: "截止日期：{deadline}", actions: ["open"] });
     } else if (section === "recent-lectures" && entityIds.has("lecture")) {
       items.push({ id: section, kind: "recent", entity: "lecture", date_field: "lecture_date", limit: 5, category: "summary", priority: "low", title: "{title}", description: "课程资料日期：{lecture_date}", actions: ["open"] });
+    } else if (section === "recent-records" && recordEntity) {
+      items.push({ id: section, kind: "recent", entity: recordEntity, date_field: "created", limit: 5, category: "summary", priority: "low", title: "{title}", description: "记录创建于：{created}", actions: ["open"] });
     } else if (section === "waiting-reviews") {
       items.push({ id: section, kind: "review-summary", category: "status", priority: "high", title: "{count} 项事项等待审核", description: "有 {count} 项等待你的决定。", actions: ["open"] });
     }

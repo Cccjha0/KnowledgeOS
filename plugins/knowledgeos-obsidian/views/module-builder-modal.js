@@ -1,3 +1,61 @@
+function splitBuilderValues(value, separator = /\r?\n/) {
+  return String(value || "").split(separator).map((item) => item.trim()).filter(Boolean);
+}
+
+/**
+ * Builds a compact, but complete, Blueprint v1.1 record module contract.
+ * Exported separately so the Quick path is covered without a live Obsidian UI.
+ */
+function buildQuickBlueprint(form) {
+  const inputs = splitBuilderValues(form.inputs, /[,，]/);
+  const attachments = inputs.some((item) => ["pdf", "pptx", "image"].includes(item));
+  const criticalNames = splitBuilderValues(form.critical, /[,，]/)
+    .map((field) => field.replace(/^knowledge-record\./, ""))
+    .filter((field, index, all) => field && all.indexOf(field) === index);
+  const recordFields = {
+    created: { type: "datetime", required: true, description: "The time the record was created." },
+    record_kind: { type: "string", description: "The record category, when it can be determined from the capture." },
+  };
+  for (const field of criticalNames) recordFields[field] = { type: "string", critical: true, description: `A user-designated critical ${field} value.` };
+  const recordOutput = { id: "knowledge-record", entity: "knowledge-record", schema: "knowledge-record", template: "templates/knowledge-record.md", target: "{instance.content_root}/Records/{task.payload.item_id}.md" };
+  const recordRole = "record-input";
+  const summaryEnabled = form.weekly === true;
+  const entities = [{ id: "knowledge-record", ownership: "instance", schema: { fields: recordFields } }];
+  const outputs = [recordOutput];
+  const workflows = [{
+    id: "normalize-record", trigger: "capture", requires_ai: true,
+    input_entities: ["capture"], input_roles: [recordRole], output_entity: "knowledge-record",
+    read: { representation: form.representation }, prompt: { id: "normalize-record" },
+    operation: { type: "create-record", target: recordOutput.target, template: recordOutput.template },
+  }];
+  if (summaryEnabled) {
+    const summaryOutput = { id: "weekly-summary", entity: "weekly-summary", schema: "weekly-summary", template: "templates/weekly-summary.md", target: "{instance.content_root}/Summaries/{schedule.iso_week}.md" };
+    entities.push({ id: "weekly-summary", ownership: "instance", schema: { fields: { week: { type: "string", required: true } } } });
+    outputs.push(summaryOutput);
+    workflows.push({
+      id: "weekly-summary", trigger: "schedule", requires_ai: true,
+      input_entities: ["knowledge-record"], sources: [{ entity: "knowledge-record", window: "current-week", date_field: "created" }],
+      output_entity: "weekly-summary", read: { representation: "summary" }, prompt: { id: "weekly-summary" },
+      operation: { type: "create-record", target: summaryOutput.target, template: summaryOutput.template },
+    });
+  }
+  return {
+    blueprint_version: 1.1, base_template: summaryEnabled ? "standard-workflow" : "minimal-config",
+    capability_packs: ["capture-processing", "structured-entity", "immutable-user-content", ...(attachments ? ["attachment-processing"] : []), ...(summaryEnabled ? ["periodic-summary"] : [])],
+    module: { id: String(form.id || "").trim(), display_name: String(form.name || "").trim(), description: String(form.description || "").trim(), intended_users: ["knowledgeos-user"] },
+    module_class: { type: summaryEnabled ? "workflow" : "configuration", complexity: summaryEnabled ? "standard" : "minimal" },
+    use_cases: { primary: splitBuilderValues(form.primary), excluded: splitBuilderValues(form.excluded) },
+    entities, inputs, outputs,
+    inbox: { module_level: true, instance_level: true, global_routing: true, default_asset_role: recordRole, roles: { [recordRole]: { inbox_subpath: "Records", access_policy: { sensitivity_class: Number(form.sensitivity), max_representation: form.representation }, entrypoint: "normalize-record", allow_codex: true } } },
+    privacy: { default_sensitivity_class: Number(form.sensitivity), default_max_representation: form.representation, network_allowed: false, user_original_content_mutable: false, input_roles: { [recordRole]: { sensitivity_class: Number(form.sensitivity), max_representation: form.representation, allow_codex: true } } },
+    workflows,
+    review_policy: { critical_fields: criticalNames.map((field) => `knowledge-record.${field}`), ambiguous_input: "review", destructive_operations: "forbidden" },
+    jobs: summaryEnabled ? [{ id: "weekly-summary", workflow_id: "weekly-summary", schedule: "weekly", weekday: "Sun", at: "18:00", timezone: "instance", scope: "instance", catch_up: "latest", retry: { max_attempts: 3, strategy: "exponential" }, concurrency: { policy: "forbid", key: "{module}:{instance}:weekly-summary" }, max_age_days: 21 }] : [],
+    events: { publishes: [], subscribes: [] }, dashboard: { sections: ["recent-records", "waiting-reviews"] },
+    testing: { normal_input: "required", ambiguous_input: "required", repeat_execution: "required", permission_denied: "required", paused_instance: "required", archived_instance: "required", prompt_regression: "required", periodic_job: summaryEnabled ? "required" : "not-applicable", event_publication: "not-applicable", event_consumption: "not-applicable", migration: "not-applicable", attachment_policy: attachments ? "required" : "not-applicable" },
+  };
+}
+
 function createModuleBuilderViews(deps) {
   const { Modal, Setting, Notice } = deps;
 
@@ -187,26 +245,9 @@ function createModuleBuilderViews(deps) {
     text(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addText((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
     area(parent, name, description, key) { new Setting(parent).setName(name).setDesc(description).addTextArea((control) => control.setValue(this.form[key]).onChange((value) => { this.form[key] = value; this.invalidate(); })); }
     invalidate() { if (this.preview) { this.preview = null; this.render(); } }
-    lines(value, separator = /\r?\n/) { return String(value || "").split(separator).map((item) => item.trim()).filter(Boolean); }
+    lines(value, separator = /\r?\n/) { return splitBuilderValues(value, separator); }
 
-    blueprint() {
-      const inputs = this.lines(this.form.inputs, /[,，]/);
-      const attachments = inputs.some((item) => ["pdf", "pptx", "image"].includes(item));
-      const packs = ["capture-processing", "structured-entity", "immutable-user-content", ...(attachments ? ["attachment-processing"] : []), ...(this.form.weekly ? ["periodic-summary"] : [])];
-      return {
-        blueprint_version: 1.1, base_template: this.form.weekly ? "standard-workflow" : "minimal-config", capability_packs: packs,
-        module: { id: this.form.id.trim(), display_name: this.form.name.trim(), description: this.form.description.trim(), intended_users: ["knowledgeos-user"] },
-        module_class: { type: this.form.weekly ? "workflow" : "configuration", complexity: this.form.weekly ? "standard" : "minimal" },
-        use_cases: { primary: this.lines(this.form.primary), excluded: this.lines(this.form.excluded) },
-        entities: [{ id: "knowledge-record", ownership: "instance" }], inputs, outputs: ["knowledge-record"],
-        inbox: { module_level: true, instance_level: true, global_routing: true },
-        privacy: { default_sensitivity_class: Number(this.form.sensitivity), default_max_representation: this.form.representation, network_allowed: false, user_original_content_mutable: false },
-        workflows: [{ id: "normalize-record", trigger: "capture", requires_ai: true }, ...(this.form.weekly ? [{ id: "weekly-summary", trigger: "schedule", requires_ai: true, sources: [{ entity: "knowledge-record", window: "current-week", date_field: "created" }] }] : [])],
-        review_policy: { critical_fields: this.lines(this.form.critical, /[,，]/), ambiguous_input: "review", destructive_operations: "forbidden" },
-        jobs: this.form.weekly ? [{ id: "weekly-summary", schedule: "weekly", catch_up: "latest", workflow_id: "weekly-summary" }] : [], events: { publishes: [], subscribes: [] }, dashboard: { sections: ["recent-records", "waiting-reviews"] },
-        testing: { normal_input: "required", ambiguous_input: "required", repeat_execution: "required", permission_denied: "required", paused_instance: "required", archived_instance: "required", prompt_regression: "required", periodic_job: this.form.weekly ? "required" : "not-applicable", event_publication: "not-applicable", event_consumption: "not-applicable", migration: "not-applicable", attachment_policy: attachments ? "required" : "not-applicable" },
-      };
-    }
+    blueprint() { return buildQuickBlueprint(this.form); }
 
     async analyzeGuided() {
       this.busy = true; this.preview = null; this.guided = null; this.confirmedQuestions.clear(); this.render();
@@ -288,4 +329,4 @@ function createModuleBuilderViews(deps) {
   return { ModuleBuilderModal };
 }
 
-module.exports = { createModuleBuilderViews };
+module.exports = { createModuleBuilderViews, buildQuickBlueprint };
