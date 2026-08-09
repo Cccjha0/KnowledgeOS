@@ -605,6 +605,28 @@ test("Beta modules reject divergent legacy Quality Policy fields", async () => {
   } finally { await fs.rm(engine, { recursive: true, force: true }); }
 });
 
+test("Research Request validation rejects a Contract field absent from its registered Schema", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-research-contract-"));
+  try {
+    const moduleRoot = path.join(directory, "application-tracker");
+    await fs.cp(path.join(SOURCE_ROOT, "modules", "application-tracker"), moduleRoot, { recursive: true });
+    const requestSchemaPath = path.join(moduleRoot, "schemas", "research-request.schema.json");
+    const requestSchema = JSON.parse(await fs.readFile(requestSchemaPath, "utf8")) as JsonObject;
+    delete (requestSchema.properties as JsonObject).report_ids;
+    await fs.writeFile(requestSchemaPath, `${JSON.stringify(requestSchema, null, 2)}\n`, "utf8");
+
+    const report = await validateModule(SOURCE_ROOT, moduleRoot);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(report.checks.some((item) => item.code === "RESEARCH_REQUEST_FIELD_CONTRACT_INVALID" && item.status === "fail" && item.message.includes("request.report_ids_field")), true);
+
+    (requestSchema.properties as JsonObject).report_ids = { type: "array", items: { type: "string" } };
+    (((requestSchema.properties as JsonObject).status as JsonObject).enum as JsonValue[]) = ["pending", "completed"];
+    await fs.writeFile(requestSchemaPath, `${JSON.stringify(requestSchema, null, 2)}\n`, "utf8");
+    const lifecycleMismatch = await validateModule(SOURCE_ROOT, moduleRoot);
+    assert.equal(lifecycleMismatch.checks.some((item) => item.code === "RESEARCH_REQUEST_FIELD_CONTRACT_INVALID" && item.status === "fail" && item.message.includes("in-progress")), true);
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test("validation fails before enable when a registered prompt is missing", async () => {
   const engine = await temporaryEngine();
   try {
