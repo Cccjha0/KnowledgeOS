@@ -318,9 +318,10 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
       const access = object(role?.access_policy);
       const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : "";
       const action = typeof role?.required_user_action === "string" ? role.required_user_action : "";
-      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action))
+      const validAction = ["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"].includes(action);
+      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action)) && (!action || validAction)
         ? check("SEMANTIC_INBOX_ROLE_CONTRACT_VALID", "pass", `${roleId} declares path, access policy, and a continuation.`, `inbox.roles.${roleId}`)
-        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and entrypoint or required_user_action.`, `inbox.roles.${roleId}`));
+        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and a valid continuation.`, `inbox.roles.${roleId}`));
       if (entrypoint) checks.push(workflowIds.includes(entrypoint)
         ? check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_VALID", "pass", `${roleId} routes to ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`)
         : check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_UNKNOWN", "fail", `${roleId} routes to unknown Workflow ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`));

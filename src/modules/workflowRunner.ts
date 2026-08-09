@@ -111,8 +111,17 @@ function hasMissingReviewRule(workflow: JsonObject, output: JsonObject): boolean
 
 /** Enforces a role's Codex policy at the final execution boundary. */
 export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: JsonObject, workflowContract: JsonObject | null): void {
-  const roleId = typeof taskPayload.asset_role === "string" ? taskPayload.asset_role : null;
+  const declaredRoles = Array.isArray(workflowContract?.input_roles)
+    ? workflowContract.input_roles.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const roleId = typeof taskPayload.asset_role === "string" && taskPayload.asset_role.trim() ? taskPayload.asset_role.trim() : null;
+  if (declaredRoles.length && !roleId) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_REQUIRED", "This Workflow declares input_roles, so its task payload must include a valid asset_role.", { input_roles: declaredRoles });
+  }
   if (!roleId) return;
+  if (declaredRoles.length && !declaredRoles.includes(roleId)) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_MISMATCH", `Asset role ${roleId} is not authorized for this Workflow.`, { asset_role: roleId, input_roles: declaredRoles });
+  }
   // Blueprint contracts are optional for hand-authored module workflows.
   // Missing policy maps mean "no additional role restriction", not malformed
   // workflow data.  Keep `object()` strict for fields that are actually
@@ -121,6 +130,13 @@ export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: Json
   const contractRole = optionalObject(contractRoles?.[roleId]);
   const inboxRoles = optionalObject(optionalObject(manifest.inbox)?.asset_roles);
   const manifestRole = optionalObject(inboxRoles?.[roleId]);
+  if (declaredRoles.length && (!contractRole || !manifestRole)) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_INVALID", `Asset role ${roleId} is not fully declared by the Workflow and Module Manifest.`, {
+      asset_role: roleId,
+      has_contract_policy: Boolean(contractRole),
+      has_manifest_role: Boolean(manifestRole),
+    });
+  }
   if (contractRole?.allow_codex === false || manifestRole?.allow_codex === false) {
     throw new PkbError("MODULE_WORKFLOW_CODEX_DENIED", `Asset role ${roleId} does not permit Codex for this Workflow.`, {
       asset_role: roleId,
@@ -642,6 +658,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       const step = object(raw); return { id: string(step.id, "step.id"), uses: string(step.uses, "step.uses"), with: (step.with && typeof step.with === "object" && !Array.isArray(step.with) ? step.with : {}) as JsonObject } satisfies WorkflowStep;
     });
     if (!steps.length) throw new PkbError("MODULE_WORKFLOW_EMPTY", `${resolved.workflowId} has no steps.`);
+    // This executes before every step, not just codex.prompt. A Workflow that
+    // declares input_roles must never silently fall back to an unclassified
+    // Markdown source or a caller-supplied file without a Role binding.
+    assertCodexRolePermitted(task.payload, resolved.manifest, optionalObject(resolved.workflow.blueprint_contract));
     for (const step of steps) {
       checkpoint();
       const definition = getWorkflowStepDefinition(step.uses);

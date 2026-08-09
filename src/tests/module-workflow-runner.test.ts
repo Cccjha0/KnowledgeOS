@@ -65,6 +65,12 @@ test("Codex is denied at runtime when either role policy forbids it", () => {
     { inbox: { asset_roles: { "lecture-material": { allow_codex: true } } } },
     { role_policies: { "lecture-material": { allow_codex: true } } },
   ));
+  const boundContract = { input_roles: ["lecture-material"], role_policies: { "lecture-material": { allow_codex: true } } };
+  const boundManifest = { inbox: { asset_roles: { "lecture-material": { allow_codex: true } } } };
+  assert.throws(() => assertCodexRolePermitted({}, boundManifest, boundContract), /must include a valid asset_role/);
+  assert.throws(() => assertCodexRolePermitted({ asset_role: "private-document" }, boundManifest, boundContract), /not authorized/);
+  assert.throws(() => assertCodexRolePermitted({ asset_role: "lecture-material" }, { inbox: { asset_roles: {} } }, boundContract), /not fully declared/);
+  assert.doesNotThrow(() => assertCodexRolePermitted({ asset_role: "lecture-material" }, boundManifest, boundContract));
 });
 
 test("a Blueprint review_when rule blocks the write, creates a Review, and executes only after approval", async () => {

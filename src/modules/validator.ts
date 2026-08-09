@@ -187,14 +187,17 @@ function validateInboxRoleContracts(manifest: JsonObject, checks: ModuleValidati
   const defaultRole = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
   if (defaultRole && !roles[defaultRole]) checks.push(check("contracts", "INBOX_DEFAULT_ROLE_MISSING", "fail", `inbox.default_asset_role ${defaultRole} is not declared in inbox.asset_roles.`, "module.yaml", true));
   const folders = new Set<string>();
+  const allowedActions = new Set(["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"]);
   for (const [id, raw] of Object.entries(roles)) {
     const role = object(raw);
     const folder = typeof role?.inbox_subpath === "string" ? role.inbox_subpath.toLocaleLowerCase() : "";
     if (folder && folders.has(folder)) checks.push(check("contracts", "INBOX_ROLE_FOLDER_DUPLICATE", "fail", `Inbox role ${id} reuses the subfolder ${role?.inbox_subpath}.`, "module.yaml", true));
     if (folder) folders.add(folder);
     const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : null;
+    const action = typeof role?.required_user_action === "string" ? role.required_user_action : null;
     if (entrypoint && typeof entrypoints[entrypoint] !== "string") checks.push(check("contracts", "INBOX_ROLE_ENTRYPOINT_MISSING", "fail", `Inbox role ${id} references undeclared entrypoint ${entrypoint}.`, "module.yaml", true));
-    if (!entrypoint && role?.required_user_action !== "resolve-review") checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare required_user_action: resolve-review.`, "module.yaml", true));
+    if (action && !allowedActions.has(action)) checks.push(check("contracts", "INBOX_ROLE_ACTION_INVALID", "fail", `Inbox role ${id} declares unsupported required_user_action ${action}.`, "module.yaml", true));
+    if (!entrypoint && !allowedActions.has(action ?? "")) checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare a valid required_user_action.`, "module.yaml", true));
   }
   checks.push(check("contracts", "INBOX_ROLE_CONTRACTS_VALID", "pass", "Inbox asset roles and their entrypoints were checked.", "module.yaml"));
 }
