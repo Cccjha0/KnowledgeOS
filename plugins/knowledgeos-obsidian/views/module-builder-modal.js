@@ -425,6 +425,20 @@ function createModuleBuilderViews(deps) {
       const workspace = root.createEl("p", { cls: "knowledgeos-builder-workspace" }); workspace.createEl("span", { text: "Workspace: " }); workspace.createEl("code", { text: this.readiness.workspace_path || "—" });
       const list = root.createEl("ol", { cls: "knowledgeos-builder-readiness-list" });
       for (const step of this.readiness.steps || []) { const row = list.createEl("li", { cls: `knowledgeos-builder-readiness-step is-${step.status}` }); const heading = row.createDiv({ cls: "knowledgeos-builder-readiness-heading" }); heading.createEl("strong", { text: this.stepLabel(step.id) }); heading.createEl("span", { text: step.status === "complete" ? "Complete" : step.status === "failed" ? "Needs attention" : "Not complete" }); row.createEl("div", { cls: "knowledgeos-builder-readiness-message", text: step.message }); }
+      const implementation = this.readiness.implementation;
+      if (implementation?.attempts?.length) {
+        const details = root.createEl("details", { cls: "knowledgeos-technical knowledgeos-builder-implementation-details" });
+        details.createEl("summary", { text: "Implementation changes and diagnostics" });
+        if (implementation.candidate_workspace_path) details.createDiv({ cls: "knowledgeos-builder-workspace", text: `Failed candidate kept at: ${implementation.candidate_workspace_path}` });
+        if (implementation.transaction_backup_path) details.createDiv({ cls: "knowledgeos-builder-workspace", text: `Previous workspace backup: ${implementation.transaction_backup_path}` });
+        for (const attempt of implementation.attempts) {
+          const section = details.createDiv({ cls: "knowledgeos-builder-implementation-attempt" });
+          section.createEl("strong", { text: `Attempt ${attempt.attempt || "?"} · ${attempt.validation || "NOT_RUN"} / ${attempt.test || "NOT_RUN"}` });
+          for (const file of attempt.changed_files || []) section.createDiv({ cls: "knowledgeos-builder-readiness-message", text: `${file.path || file}${file.before_hash ? ` · ${file.before_hash.slice(0, 18)} → ${file.after_hash?.slice(0, 18) || "—"}` : ""}` });
+          for (const issue of [...(attempt.validation_errors || []), ...(attempt.test_failures || [])]) section.createDiv({ cls: "knowledgeos-builder-state is-error", text: `${issue.code || "CHECK"}: ${issue.message || "Failed"}` });
+          if (attempt.error) section.createDiv({ cls: "knowledgeos-builder-state is-error", text: attempt.error });
+        }
+      }
       if (this.readinessError) root.createEl("div", { cls: "knowledgeos-builder-state is-error", attr: { role: "alert" }, text: this.readinessError.message || "Could not refresh module status." });
       else if (this.busy) root.createEl("div", { cls: "knowledgeos-builder-state", attr: { role: "status", "aria-live": "polite" }, text: "Working on the next readiness step…" });
       const actions = root.createDiv({ cls: "knowledgeos-builder-actions" }); const next = (this.readiness.available_actions || [])[0];

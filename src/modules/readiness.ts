@@ -99,7 +99,14 @@ export async function getModuleReadiness(engineRoot: string, vaultRoot: string, 
   const installed = version !== null && lock.modules?.[moduleId]?.version === version;
   steps.push({ id: "installation", status: installed ? "complete" : "pending", message: installed ? "This package version is installed in the Vault." : "Install the packaged module explicitly to enable it.", report_path: installed && typeof lock.modules?.[moduleId]?.installed_path === "string" ? lock.modules![moduleId]!.installed_path! : null });
   const state = stateFor(steps);
-  return { module_id: moduleId, workspace_path: toVaultPath(vaultRoot, root), version, state, maturity: manifest?.maturity ?? null, steps, available_actions: availableActions(steps) };
+  const implementationDetail = implementation ? {
+    overall: implementation.overall,
+    attempts: implementation.attempts,
+    candidate_workspace_path: implementation.candidate_workspace_path,
+    transaction_backup_path: implementation.transaction_backup_path,
+    promoted: implementation.promoted,
+  } : null;
+  return { module_id: moduleId, workspace_path: toVaultPath(vaultRoot, root), version, state, maturity: manifest?.maturity ?? null, steps, implementation: implementationDetail, available_actions: availableActions(steps) };
 }
 
 function canonicalAction(action: ModuleReadinessAction): Exclude<ModuleReadinessAction, "implement" | "validate"> {

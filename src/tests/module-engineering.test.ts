@@ -23,7 +23,7 @@ import { validateModule } from "../modules/validator.js";
 import { runModuleSandbox } from "../modules/sandbox.js";
 import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
 import { diffPermissionRisk } from "../modules/permissionRiskDiff.js";
-import { implementModuleWorkspace, isAllowedImplementationPath, moduleImplementationReportPath } from "../modules/implementation.js";
+import { implementModuleWorkspace, isAllowedImplementationPath, moduleImplementationReportPath, promoteVerifiedCandidate, type ModuleImplementationReport } from "../modules/implementation.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const { buildQuickBlueprint } = createRequire(import.meta.url)(path.join(SOURCE_ROOT, "plugins", "knowledgeos-obsidian", "views", "module-builder-modal.js")) as {
@@ -325,6 +325,51 @@ test("Module implementation rejects an escaped model write and records the bound
     const report = await readJson<JsonObject | null>(moduleImplementationReportPath(vault, "media-library"), null);
     assert.equal(report?.overall, "FAIL");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "core", "forbidden.ts")).then(() => true).catch(() => false), false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Module implementation keeps failed candidates out of the development workspace and records a diff", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-candidate-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "CANDIDATE-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
+    assert.equal(create.ok, true);
+    const workspace = path.join(vault, "90-System", "Module Development", "media-library");
+    const schemaIndex = path.join(workspace, "schemas", "index.yaml");
+    const before = await fs.readFile(schemaIndex, "utf8");
+    await assert.rejects(() => implementModuleWorkspace(SOURCE_ROOT, vault, "media-library", {
+      execute: async () => ({ output: { files: [{ path: "schemas/index.yaml", content: "schemas: [invalid" }] }, stderr: "" }),
+    }), /while parsing a flow sequence/);
+    const report = await readJson<ModuleImplementationReport | null>(moduleImplementationReportPath(vault, "media-library"), null);
+    assert.ok(report);
+    assert.equal(report.overall, "FAIL");
+    assert.equal(await fs.readFile(schemaIndex, "utf8"), before, "A failed candidate must not overwrite the development workspace.");
+    assert.equal(report.promoted, false);
+    assert.equal(typeof report.candidate_workspace_path, "string");
+    const candidate = path.join(vault, ...String(report.candidate_workspace_path).split("/"));
+    assert.match(await fs.readFile(path.join(candidate, "schemas", "index.yaml"), "utf8"), /invalid/);
+    const firstChange = ((report.attempts[0] as JsonObject).changed_files as JsonObject[])[0]!;
+    assert.equal(firstChange.path, "schemas/index.yaml");
+    assert.equal(typeof firstChange.before_hash, "string");
+    assert.equal(typeof firstChange.after_hash, "string");
+    assert.equal(firstChange.before_hash === firstChange.after_hash, false);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Module implementation promotes only a verified Candidate and retains the previous workspace transactionally", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-promote-"));
+  try {
+    const workspace = path.join(vault, "workspace");
+    const candidate = path.join(vault, "candidate");
+    const previous = path.join(vault, "transactions", "previous");
+    await fs.mkdir(workspace, { recursive: true }); await fs.mkdir(candidate, { recursive: true });
+    await fs.writeFile(path.join(workspace, "record.md"), "before", "utf8");
+    await fs.writeFile(path.join(candidate, "record.md"), "after", "utf8");
+    await promoteVerifiedCandidate(workspace, candidate, previous);
+    assert.equal(await fs.readFile(path.join(workspace, "record.md"), "utf8"), "after");
+    assert.equal(await fs.readFile(path.join(previous, "record.md"), "utf8"), "before");
+    assert.equal(await fs.stat(candidate).then(() => true).catch(() => false), false);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

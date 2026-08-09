@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,9 @@ export interface ModuleImplementationReport extends JsonObject {
   max_auto_fixes: number;
   validation: ModuleValidationReport | null;
   test: ModuleTestReport | null;
+  candidate_workspace_path: string | null;
+  transaction_backup_path: string | null;
+  promoted: boolean;
 }
 
 export interface ModuleImplementationOptions {
@@ -43,8 +47,20 @@ function workspaceRoot(vaultRoot: string, moduleId: string): string {
   return path.join(vaultRoot, "90-System", "Module Development", moduleId);
 }
 
+function implementationStateRoot(vaultRoot: string, moduleId: string): string {
+  return path.join(vaultRoot, "90-System", "State", "Module Builder", moduleId);
+}
+
+function implementationRunId(): string {
+  return `${new Date().toISOString().replace(/[-:.TZ]/g, "")}-${process.pid}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function contentHash(value: string | null): string | null {
+  return value === null ? null : `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
 export function moduleImplementationReportPath(vaultRoot: string, moduleId: string): string {
-  return path.join(vaultRoot, "90-System", "State", "Module Builder", moduleId, "implementation-report.json");
+  return path.join(implementationStateRoot(vaultRoot, moduleId), "implementation-report.json");
 }
 
 /** Only declarative module artifacts may be authored by the Implementation model. */
@@ -97,19 +113,41 @@ async function copyImplementationContext(moduleRoot: string, contextRoot: string
   }
 }
 
-async function applyChanges(moduleRoot: string, changes: ModuleImplementationChange[]): Promise<void> {
+async function applyChanges(moduleRoot: string, changes: ModuleImplementationChange[]): Promise<JsonObject[]> {
+  const effects: JsonObject[] = [];
   for (const change of changes) {
     const target = path.resolve(moduleRoot, ...change.path.split("/"));
     if (path.relative(moduleRoot, target).split(path.sep).includes("..")) throw new PkbError("MODULE_IMPLEMENTATION_PATH_DENIED", `Implementation target escaped the module workspace: ${change.path}`);
+    const before = await fs.readFile(target, "utf8").catch(() => null);
+    const after = change.content.endsWith("\n") ? change.content : `${change.content}\n`;
     await fs.mkdir(path.dirname(target), { recursive: true });
     const temporary = `${target}.implementation-${process.pid}.tmp`;
-    await fs.writeFile(temporary, change.content.endsWith("\n") ? change.content : `${change.content}\n`, "utf8");
+    await fs.writeFile(temporary, after, "utf8");
     await fs.rename(temporary, target);
+    effects.push({ path: change.path, before_hash: contentHash(before), after_hash: contentHash(after), changed: before !== after });
   }
+  return effects;
 }
 
-function attemptRecord(index: number, changes: ModuleImplementationChange[], validation: ModuleValidationReport | null, test: ModuleTestReport | null, summary: unknown): JsonObject {
-  return { attempt: index + 1, changed_files: changes.map((change) => change.path), summary: typeof summary === "string" ? summary : null, validation: validation?.overall ?? "NOT_RUN", test: test?.overall ?? "NOT_RUN", at: new Date().toISOString() };
+function failedChecks(report: { checks?: Array<{ status?: string; code?: string; message?: string }> } | null): JsonObject[] {
+  return (report?.checks ?? []).filter((check) => check.status === "fail").map((check) => ({ code: check.code ?? "UNKNOWN", message: check.message ?? "Validation failed." }));
+}
+
+function attemptRecord(index: number, effects: JsonObject[], validation: ModuleValidationReport | null, test: ModuleTestReport | null, summary: unknown): JsonObject {
+  return { attempt: index + 1, changed_files: effects, summary: typeof summary === "string" ? summary : null, validation: validation?.overall ?? "NOT_RUN", validation_errors: failedChecks(validation), test: test?.overall ?? "NOT_RUN", test_failures: failedChecks(test), at: new Date().toISOString() };
+}
+
+/** Promote a verified candidate in one same-volume directory transaction. */
+export async function promoteVerifiedCandidate(workspace: string, candidate: string, backup: string): Promise<void> {
+  await fs.mkdir(path.dirname(backup), { recursive: true });
+  await fs.rm(backup, { recursive: true, force: true });
+  await fs.rename(workspace, backup);
+  try {
+    await fs.rename(candidate, workspace);
+  } catch (error) {
+    await fs.rename(backup, workspace).catch(() => undefined);
+    throw new PkbError("MODULE_IMPLEMENTATION_PROMOTION_FAILED", "Verified Candidate Workspace could not be promoted; the original workspace was restored.", error);
+  }
 }
 
 /**
@@ -126,34 +164,42 @@ export async function implementModuleWorkspace(engineRoot: string, vaultRoot: st
   const manifest = parseYaml(moduleRoot, manifestPath);
   if (manifest.id !== moduleId) throw new PkbError("MODULE_IMPLEMENTATION_WORKSPACE_INVALID", "Workspace manifest does not match the requested module_id.");
   const reportPath = moduleImplementationReportPath(vaultRoot, moduleId);
+  const runId = implementationRunId();
+  const stateRoot = implementationStateRoot(vaultRoot, moduleId);
+  const candidateRoot = path.join(stateRoot, "Candidates", runId, "module");
+  const backupRoot = path.join(stateRoot, "Transactions", runId, "previous-module");
+  await fs.mkdir(path.dirname(candidateRoot), { recursive: true });
+  await fs.cp(moduleRoot, candidateRoot, { recursive: true, force: false, errorOnExist: true });
   const attempts: JsonObject[] = [];
   let validation: ModuleValidationReport | null = null;
   let test: ModuleTestReport | null = null;
   let caught: unknown = null;
   for (let retry = 0; retry <= MAX_AUTO_FIXES; retry += 1) {
     const contextRoot = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-implementation-"));
+    let effects: JsonObject[] = [];
     try {
-      await copyImplementationContext(moduleRoot, contextRoot);
+      await copyImplementationContext(candidateRoot, contextRoot);
       const response = await (options.execute ?? executeCodexJson)({ contextRoot, prompt: implementationPrompt(moduleId, retry, { validation, test }), model: options.codexModel, reasoningEffort: options.codexReasoningEffort, timeoutMs: 180_000 });
       const changes = normalizeChanges(response.output);
-      await applyChanges(moduleRoot, changes);
-      validation = await validateModule(engineRoot, moduleRoot, { writeReport: true });
-      test = validation.overall === "PASS" ? await testModule(engineRoot, moduleId, { writeReport: true, moduleRoot }) : null;
-      attempts.push(attemptRecord(retry, changes, validation, test, (response.output as Record<string, unknown>)?.summary));
+      effects = await applyChanges(candidateRoot, changes);
+      validation = await validateModule(engineRoot, candidateRoot, { writeReport: true });
+      test = validation.overall === "PASS" ? await testModule(engineRoot, moduleId, { writeReport: true, moduleRoot: candidateRoot }) : null;
+      attempts.push(attemptRecord(retry, effects, validation, test, (response.output as Record<string, unknown>)?.summary));
       if (validation.overall === "PASS" && test?.overall === "PASS") {
-        const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "PASS", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test };
+        await promoteVerifiedCandidate(moduleRoot, candidateRoot, backupRoot);
+        const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "PASS", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: null, transaction_backup_path: toVaultPath(vaultRoot, backupRoot), promoted: true };
         await writeJsonAtomic(reportPath, report);
         return report;
       }
     } catch (error) {
       caught = error;
-      attempts.push({ attempt: retry + 1, changed_files: [], summary: null, validation: validation?.overall ?? "NOT_RUN", test: test?.overall ?? "NOT_RUN", error: error instanceof Error ? error.message : String(error), at: new Date().toISOString() });
+      attempts.push({ attempt: retry + 1, changed_files: effects, summary: null, validation: validation?.overall ?? "NOT_RUN", validation_errors: failedChecks(validation), test: test?.overall ?? "NOT_RUN", test_failures: failedChecks(test), error: error instanceof Error ? error.message : String(error), at: new Date().toISOString() });
       break;
     } finally {
       await fs.rm(contextRoot, { recursive: true, force: true });
     }
   }
-  const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "FAIL", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test };
+  const report: ModuleImplementationReport = { report_version: 1, module_id: moduleId, workspace_path: toVaultPath(vaultRoot, moduleRoot), generated_at: new Date().toISOString(), overall: "FAIL", attempts, max_auto_fixes: MAX_AUTO_FIXES, validation, test, candidate_workspace_path: toVaultPath(vaultRoot, candidateRoot), transaction_backup_path: null, promoted: false };
   await writeJsonAtomic(reportPath, report);
   if (caught) throw caught;
   return report;
