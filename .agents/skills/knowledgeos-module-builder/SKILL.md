@@ -47,7 +47,7 @@ Follow this fixed sequence:
 7. Confirm high-impact choices with the user: network, sensitive/full reads, destructive behavior, critical fields, global Events, or new Core capabilities.
 8. Write `module.blueprint.yaml` and validate it before scaffolding.
 9. Generate through the deterministic CLI. Do not manually imitate scaffold output.
-10. Fill business-specific Schema, Prompt, Rules, Workflows, and fixtures, then run focused validation and tests.
+10. For a Vault-owned development workspace, run the bounded Implementation gate. It may propose only Schema, Prompt, Workflow, Rule, Template, and Fixture changes; Core validates and runs the deterministic Module Test after every attempt. Then continue with Sandbox, Package, and explicit Install.
 
 ## Enforce safety gates
 

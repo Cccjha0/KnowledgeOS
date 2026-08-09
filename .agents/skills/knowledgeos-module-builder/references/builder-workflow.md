@@ -38,6 +38,23 @@ node dist/cli.js module create --from path/to/module.blueprint.yaml
 
 `module scaffold --from` is an equivalent expert-mode entry point.
 
+## Bounded implementation gate
+
+For a workspace created in a Vault, prefer the Core-controlled implementation
+gate instead of asking a non-technical user to hand-author fixtures:
+
+```powershell
+node dist/cli.js module readiness-run MODULE_ID implement --vault VAULT_PATH
+```
+
+The implementation model receives a copied temporary context and may return
+only text changes under `schemas/`, `prompts/`, `workflows/`, `rules/`,
+`templates/`, and `fixtures/`. It cannot edit the Blueprint, Manifest, Core,
+scripts, packages, or any other Vault content. Core validates and runs the
+deterministic Module Test after each attempt, with at most two automatic
+correction passes. Read `implementation-report.json` from the Module Builder
+state if it cannot reach a passing result.
+
 ## Complete the generated module
 
 Treat `module.blueprint.yaml` as the design source. Complete only business-specific declarative artifacts:
@@ -49,6 +66,9 @@ Treat `module.blueprint.yaml` as the design source. Complete only business-speci
 - Review and quality policies;
 - Jobs and Events declared consistently in Manifest and registries;
 - templates, Dashboard provider, migrations, and executable fixtures.
+
+The bounded implementation gate can fill these declarative artifacts, but a
+developer may still review and edit them within the same permitted directories.
 
 Never add a custom executor or business branch to Platform runtime handlers.
 

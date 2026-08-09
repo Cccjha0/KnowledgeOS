@@ -379,10 +379,14 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   }
   if (method === "runModuleReadinessAction") {
     const action = typeof params.action === "string" ? params.action : "";
-    if (!(["validate", "test", "sandbox", "pack", "install"] as string[]).includes(action)) {
-      throw new PkbError("INVALID_REQUEST", "action must be validate, test, sandbox, pack, or install.");
+    if (!(["implement", "validate", "test", "sandbox", "pack", "install"] as string[]).includes(action)) {
+      throw new PkbError("INVALID_REQUEST", "action must be implement, validate, test, sandbox, pack, or install.");
     }
-    return runModuleReadinessAction(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"), action as ModuleReadinessAction, { confirmBreaking: params.confirm_breaking === true });
+    return runModuleReadinessAction(ENGINE_ROOT, vaultRoot, stringParam(params, "module_id"), action as ModuleReadinessAction, {
+      confirmBreaking: params.confirm_breaking === true,
+      codexModel: typeof params.codex_model === "string" ? params.codex_model : undefined,
+      codexReasoningEffort: typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
+    });
   }
   if (method === "getSystemCenterSnapshot") {
     const section = typeof params.section === "string" ? params.section : "full";

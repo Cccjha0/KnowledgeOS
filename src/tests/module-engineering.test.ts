@@ -23,6 +23,7 @@ import { validateModule } from "../modules/validator.js";
 import { runModuleSandbox } from "../modules/sandbox.js";
 import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
 import { diffPermissionRisk } from "../modules/permissionRiskDiff.js";
+import { implementModuleWorkspace, isAllowedImplementationPath, moduleImplementationReportPath } from "../modules/implementation.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const { buildQuickBlueprint } = createRequire(import.meta.url)(path.join(SOURCE_ROOT, "plugins", "knowledgeos-obsidian", "views", "module-builder-modal.js")) as {
@@ -291,14 +292,42 @@ test("Module workspace readiness keeps a scaffold separate from validation and i
     const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
     assert.equal(before.ok, true);
     assert.equal((before.data as JsonObject).state, "implementation-required");
-    assert.deepEqual((before.data as JsonObject).available_actions, ["validate"]);
+    assert.deepEqual((before.data as JsonObject).available_actions, ["implement"]);
+    await writeJsonAtomic(moduleImplementationReportPath(vault, "media-library"), {
+      report_version: 1, module_id: "media-library", workspace_path: "90-System/Module Development/media-library", generated_at: new Date().toISOString(), overall: "PASS", attempts: [], max_auto_fixes: 2, validation: null, test: null,
+    });
     const validation = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-VALIDATE", method: "runModuleReadinessAction", params: { module_id: "media-library", action: "validate" } });
     assert.equal(validation.ok, true);
     const refreshed = (validation.data as JsonObject).readiness as JsonObject;
-    assert.equal(refreshed.state, "implementation-required");
+    assert.equal(refreshed.state, "implementation-complete");
     const steps = refreshed.steps as JsonObject[];
     assert.equal(steps.find((step) => step.id === "validation")?.status, "complete");
     assert.equal((refreshed.available_actions as string[]).includes("test"), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Module implementation only permits declarative module artifacts", () => {
+  assert.equal(isAllowedImplementationPath("schemas/record.schema.json"), true);
+  assert.equal(isAllowedImplementationPath("prompts/normalize/v1.0.0.md"), true);
+  assert.equal(isAllowedImplementationPath("fixtures/sample-instance/normal.md"), true);
+  assert.equal(isAllowedImplementationPath("module.yaml"), false);
+  assert.equal(isAllowedImplementationPath("../src/core/bridge.ts"), false);
+  assert.equal(isAllowedImplementationPath("tests/escape.test.ts"), false);
+});
+
+test("Module implementation rejects an escaped model write and records the bounded failure", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-implementation-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "IMPLEMENTATION-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
+    assert.equal(create.ok, true);
+    await assert.rejects(() => implementModuleWorkspace(SOURCE_ROOT, vault, "media-library", {
+      execute: async () => ({ output: { files: [{ path: "../core/forbidden.ts", content: "unsafe" }] }, stderr: "" }),
+    }), /Only declarative Schema/);
+    const report = await readJson<JsonObject | null>(moduleImplementationReportPath(vault, "media-library"), null);
+    assert.equal(report?.overall, "FAIL");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "core", "forbidden.ts")).then(() => true).catch(() => false), false);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 

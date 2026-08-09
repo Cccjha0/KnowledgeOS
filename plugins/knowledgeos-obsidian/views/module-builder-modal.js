@@ -382,9 +382,9 @@ function createModuleBuilderViews(deps) {
     }
 
     boundaryLabel(kind) { return ({ module: "Module recommended", component: "Component recommended", "configuration-pack": "Configuration Pack recommended", instance: "Instance recommended", "capability-gap": "Capability gap found" })[kind] || "Boundary decision"; }
-    actionLabel(action) { return ({ validate: "Run validation", test: "Run module tests", sandbox: "Run isolated sandbox", pack: "Package module", install: "Install module" })[action] || action; }
-    stateLabel(state) { return ({ draft: "Draft", "implementation-required": "Implementation required", "test-failed": "Needs fixes", "ready-to-package": "Ready to package", installed: "Installed" })[state] || state; }
-    stepLabel(step) { return ({ blueprint: "Blueprint", scaffold: "Scaffold", validation: "Validation", test: "Module tests", sandbox: "Isolated sandbox", package: "Package", installation: "Installation" })[step] || step; }
+    actionLabel(action) { return ({ implement: "Generate declarative implementation", validate: "Run validation", test: "Run module tests", sandbox: "Run isolated sandbox", pack: "Package module", install: "Install module" })[action] || action; }
+    stateLabel(state) { return ({ draft: "Draft", "implementation-required": "Implementation required", "implementation-complete": "Implementation complete", "implementation-failed": "Implementation needs attention", "test-failed": "Needs fixes", "ready-to-package": "Ready to package", installed: "Installed" })[state] || state; }
+    stepLabel(step) { return ({ blueprint: "Blueprint", scaffold: "Scaffold", implementation: "AI implementation", validation: "Validation", test: "Module tests", sandbox: "Isolated sandbox", package: "Package", installation: "Installation" })[step] || step; }
 
     async create(blueprint, approval) {
       this.busy = true; this.render();
@@ -408,7 +408,12 @@ function createModuleBuilderViews(deps) {
     async runReadinessAction(action) {
       if (!this.readiness?.module_id || this.busy) return;
       this.busy = true; this.readinessError = null; this.render();
-      const response = await this.plugin.client.invoke("runModuleReadinessAction", { module_id: this.readiness.module_id, action });
+      const response = await this.plugin.client.invoke("runModuleReadinessAction", {
+        module_id: this.readiness.module_id,
+        action,
+        codex_model: this.plugin.settings.codexModel,
+        codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
+      }, null, { timeoutMs: action === "implement" ? 600_000 : undefined });
       this.busy = false; if (!response.ok) this.readinessError = response.error; else this.readiness = response.data.readiness; this.render();
     }
 
@@ -416,7 +421,7 @@ function createModuleBuilderViews(deps) {
       root.createEl("h2", { text: "Module readiness" });
       const summary = root.createDiv({ cls: "knowledgeos-builder-readiness-summary" });
       summary.createEl("strong", { text: this.readiness.module_id }); summary.createEl("span", { cls: `knowledgeos-builder-readiness-state state-${this.readiness.state}`, text: this.stateLabel(this.readiness.state) });
-      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "The module remains in the development workspace until validation, tests, sandboxing, packaging, and explicit installation are complete." });
+      root.createEl("p", { cls: "knowledgeos-builder-intro", text: "The module remains in the development workspace. Implementation is bounded: AI can only propose declarative Schema, Prompt, Workflow, Rule, Template, and Fixture files; Core validates and tests every pass before packaging or installation." });
       const workspace = root.createEl("p", { cls: "knowledgeos-builder-workspace" }); workspace.createEl("span", { text: "Workspace: " }); workspace.createEl("code", { text: this.readiness.workspace_path || "—" });
       const list = root.createEl("ol", { cls: "knowledgeos-builder-readiness-list" });
       for (const step of this.readiness.steps || []) { const row = list.createEl("li", { cls: `knowledgeos-builder-readiness-step is-${step.status}` }); const heading = row.createDiv({ cls: "knowledgeos-builder-readiness-heading" }); heading.createEl("strong", { text: this.stepLabel(step.id) }); heading.createEl("span", { text: step.status === "complete" ? "Complete" : step.status === "failed" ? "Needs attention" : "Not complete" }); row.createEl("div", { cls: "knowledgeos-builder-readiness-message", text: step.message }); }
