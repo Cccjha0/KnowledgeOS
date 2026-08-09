@@ -163,6 +163,44 @@
         "partial_policy": { "type": "string", "enum": ["allow", "review"] }
       }
     },
+    "research_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record", "request"],
+      "properties": {
+        "record": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["search_root", "directory", "type", "schema", "id_field", "instance_id_field", "active_path", "due_path", "requested_fields_path", "requested_field_status_path", "requested_field_statuses", "fallback_requested_fields"],
+          "properties": {
+            "search_root": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath" },
+            "directory": { "type": "string", "minLength": 1 },
+            "type": { "type": "string", "minLength": 1 },
+            "schema": { "type": "string", "pattern": "^https://pkb\\.local/schemas/.+\\.schema\\.json$" },
+            "id_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "instance_id_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "active_path": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "due_path": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "requested_fields_path": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "requested_field_status_path": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)*$" },
+            "requested_field_statuses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+            "fallback_requested_fields": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+          }
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["directory", "type", "schema", "id_field", "record_id_field", "record_path_field", "instance_id_field", "status_field", "report_ids_field", "idempotency_key_field", "id_prefix", "open_statuses", "reason", "body"],
+          "properties": {
+            "directory": { "type": "string", "minLength": 1 }, "type": { "type": "string", "minLength": 1 },
+            "schema": { "type": "string", "pattern": "^https://pkb\\.local/schemas/.+\\.schema\\.json$" },
+            "id_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "record_id_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "record_path_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "instance_id_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "status_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "report_ids_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "idempotency_key_field": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "id_prefix": { "type": "string", "pattern": "^[A-Z][A-Z0-9_-]*$" },
+            "open_statuses": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }, "reason": { "type": "string", "minLength": 1 },
+            "body": { "type": "object", "additionalProperties": false, "required": ["title", "record_label", "instructions"], "properties": { "title": { "type": "string", "minLength": 1 }, "record_label": { "type": "string", "minLength": 1 }, "instructions": { "type": "string", "minLength": 1 } } }
+          }
+        }
+      }
+    },
     "inbox": {
       "type": "object",
       "additionalProperties": false,

@@ -71,9 +71,9 @@ test("due-request sync handles multiple projects and is idempotent", async () =>
       await fs.mkdir(directory, { recursive: true });
       writeMarkdown(vault, path.join(directory, `${id}.md`), { data: record(id, instance), content: `# ${id}\n` });
     }
-    const first = await syncDueResearchRequests(vault, "2026-07-27T00:00:00Z");
-    const started = await startResearchRequest(vault, first.created[0]!, "2026-07-27T01:00:00Z");
-    const second = await syncDueResearchRequests(vault, "2026-07-27T00:00:00Z");
+    const first = await syncDueResearchRequests(vault, "application-tracker", "2026-07-27T00:00:00Z");
+    const started = await startResearchRequest(vault, "application-tracker", first.created[0]!, "2026-07-27T01:00:00Z");
+    const second = await syncDueResearchRequests(vault, "application-tracker", "2026-07-27T00:00:00Z");
     assert.equal(first.created.length, 2);
     assert.equal(started.status, "in-progress");
     assert.equal(second.created.length, 0);

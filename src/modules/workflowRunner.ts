@@ -718,7 +718,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         const sourceFile = typeof task.payload.source_file === "string" ? relative(task.payload.source_file, "source_file")
           : typeof task.payload.capture_path === "string" ? relative(task.payload.capture_path, "capture_path") : null;
         const result = await definition.execute({
-          vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"),
+          vaultRoot, task, runId, moduleId: task.module, moduleVersion: String(resolved.manifest.version ?? "unknown"), manifest: resolved.manifest,
           instance: resolved.instance, with: fixedValue(step.with, state, task) as JsonObject, sourceFile, getValue: (key) => state.values.get(key),
           allocateId: (prefix) => allocateId(vaultRoot, prefix),
         });

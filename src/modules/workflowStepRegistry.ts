@@ -18,6 +18,7 @@ export interface WorkflowStepExecutionContext {
   runId: string;
   moduleId: string;
   moduleVersion: string;
+  manifest: JsonObject;
   instance: JsonObject | null;
   with: JsonObject;
   sourceFile: string | null;
@@ -164,7 +165,8 @@ const DEFINITIONS: readonly WorkflowStepDefinition[] = [
     execute: async (context) => {
       const planId = await context.allocateId("PLAN");
       const result = await prepareDueResearchRequests({
-        vaultRoot: context.vaultRoot, taskId: context.task.task_id, planId, now: new Date().toISOString(), allocateId: context.allocateId,
+        vaultRoot: context.vaultRoot, taskId: context.task.task_id, planId, now: new Date().toISOString(), moduleId: context.moduleId,
+        moduleVersion: context.moduleVersion, manifest: context.manifest, allocateId: context.allocateId,
       });
       return result as unknown as JsonValue;
     },

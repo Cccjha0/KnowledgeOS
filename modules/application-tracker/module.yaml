@@ -54,6 +54,41 @@ pdf_policy:
     - completed
   partial_policy: review
 
+# This is the complete module-owned contract consumed by the generic
+# research-request Component. Core never assumes an Application Record.
+research_request:
+  record:
+    search_root: 20-Workspace/Applications
+    directory: Records
+    type: application-record
+    schema: https://pkb.local/schemas/application-tracker/application-record.schema.json
+    id_field: id
+    instance_id_field: instance_id
+    active_path: monitoring.active
+    due_path: monitoring.next_check
+    requested_fields_path: facts
+    requested_field_status_path: status
+    requested_field_statuses: [unknown, pending, conflicting]
+    fallback_requested_fields: [application_open, deadline, tuition, academic_requirement, english_requirement]
+  request:
+    directory: Research Requests
+    type: research-request
+    schema: https://pkb.local/schemas/application-tracker/research-request.schema.json
+    id_field: request_id
+    record_id_field: application_id
+    record_path_field: record_path
+    instance_id_field: instance_id
+    status_field: status
+    report_ids_field: report_ids
+    idempotency_key_field: idempotency_key
+    id_prefix: REQ
+    open_statuses: [pending, in-progress, needs-more-information]
+    reason: The application record reached its scheduled verification time.
+    body:
+      title: "Research Request {request_id}"
+      record_label: Application
+      instructions: Give this request to a web-enabled research assistant. The returned Research Report must set request_id to this request ID and be placed in the instance Inbox.
+
 inbox:
   # Legacy/root-Inbox fallback. New files should be placed in one of the role
   # folders below, so their policy is bound to their actual purpose.

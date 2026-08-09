@@ -422,14 +422,14 @@ async function main(): Promise<void> {
   }
 
   if (command === "application" && subcommand === "research-sync") {
-    const result = await syncDueResearchRequests(parsed.vault);
+    const result = await syncDueResearchRequests(parsed.vault, "application-tracker");
     console.log(JSON.stringify(result, null, 2));
     return;
   }
 
   if (command === "application" && subcommand === "research-start") {
     if (!value) throw new Error("application research-start requires REQUEST_ID");
-    console.log(JSON.stringify(await startResearchRequest(parsed.vault, value), null, 2));
+    console.log(JSON.stringify(await startResearchRequest(parsed.vault, "application-tracker", value), null, 2));
     return;
   }
 
