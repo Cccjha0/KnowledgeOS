@@ -618,6 +618,13 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
 
   openModuleBuilder() { new this.viewConstructors.ModuleBuilderModal(this.app, this).open(); }
 
+  async openInstanceWizard(initialModuleId = null) {
+    const response = await this.client.invoke("getModules", {});
+    if (!response.ok) { this.notify(response.error?.message || "Could not load modules for the Instance Wizard.", { error: true }); return; }
+    const modules = Array.isArray(response.data?.modules) ? response.data.modules : Array.isArray(response.data) ? response.data : [];
+    new this.viewConstructors.CreateInstanceModal(this.app, this, modules, () => this.activateSystem(), initialModuleId).open();
+  }
+
   getOpenMarkdownPaths() {
     return [...new Set(this.app.workspace.getLeavesOfType("markdown")
       .map((leaf) => leaf.view?.file?.path)

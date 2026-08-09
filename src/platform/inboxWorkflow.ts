@@ -14,7 +14,7 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
 import { assertMoveSourceNotOpen } from "./obsidianCoordination.js";
 import { rebuildTodayDashboard } from "./dashboard.js";
-import { discoverInboxItems, type InboxItemView, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
+import { discoverInboxItems, type InboxItemView, type InboxRequiredUserAction, type InboxStateRecord, writeInboxState } from "./inboxDiscovery.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
 import { resolveWorkflowResourceRequirements } from "../modules/workflowResources.js";
@@ -41,8 +41,16 @@ interface InboxAssetRole {
   inboxSubpath: string;
   policy: AssetPolicySuggestion;
   entrypoint: string | null;
-  requiredUserAction: "resolve-review";
+  requiredUserAction: InboxRequiredUserAction | null;
 }
+
+const INBOX_REQUIRED_USER_ACTIONS = new Set<InboxRequiredUserAction>([
+  "select-route",
+  "classify-attachment",
+  "review-partial-extraction",
+  "close-open-file",
+  "resolve-review",
+]);
 
 function object(value: unknown): JsonObject | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : null;
@@ -71,12 +79,23 @@ function inboxRole(value: unknown, id: string): InboxAssetRole | null {
   if (!role || typeof role.inbox_subpath !== "string" || !role.inbox_subpath.trim()) return null;
   const policy = assetAccessPolicy(role.asset_access_policy, "asset-role");
   if (!policy) return null;
+  const entrypoint = typeof role.entrypoint === "string" && role.entrypoint.trim() ? role.entrypoint.trim() : null;
+  const rawAction = role.required_user_action;
+  const requiredUserAction = typeof rawAction === "string" && INBOX_REQUIRED_USER_ACTIONS.has(rawAction as InboxRequiredUserAction)
+    ? rawAction as InboxRequiredUserAction
+    : null;
+  if (rawAction !== undefined && !requiredUserAction) {
+    throw new PkbError("INBOX_ROLE_ACTION_INVALID", `Inbox role ${id} declares an unsupported required_user_action.`);
+  }
+  if (!entrypoint && !requiredUserAction) {
+    throw new PkbError("INBOX_ROLE_ACTION_REQUIRED", `Inbox role ${id} has no automatic entrypoint and must declare a valid required_user_action.`);
+  }
   return {
     id,
     inboxSubpath: role.inbox_subpath.trim(),
     policy,
-    entrypoint: typeof role.entrypoint === "string" && role.entrypoint.trim() ? role.entrypoint.trim() : null,
-    requiredUserAction: "resolve-review",
+    entrypoint,
+    requiredUserAction,
   };
 }
 
@@ -93,7 +112,22 @@ async function inboxAssetRole(vaultRoot: string, module: JsonObject, instanceId:
     if (role && firstSegment === role.inboxSubpath.toLocaleLowerCase()) return role;
   }
   const defaultRoleId = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
-  return defaultRoleId ? inboxRole(roles[defaultRoleId], defaultRoleId) : null;
+  if (!defaultRoleId) throw new PkbError("INBOX_ROLE_UNRESOLVED", "This module declares Inbox asset roles but no default_asset_role for this Inbox path.");
+  if (!Object.prototype.hasOwnProperty.call(roles, defaultRoleId)) {
+    throw new PkbError("INBOX_DEFAULT_ROLE_MISSING", `Inbox default asset role ${defaultRoleId} is not declared.`);
+  }
+  return inboxRole(roles[defaultRoleId], defaultRoleId);
+}
+
+function inboxRoleActionMessage(role: InboxAssetRole): string {
+  switch (role.requiredUserAction) {
+    case "select-route": return `Choose the destination module or instance for this ${role.id} file before processing continues.`;
+    case "classify-attachment": return `Classify this ${role.id} attachment's privacy level and permitted representation before processing continues.`;
+    case "review-partial-extraction": return `Review the extracted content for this ${role.id} attachment before it can be used.`;
+    case "close-open-file": return `Close this ${role.id} file in Obsidian before the requested operation can continue.`;
+    case "resolve-review": return `Resolve the required Review for this ${role.id} file before processing continues.`;
+    default: return `This ${role.id} file requires an explicit user action before processing continues.`;
+  }
 }
 
 async function enabledInboxModule(vaultRoot: string, moduleId: string): Promise<DiscoveredDocument | null> {
@@ -193,11 +227,11 @@ async function holdRoleBoundInboxItem(vaultRoot: string, item: InboxItemView, mo
     status: "waiting-for-user",
     required_user_action: role.requiredUserAction,
     asset_role: role.id,
-    asset_role_message: `This ${role.id} file is protected by a metadata-only policy and has no enabled automatic workflow.`,
+    asset_role_message: inboxRoleActionMessage(role),
     ...(ingestion ? { attachment_classification: attachmentClassificationDetails(item, item.task_id ?? "", ingestion, role.policy, module, extractionStatus) } : {}),
   };
   await writeInboxState(vaultRoot, stateFor(item, "waiting-for-user", {
-    error: `The ${role.id} Inbox role does not permit generic AI processing. Review or route the document explicitly.`,
+    error: `The ${role.id} Inbox role does not permit generic AI processing. ${inboxRoleActionMessage(role)}`,
     result,
   }));
   return result;
@@ -209,7 +243,7 @@ async function enqueueInboxAiTask(vaultRoot: string, item: InboxItemView, module
   if (!moduleDocument) return null;
   const module = moduleDocument.data;
   const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
-  if (role && !role.entrypoint) return null;
+  if (role?.requiredUserAction) return null;
   const workflow = await inboxAiWorkflow(vaultRoot, moduleId, role?.entrypoint ?? "capture");
   if (!workflow) return null;
   const format = formatForExtension(item.extension);
@@ -298,7 +332,7 @@ export async function materializeInboxAiTasks(vaultRoot: string, codexModel?: st
     const module = moduleDocument.data;
     output.checked += 1;
     const role = await inboxAssetRole(vaultRoot, module, instanceId, item);
-    if (role && !role.entrypoint) {
+    if (role?.requiredUserAction) {
       await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
       continue;
     }
@@ -578,7 +612,7 @@ export async function processInboxItem(vaultRoot: string, params: ProcessInboxIt
       const moduleDocument = await enabledInboxModule(vaultRoot, moduleId);
       const module = moduleDocument?.data ?? null;
       const role = module ? await inboxAssetRole(vaultRoot, module, instanceId, item) : null;
-      if (module && role && !role.entrypoint) {
+      if (module && role?.requiredUserAction) {
         const waiting = await holdRoleBoundInboxItem(vaultRoot, item, module, instanceId, role);
         await rebuildTodayDashboard(vaultRoot);
         return { ...waiting, ui_state: "waiting-for-user", item_id: item.item_id, path: item.path, module_id: moduleId, instance_id: instanceId };

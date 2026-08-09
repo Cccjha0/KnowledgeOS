@@ -9,6 +9,7 @@ import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterR
 import { validateBlueprintCompliance } from "./blueprintCompliance.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
+const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 function object(value: JsonValue | undefined): JsonObject | null { return value && typeof value === "object" && !Array.isArray(value) ? value : null; }
 
@@ -40,6 +41,26 @@ function rangeSatisfied(version: string, range: string): boolean {
   if (range.startsWith("^")) return major === target[0] && (minor! > target[1]! || (minor === target[1] && patchValue! >= target[2]!));
   if (range.startsWith("~")) return major === target[0] && minor === target[1] && patchValue! >= target[2]!;
   return version === range;
+}
+
+async function validateDashboardProvider(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+  const dashboard = object(manifest.dashboard);
+  const providerRelative = typeof dashboard?.provider === "string" ? dashboard.provider : null;
+  if (!providerRelative) {
+    checks.push(check("references", "DASHBOARD_PROVIDER_MISSING", "fail", "dashboard.provider is required when dashboard-items is declared.", "module.yaml", true));
+    return;
+  }
+  const providerFile = path.join(moduleRoot, ...providerRelative.split("/"));
+  if (!(await exists(providerFile))) {
+    checks.push(check("references", "DASHBOARD_PROVIDER_NOT_FOUND", "fail", `${providerRelative} does not exist.`, providerRelative, true));
+    return;
+  }
+  try {
+    validateSchema(moduleRoot, DASHBOARD_PROVIDER_SCHEMA, parseYaml(moduleRoot, providerFile));
+    checks.push(check("schema", "DASHBOARD_PROVIDER_VALID", "pass", `${providerRelative} satisfies Dashboard Provider v1.`, providerRelative));
+  } catch (error) {
+    checks.push(check("schema", "DASHBOARD_PROVIDER_INVALID", "fail", error instanceof Error ? error.message : String(error), providerRelative, true));
+  }
 }
 
 async function validateRegistry(moduleRoot: string, manifest: JsonObject, section: "schemas" | "prompts" | "workflows", checks: ModuleValidationCheck[]): Promise<void> {
@@ -187,14 +208,17 @@ function validateInboxRoleContracts(manifest: JsonObject, checks: ModuleValidati
   const defaultRole = typeof inbox?.default_asset_role === "string" ? inbox.default_asset_role : null;
   if (defaultRole && !roles[defaultRole]) checks.push(check("contracts", "INBOX_DEFAULT_ROLE_MISSING", "fail", `inbox.default_asset_role ${defaultRole} is not declared in inbox.asset_roles.`, "module.yaml", true));
   const folders = new Set<string>();
+  const allowedActions = new Set(["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"]);
   for (const [id, raw] of Object.entries(roles)) {
     const role = object(raw);
     const folder = typeof role?.inbox_subpath === "string" ? role.inbox_subpath.toLocaleLowerCase() : "";
     if (folder && folders.has(folder)) checks.push(check("contracts", "INBOX_ROLE_FOLDER_DUPLICATE", "fail", `Inbox role ${id} reuses the subfolder ${role?.inbox_subpath}.`, "module.yaml", true));
     if (folder) folders.add(folder);
     const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : null;
+    const action = typeof role?.required_user_action === "string" ? role.required_user_action : null;
     if (entrypoint && typeof entrypoints[entrypoint] !== "string") checks.push(check("contracts", "INBOX_ROLE_ENTRYPOINT_MISSING", "fail", `Inbox role ${id} references undeclared entrypoint ${entrypoint}.`, "module.yaml", true));
-    if (!entrypoint && role?.required_user_action !== "resolve-review") checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare required_user_action: resolve-review.`, "module.yaml", true));
+    if (action && !allowedActions.has(action)) checks.push(check("contracts", "INBOX_ROLE_ACTION_INVALID", "fail", `Inbox role ${id} declares unsupported required_user_action ${action}.`, "module.yaml", true));
+    if (!entrypoint && !allowedActions.has(action ?? "")) checks.push(check("contracts", "INBOX_ROLE_ACTION_REQUIRED", "fail", `Inbox role ${id} has no automatic entrypoint and must declare a valid required_user_action.`, "module.yaml", true));
   }
   checks.push(check("contracts", "INBOX_ROLE_CONTRACTS_VALID", "pass", "Inbox asset roles and their entrypoints were checked.", "module.yaml"));
 }
@@ -291,6 +315,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   await validateRegistry(moduleRoot, manifest, "schemas", checks);
   await validateRegistry(moduleRoot, manifest, "prompts", checks);
   await validateRegistry(moduleRoot, manifest, "workflows", checks);
+  await validateDashboardProvider(moduleRoot, manifest, checks);
   await validateEventContracts(moduleRoot, manifest, checks);
 
   const permissions = object(manifest.permissions);

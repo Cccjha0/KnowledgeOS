@@ -1,4 +1,5 @@
 capture:
+  asset_role: lecture-material
   path: ambiguous-input.md
   item_id: ambiguous-input
   content: '# Ambiguous input

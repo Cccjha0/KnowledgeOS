@@ -121,7 +121,36 @@ jobs:
 events:
   publishes: [course.lecture-created, course.assignment-created]
   subscribes: []
-dashboard: { sections: [upcoming-deadlines, recent-lectures, waiting-reviews] }
+dashboard:
+  items:
+    - id: upcoming-deadlines
+      kind: due
+      entity: assignment
+      due_field: deadline
+      filters: { status: [planned] }
+      window_days: 14
+      category: deadline
+      priority: { overdue: critical, within_3_days: high, default: medium }
+      title: "{title}"
+      description: "Deadline: {deadline}"
+      actions: [open]
+    - id: recent-lectures
+      kind: recent
+      entity: lecture
+      date_field: lecture_date
+      limit: 5
+      category: summary
+      priority: low
+      title: "{title}"
+      description: "Lecture date: {lecture_date}"
+      actions: [open]
+    - id: waiting-reviews
+      kind: review-summary
+      category: status
+      priority: high
+      title: "{count} course reviews need a decision"
+      description: "{count} course review items are waiting for your decision."
+      actions: [open]
 testing:
   normal_input: required
   ambiguous_input: required

@@ -688,6 +688,16 @@
 .knowledgeos-module-builder-modal .knowledgeos-builder-preview h3 { font-size: var(--font-ui-medium); margin: 0 0 var(--size-4-1); }
 .knowledgeos-module-builder-modal .knowledgeos-builder-preview p { color: var(--text-muted); font-size: var(--font-ui-small); margin: var(--size-4-1) 0; }
 .knowledgeos-module-builder-modal .knowledgeos-builder-preview pre { max-height: 18rem; overflow: auto; white-space: pre-wrap; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-questions { border-top: 1px solid var(--background-modifier-border); margin-top: var(--size-4-2); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-question { border-bottom: 1px solid var(--background-modifier-border); display: block; padding: var(--size-4-3) 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-question strong,
+.knowledgeos-module-builder-modal .knowledgeos-builder-question span { display: block; overflow-wrap: anywhere; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-question span { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.45; margin-top: var(--size-4-1); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-question textarea { margin-top: var(--size-4-2); min-height: 4rem; width: 100%; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-diff { border-left: 2px solid var(--background-modifier-border); margin-top: var(--size-4-3); padding-left: var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-diff ul { color: var(--text-muted); font-size: var(--font-ui-small); margin: var(--size-4-2) 0 0; }
+.knowledgeos-module-builder-modal .knowledgeos-builder-continuation { border-top: 1px solid var(--background-modifier-border); margin-top: var(--size-4-3); padding-top: var(--size-4-3); }
+.knowledgeos-module-builder-modal .knowledgeos-builder-continuation p { color: var(--text-muted); line-height: 1.5; }
 .knowledgeos-module-builder-modal .knowledgeos-builder-actions { border-top: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); justify-content: flex-end; margin-top: var(--size-4-4); padding-top: var(--size-4-3); }
 .knowledgeos-module-builder-modal .knowledgeos-builder-readiness-summary { align-items: center; border-bottom: 1px solid var(--background-modifier-border); display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-bottom: var(--size-4-3); padding-bottom: var(--size-4-3); }
 .knowledgeos-module-builder-modal .knowledgeos-builder-readiness-state { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: var(--font-semibold); }

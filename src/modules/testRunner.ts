@@ -255,9 +255,10 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
   }
   const capture = object(fixtureCapture.capture, "MODULE_TEST_FIXTURE_INVALID");
   const captureRelative = requiredString(capture.path, "capture.path");
-  const captureContent = requiredString(capture.content, "capture.content");
-  const codexOutput = object(capture.codex_output, "MODULE_TEST_FIXTURE_INVALID");
-  const itemId = typeof capture.item_id === "string" ? capture.item_id : "module-test-capture";
+    const captureContent = requiredString(capture.content, "capture.content");
+    const codexOutput = object(capture.codex_output, "MODULE_TEST_FIXTURE_INVALID");
+    const itemId = typeof capture.item_id === "string" ? capture.item_id : "module-test-capture";
+    const assetRole = typeof capture.asset_role === "string" ? capture.asset_role : undefined;
   const instanceId = requiredString(fixtureInstance.instance_id, "fixture instance_id");
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), `knowledgeos-module-test-${moduleId}-`));
   try {
@@ -277,7 +278,7 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     await fs.writeFile(sourceAbsolute, captureContent, "utf8");
 
     const runner = createModuleWorkflowRunner(async () => ({ output: codexOutput, stderr: "" }));
-    const first = await executeFixtureTask(vault, moduleId, instanceId, sourceFile, itemId, "first", runner);
+    const first = await executeFixtureTask(vault, moduleId, instanceId, sourceFile, itemId, "first", runner, 3, undefined, "capture", assetRole);
     if (first.status !== "completed" || !(await exists(path.join(vault, ...expectedOutput.split("/"))))) {
       checks.push(check("capture", "fail", "Capture fixture did not produce its declared output.", { task_status: first.status, expected_output: expectedOutput, error: first.last_error }));
     } else {
@@ -289,7 +290,7 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       // Restoring a moved fixture source is test setup, not a business effect
       // of the retry. Snapshot only after that setup is complete.
       const firstEffects = await businessSnapshot(vault);
-      const repeat = await executeFixtureTask(vault, moduleId, instanceId, sourceFile, itemId, "repeat", runner);
+      const repeat = await executeFixtureTask(vault, moduleId, instanceId, sourceFile, itemId, "repeat", runner, 3, undefined, "capture", assetRole);
       const repeatEffects = await businessSnapshot(vault);
       const idempotent = repeat.status === "completed" && snapshotsEqual(firstEffects, repeatEffects);
       checks.push(check("idempotency", idempotent ? "pass" : "fail", idempotent ? "Repeated Capture completed without a second business effect." : "Repeated Capture changed user-visible files, entities, Reviews, Events, or applied Operations.", {
@@ -312,9 +313,10 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       await seedDocuments(vault, additionalCapture.seed_documents);
       const source = await writeFixtureCapture(vault, String((await instanceLocation(vault, instanceId)).inbox_path), fixture, `additional capture ${entrypoint}`);
       const additionalItemId = typeof additionalCapture.item_id === "string" ? additionalCapture.item_id : `module-test-${entrypoint}`;
+      const additionalAssetRole = typeof additionalCapture.asset_role === "string" ? additionalCapture.asset_role : undefined;
       const outputPath = await fixtureExpectedOutput(vault, instanceId, additionalCapture, `additional capture ${entrypoint}`);
       const output = object(additionalCapture.codex_output, "MODULE_TEST_CAPTURE_FIXTURE_INVALID");
-      const task = await executeFixtureTask(vault, moduleId, instanceId, source, additionalItemId, `additional-${entrypoint}`, createModuleWorkflowRunner(async () => ({ output, stderr: "" })), 3, undefined, entrypoint);
+      const task = await executeFixtureTask(vault, moduleId, instanceId, source, additionalItemId, `additional-${entrypoint}`, createModuleWorkflowRunner(async () => ({ output, stderr: "" })), 3, undefined, entrypoint, additionalAssetRole);
       const passed = task.status === "completed" && await exists(path.join(vault, ...outputPath.split("/")));
       checks.push(check("capture", passed ? "pass" : "fail", passed
         ? `Declared Capture entrypoint ${entrypoint} produced its entity output.`
@@ -330,10 +332,11 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
     await seedDocuments(vault, ambiguousCapture.seed_documents);
     const ambiguousSource = await writeFixtureCapture(vault, String((await instanceLocation(vault, instanceId)).inbox_path), ambiguousFixture, "ambiguous_capture");
     const ambiguousItemId = typeof ambiguousCapture.item_id === "string" ? ambiguousCapture.item_id : "module-test-ambiguous";
+    const ambiguousAssetRole = typeof ambiguousCapture.asset_role === "string" ? ambiguousCapture.asset_role : undefined;
     const ambiguousOutput = object(ambiguousCapture.codex_output, "MODULE_TEST_AMBIGUOUS_FIXTURE_INVALID");
     const reviewsBeforeAmbiguous = await readReviewsById(vault);
     const businessBeforeAmbiguous = await businessSnapshot(vault);
-    const ambiguousTask = await executeFixtureTask(vault, moduleId, instanceId, ambiguousSource, ambiguousItemId, "ambiguous", createModuleWorkflowRunner(async () => ({ output: ambiguousOutput, stderr: "" })), 1);
+    const ambiguousTask = await executeFixtureTask(vault, moduleId, instanceId, ambiguousSource, ambiguousItemId, "ambiguous", createModuleWorkflowRunner(async () => ({ output: ambiguousOutput, stderr: "" })), 1, undefined, "capture", ambiguousAssetRole);
     const reviewsAfterAmbiguous = await readReviewsById(vault);
     const businessAfterAmbiguous = await businessSnapshot(vault);
     const newReviews = [...reviewsAfterAmbiguous.entries()].filter(([reviewId]) => !reviewsBeforeAmbiguous.has(reviewId));
@@ -555,14 +558,14 @@ async function instanceLocation(vaultRoot: string, instanceId: string): Promise<
   return parseYaml(vaultRoot, path.join(vaultRoot, "90-System", "Instances", instanceId, "instance.yaml"));
 }
 
-async function executeFixtureTask(vaultRoot: string, moduleId: string, instanceId: string, sourceFile: string, itemId: string, attempt: string, runner: ReturnType<typeof createModuleWorkflowRunner>, maxAttempts = 3, resources: Record<keyof TaskResources, "available" | "unavailable" | "not-required"> = { filesystem: "available", network: "not-required", codex: "available", user: "available" }, entrypoint = "capture") {
+async function executeFixtureTask(vaultRoot: string, moduleId: string, instanceId: string, sourceFile: string, itemId: string, attempt: string, runner: ReturnType<typeof createModuleWorkflowRunner>, maxAttempts = 3, resources: Record<keyof TaskResources, "available" | "unavailable" | "not-required"> = { filesystem: "available", network: "not-required", codex: "available", user: "available" }, entrypoint = "capture", assetRole?: string) {
   const repository = await RuntimeRepository.open(vaultRoot);
   try {
     const task = repository.createTask({
       job_id: `${moduleId}.fixture-${entrypoint}`, module: moduleId, instance_id: instanceId, task_type: "workflow", workflow: `module:${moduleId}:${entrypoint}`, priority: "high",
       resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
       trigger: { type: "manual", entrypoint }, catch_up_policy: "none", idempotency_key: `module-test:${moduleId}:${instanceId}:${itemId}:${attempt}:${entrypoint}`,
-      max_attempts: maxAttempts, payload: { source_file: sourceFile, item_id: itemId },
+      max_attempts: maxAttempts, payload: { source_file: sourceFile, item_id: itemId, ...(assetRole ? { asset_role: assetRole } : {}) },
     }).task;
     return await executeTask(vaultRoot, repository, task, "module-test-runner", resources, {}, runner);
   } finally { repository.close(); }

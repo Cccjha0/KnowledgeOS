@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import type {
   ApplicationFact,
   ApplicationRecord,
@@ -33,6 +34,7 @@ import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { writeRunLog } from "../core/logs.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
+import { discoverModulesForVault } from "../core/discovery.js";
 import { APPLICATION_STATE_MACHINE, assertApplicationTransition, type ApplicationStatus } from "../application/stateMachine.js";
 import {
   locateReviewItem,
@@ -42,7 +44,13 @@ import {
 } from "../core/reviews.js";
 import { QualityRepository } from "../quality/repository.js";
 import { evidenceSnapshotHash, reviewFingerprint } from "../quality/fingerprint.js";
+import { materializeFieldProvenance } from "../quality/fieldProvenance.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const MODULE_UPDATE_PROTECTED_FIELDS = new Set([
+  "id", "type", "schema_id", "schema_version", "module_version", "instance_id", "created", "updated",
+]);
 
 const SCHEMAS = {
   decision: "https://pkb.local/schemas/core/review-decision.schema.json",
@@ -367,6 +375,47 @@ function applyModuleReviewModification(plan: OperationPlan, modifiedValue: JsonV
   }
 }
 
+/** Apply Core-owned field provenance only after a module operation is approved. */
+async function materializeApprovedModuleFieldProvenance(
+  vaultRoot: string,
+  plan: OperationPlan,
+  item: ReviewItem,
+  decision: ReviewDecision,
+  runId: string,
+): Promise<void> {
+  const module = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).find((entry) => String(entry.data.id) === item.source_module);
+  if (!module) return;
+  const moduleRoot = path.dirname(module.path);
+  const authorizedSourceRefs = item.evidence.filter((entry): entry is string => typeof entry === "string" && !/^EVD-\d{4}-\d{6,}$/.test(entry));
+  const sourceGeneration = item.generation && typeof item.generation === "object" && !Array.isArray(item.generation) ? item.generation as JsonObject : null;
+  const generation: JsonObject = { ...(sourceGeneration ?? {}), review_resolution: { run_id: runId, review_id: item.review_id, decided_at: decision.decided_at } };
+  const review: JsonObject = { status: decision.decision === "approve" ? "approved" : "approved-with-modification", review_id: item.review_id, reviewed_by: "user", reviewed_at: decision.decided_at, decision: decision.decision };
+  for (const operation of plan.operations) {
+    if (!operation.target || !["create-file", "update-frontmatter"].includes(operation.type)) continue;
+    const data = operation.type === "create-file"
+      ? operation.payload.document && typeof operation.payload.document === "object" && !Array.isArray(operation.payload.document)
+        ? (operation.payload.document as JsonObject).data : null
+      : operation.payload.patch;
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const record = data as JsonObject;
+    // A review modification may come from any client; it cannot carry model-made provenance.
+    delete record._field_meta;
+    record.source_refs = [...new Set(authorizedSourceRefs)];
+    if (operation.type === "update-frontmatter") {
+      for (const field of MODULE_UPDATE_PROTECTED_FIELDS) delete record[field];
+      record.updated = decision.decided_at;
+      record.generation = sourceGeneration;
+    }
+    const entityId = typeof record.schema_id === "string" ? record.schema_id : typeof operation.payload.schema_id === "string" ? operation.payload.schema_id : null;
+    if (!entityId) continue;
+    const fieldMeta = await materializeFieldProvenance({
+      vaultRoot, moduleRoot, manifest: module.data, entityId, target: operation.target, output: record,
+      authorizedSourceRefs, runId, generation, review, now: decision.decided_at,
+    });
+    if (Object.keys(fieldMeta).length) record._field_meta = fieldMeta;
+  }
+}
+
 async function finishOriginTask(vaultRoot: string, item: ReviewItem, completionReason: string): Promise<void> {
   if (!item.origin_task_id) return;
   const repository = await RuntimeRepository.open(vaultRoot);
@@ -398,6 +447,7 @@ async function decideModuleOperationReview(
   }
   if (decision.decision === "approve-with-modification") applyModuleReviewModification(plan, decision.modified_value);
   const runId = await allocateId(vaultRoot, "RUN");
+  await materializeApprovedModuleFieldProvenance(vaultRoot, plan, located.item, decision, runId);
   const snapshot = await createGitSnapshot(vaultRoot, runId);
   await writeJsonAtomic(planPath, plan);
   try {

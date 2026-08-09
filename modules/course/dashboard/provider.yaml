@@ -1,20 +1,16 @@
 provider_id: course-dashboard
-version: 2.0.0
+version: 3.0.0
 items:
   - id: upcoming-deadlines
     kind: due
     entity: assignment
     due_field: deadline
-    filters:
-      status: [planned]
+    filters: { status: [planned] }
     window_days: 14
     category: deadline
-    priority:
-      overdue: critical
-      within_3_days: high
-      default: medium
+    priority: { overdue: critical, within_3_days: high, default: medium }
     title: "{title}"
-    description: "截止日期：{deadline}"
+    description: "Deadline: {deadline}"
     actions: [open]
   - id: recent-lectures
     kind: recent
@@ -24,12 +20,12 @@ items:
     category: summary
     priority: low
     title: "{title}"
-    description: "课程资料日期：{lecture_date}"
+    description: "Lecture date: {lecture_date}"
     actions: [open]
   - id: waiting-reviews
     kind: review-summary
     category: status
     priority: high
-    title: "{count} 项课程事项等待审核"
-    description: "有 {count} 项课程审核等待你的决定。"
+    title: "{count} course reviews need a decision"
+    description: "{count} course review items are waiting for your decision."
     actions: [open]

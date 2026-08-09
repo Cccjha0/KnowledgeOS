@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { writeMarkdown } from "../core/bridge.js";
 import { initializeVault } from "../core/vault.js";
 import { collectModuleDashboardItems } from "../modules/dashboardProvider.js";
 import { getTodaySnapshot } from "../platform/dashboard.js";
 import { createInstance, manageModule } from "../platform/lifecycleWorkflow.js";
+
+const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 test("a declared Course dashboard provider projects active assignment deadlines into Today", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-dashboard-"));
@@ -46,6 +49,28 @@ test("a declared Course dashboard provider projects active assignment deadlines 
 
     const today = await getTodaySnapshot(vault);
     assert.ok(today.due.some((item) => item.item_id === deadlineItem?.item_id), "The Course provider deadline must appear in Today due items.");
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("an invalid module Dashboard provider becomes a visible configuration warning", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-dashboard-invalid-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const installedRoot = path.join(vault, "90-System", "Modules", "Installed", "course", "0.3.0");
+    await fs.cp(path.join(SOURCE_ROOT, "modules", "course"), installedRoot, { recursive: true });
+    await fs.writeFile(path.join(vault, "90-System", "Modules", "installed.json"), JSON.stringify({
+      schema_version: 1,
+      modules: [{ id: "course", version: "0.3.0", status: "enabled", installed_path: "90-System/Modules/Installed/course/0.3.0" }],
+    }), "utf8");
+    await fs.writeFile(path.join(installedRoot, "dashboard", "provider.yaml"), "provider_id: course-dashboard\nversion: 3.0.0\nitems: [invalid]\n", "utf8");
+
+    const items = await collectModuleDashboardItems(vault);
+    const warning = items.find((item) => item.item_id === "DSH-MODULE-course-DASHBOARD-CONFIG");
+    assert.equal(warning?.category, "warning");
+    assert.equal(warning?.priority, "high");
+    assert.match(String(warning?.description), /Provider could not be loaded safely/);
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

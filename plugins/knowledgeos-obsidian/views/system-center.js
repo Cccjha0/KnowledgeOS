@@ -1122,6 +1122,6 @@ class SystemCenterView extends ItemView {
 }
 
 
-  return { SystemCenterView };
+  return { SystemCenterView, CreateInstanceModal };
 }
 module.exports = { createSystemCenterViews };

@@ -3,11 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
 import { PkbError } from "../core/errors.js";
-import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
+import { deepEqual, exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
+import { fieldQualityContracts, materializeFieldProvenance } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -110,8 +111,17 @@ function hasMissingReviewRule(workflow: JsonObject, output: JsonObject): boolean
 
 /** Enforces a role's Codex policy at the final execution boundary. */
 export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: JsonObject, workflowContract: JsonObject | null): void {
-  const roleId = typeof taskPayload.asset_role === "string" ? taskPayload.asset_role : null;
+  const declaredRoles = Array.isArray(workflowContract?.input_roles)
+    ? workflowContract.input_roles.filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim())
+    : [];
+  const roleId = typeof taskPayload.asset_role === "string" && taskPayload.asset_role.trim() ? taskPayload.asset_role.trim() : null;
+  if (declaredRoles.length && !roleId) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_REQUIRED", "This Workflow declares input_roles, so its task payload must include a valid asset_role.", { input_roles: declaredRoles });
+  }
   if (!roleId) return;
+  if (declaredRoles.length && !declaredRoles.includes(roleId)) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_MISMATCH", `Asset role ${roleId} is not authorized for this Workflow.`, { asset_role: roleId, input_roles: declaredRoles });
+  }
   // Blueprint contracts are optional for hand-authored module workflows.
   // Missing policy maps mean "no additional role restriction", not malformed
   // workflow data.  Keep `object()` strict for fields that are actually
@@ -120,6 +130,13 @@ export function assertCodexRolePermitted(taskPayload: JsonObject, manifest: Json
   const contractRole = optionalObject(contractRoles?.[roleId]);
   const inboxRoles = optionalObject(optionalObject(manifest.inbox)?.asset_roles);
   const manifestRole = optionalObject(inboxRoles?.[roleId]);
+  if (declaredRoles.length && (!contractRole || !manifestRole)) {
+    throw new PkbError("MODULE_WORKFLOW_ASSET_ROLE_INVALID", `Asset role ${roleId} is not fully declared by the Workflow and Module Manifest.`, {
+      asset_role: roleId,
+      has_contract_policy: Boolean(contractRole),
+      has_manifest_role: Boolean(manifestRole),
+    });
+  }
   if (contractRole?.allow_codex === false || manifestRole?.allow_codex === false) {
     throw new PkbError("MODULE_WORKFLOW_CODEX_DENIED", `Asset role ${roleId} does not permit Codex for this Workflow.`, {
       asset_role: roleId,
@@ -504,6 +521,68 @@ function approvedDocuments(state: WorkflowState): DocumentInput[] {
   return [...byPath.values()];
 }
 
+/** Paths from documents Core actually admitted to this workflow, excluding
+ * sidecars, caches, and any references merely suggested by the model. */
+function authorizedSourceRefs(state: WorkflowState): string[] {
+  return [...new Set(approvedDocuments(state).map((document) => document.path))];
+}
+
+/** `_field_meta` and source_refs are Core-managed output. A model may describe
+ * facts, but it cannot manufacture an evidence chain or claim it read a file. */
+function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject {
+  const managed = structuredClone(output);
+  delete managed._field_meta;
+  // `source_refs` is not a universal output field. Research reports, for
+  // example, use a structured `sources` array, while some summaries deliberately
+  // use only domain references. Adding an unknown top-level property corrupts
+  // schemas with `additionalProperties: false` and used to make deterministic
+  // fixture outputs appear like failed Codex calls. Where a module does declare
+  // source_refs, Core remains authoritative and replaces model-supplied paths.
+  if (Object.hasOwn(managed, "source_refs")) managed.source_refs = authorizedSourceRefs(state);
+  return managed;
+}
+
+const SYSTEM_MANAGED_UPDATE_FIELDS = new Set([
+  "id", "type", "schema_id", "schema_version", "module_version", "instance_id", "created", "updated",
+]);
+
+/** Update workflows receive a full schema-shaped result from Codex, but only
+ * business fields may be patched. Identity and lifecycle metadata are owned by
+ * Core, and `updated` is stamped here rather than accepted from the model. */
+function coreManagedUpdatePatch(output: JsonObject): JsonObject {
+  const patch = structuredClone(output);
+  for (const field of SYSTEM_MANAGED_UPDATE_FIELDS) delete patch[field];
+  patch.updated = new Date().toISOString();
+  return patch;
+}
+
+function criticalUpdateReviewRequirements(
+  moduleRoot: string,
+  manifest: JsonObject,
+  entityId: string,
+  patch: JsonObject,
+  current: JsonObject,
+): JsonObject[] {
+  return [...fieldQualityContracts(moduleRoot, manifest, entityId).entries()]
+    .filter(([field, contract]) => contract.critical && field in patch && !deepEqual(current[field], patch[field]))
+    .map(([field]) => ({
+      field: `${entityId}.${field}`,
+      condition: "critical-field-update",
+      current_value: current[field] ?? null,
+      reason: `Core protection: ${entityId}.${field} is a Critical Field and requires user approval.`,
+    }));
+}
+
+function uniqueReviewRequirements(requirements: JsonObject[]): JsonObject[] {
+  const seen = new Set<string>();
+  return requirements.filter((requirement) => {
+    const key = `${String(requirement.field ?? "")}:${String(requirement.condition ?? "")}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function contextDocumentContent(document: DocumentInput): string {
   // parseMarkdown separates frontmatter from the body. Both are approved task
   // input, so materialize them together without copying the original Vault file.
@@ -585,6 +664,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
       const step = object(raw); return { id: string(step.id, "step.id"), uses: string(step.uses, "step.uses"), with: (step.with && typeof step.with === "object" && !Array.isArray(step.with) ? step.with : {}) as JsonObject } satisfies WorkflowStep;
     });
     if (!steps.length) throw new PkbError("MODULE_WORKFLOW_EMPTY", `${resolved.workflowId} has no steps.`);
+    // This executes before every step, not just codex.prompt. A Workflow that
+    // declares input_roles must never silently fall back to an unclassified
+    // Markdown source or a caller-supplied file without a Role binding.
+    assertCodexRolePermitted(task.payload, resolved.manifest, optionalObject(resolved.workflow.blueprint_contract));
     for (const step of steps) {
       checkpoint();
       const definition = getWorkflowStepDefinition(step.uses);
@@ -648,7 +731,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             ? fixedValue(step.with.fixed_fields as JsonObject, state, task) as JsonObject : {};
           const nullDefaults = Array.isArray(step.with.default_null_fields)
             ? Object.fromEntries(step.with.default_null_fields.filter((key): key is string => typeof key === "string" && raw[key] === undefined).map((key) => [key, null])) : {};
-          return { output: { ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) } };
+          return { output: coreManagedOutput({ ...raw, ...nullDefaults, ...fixed, generation: generation(task, runId, state, prompt, model, reasoningEffort) }, state) };
         }, (output) => {
           try { validateSchema(vaultRoot, outputSchema, output); return true; }
           catch { return Boolean(output && typeof output === "object" && !Array.isArray(output) && hasMissingReviewRule(resolved.workflow, output as JsonObject)); }
@@ -714,7 +797,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           continue;
         }
         const outputKey = typeof step.with.output === "string" ? step.with.output : steps.slice(0, steps.indexOf(step)).reverse().find((candidate) => candidate.uses === "codex.prompt")?.id;
-        const output = outputKey ? object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING") : null;
+        const output = outputKey ? coreManagedOutput(object(state.values.get(outputKey), "MODULE_WORKFLOW_OUTPUT_MISSING"), state) : null;
         if (!output) throw new PkbError("MODULE_WORKFLOW_OUTPUT_MISSING", `${resolved.workflowId} has no structured output for build-operation-plan.`);
         const outputSchema = schemaId(resolved.moduleRoot, resolved.manifest, string(step.with.output_schema, "build-operation-plan.output_schema"));
         try { validateSchema(vaultRoot, outputSchema, output); }
@@ -746,9 +829,30 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         }
         const templatePath = path.join(resolved.moduleRoot, ...relative(string(step.with.template, "build-operation-plan.template"), "build-operation-plan.template").split("/"));
         const planId = await allocateId(vaultRoot, "PLAN");
-        const reviewRequirements = pendingReviewRequirements(state);
+        const entityId = typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema);
+        const planData = operationMode === "update-record" ? coreManagedUpdatePatch(output) : output;
+        const currentData = operationMode === "update-record" ? parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, target)).data : {};
+        const reviewRequirements = uniqueReviewRequirements([
+          ...pendingReviewRequirements(state),
+          ...(operationMode === "update-record" ? criticalUpdateReviewRequirements(resolved.moduleRoot, resolved.manifest, entityId, planData, currentData) : []),
+        ]);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
         const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
+        if (!reviewId) {
+          const fieldMeta = await materializeFieldProvenance({
+            vaultRoot,
+            moduleRoot: resolved.moduleRoot,
+            manifest: resolved.manifest,
+            entityId,
+            target,
+            output: planData,
+            authorizedSourceRefs: authorizedSourceRefs(state),
+            runId,
+            generation: generated,
+            review: { status: "not-required", review_id: null, reviewed_by: null, reviewed_at: null, decision: null },
+          });
+          if (Object.keys(fieldMeta).length) planData._field_meta = fieldMeta;
+        }
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
           summary: typeof step.with.summary === "string" ? interpolate(step.with.summary, state, task) : `Run ${resolved.workflowId}`,
@@ -756,10 +860,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             operation_id: "OP-001", type: operationType, target, risk: reviewId ? "yellow" : "green", confidence: 1,
             idempotency_key: idempotencyKey, requires_review_id: reviewId,
             payload: operationMode === "create-record"
-              ? { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema }
+              ? { document: { data: planData, content: documentBody(await fs.readFile(templatePath, "utf8"), planData) }, schema_id: outputSchema }
               : operationMode === "update-record"
-                ? { patch: output, replace_top_level: Object.keys(output), schema_id: outputSchema, actor: "ai" }
-                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), output), marker: idempotencyKey, actor: "ai" },
+                ? { patch: planData, replace_top_level: Object.keys(planData), schema_id: outputSchema, actor: "ai" }
+                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), planData), marker: idempotencyKey, actor: "ai" },
           }], review_items: [],
         };
         if (reviewId) {
@@ -773,7 +877,7 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             }, confidence: typeof output.confidence === "number" ? output.confidence : 1,
             priority: reviewRequirements.some((item) => item.condition === "conflicting") ? "high" : "medium",
             status: "pending", reason: reviewRequirements.map((item) => String(item.reason ?? item.field ?? "Review rule matched.")).join(" "),
-            evidence: [...state.sourceFiles], created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
+            evidence: authorizedSourceRefs(state), created: now, review_after: null, decision: null, decision_history: [], target_observation: null,
             resolution: null, origin_task_id: task.task_id,
             ...(typeof task.payload.item_id === "string" ? { item_id: task.payload.item_id } : {}),
             ...(typeof task.payload.source_file === "string" ? { source_file: task.payload.source_file } : {}),

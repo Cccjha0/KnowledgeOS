@@ -1,11 +1,12 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml } from "../core/bridge.js";
+import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
 import { listFilesRecursive, toVaultPath } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue, Priority } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
 
 type ProviderKind = "entity" | "due" | "recent" | "review-summary";
 
@@ -115,11 +116,16 @@ async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocum
 }
 
 function providerItems(provider: JsonObject): ProviderItem[] {
-  return Array.isArray(provider.items)
-    ? provider.items.map((entry) => object(entry)).filter((entry): entry is JsonObject => Boolean(entry))
-      .filter((entry) => typeof entry.id === "string" && ["entity", "due", "recent", "review-summary"].includes(String(entry.kind)))
-      .map((entry) => entry as unknown as ProviderItem)
-    : [];
+  return (Array.isArray(provider.items) ? provider.items : []).map((entry) => entry as unknown as ProviderItem);
+}
+
+function providerDiagnostic(moduleId: string, providerPath: string, reason: string): DashboardItem {
+  return {
+    item_id: `DSH-MODULE-${moduleId}-DASHBOARD-CONFIG`, source_module: moduleId, instance_id: null,
+    category: "warning", priority: "high", title: `${moduleId} Dashboard configuration needs attention`,
+    description: `${reason} (${providerPath})`, target: null, due_at: null, actions: ["open"], created_at: null,
+    blocks_count: 0, active_context: true,
+  };
 }
 
 function itemFromDocument(
@@ -211,14 +217,20 @@ export async function collectModuleDashboardItems(vaultRoot: string, now = Date.
     const moduleId = String(module.data.id);
     const dashboard = object(module.data.dashboard);
     if (!dashboard || typeof dashboard.provider !== "string") continue;
+    const providerFile = path.join(path.dirname(module.path), ...dashboard.provider.split("/"));
     let provider: JsonObject;
     try {
-      provider = parseYaml(vaultRoot, path.join(path.dirname(module.path), ...dashboard.provider.split("/")));
-    } catch {
+      provider = parseYaml(vaultRoot, providerFile);
+      validateSchema(ENGINE_ROOT, DASHBOARD_PROVIDER_SCHEMA, provider);
+    } catch (error) {
+      result.push(providerDiagnostic(moduleId, toVaultPath(vaultRoot, providerFile), `Provider could not be loaded safely: ${error instanceof Error ? error.message : String(error)}`));
       continue;
     }
     const definitions = providerItems(provider);
-    if (!definitions.length) continue;
+    if (!definitions.length) {
+      result.push(providerDiagnostic(moduleId, toVaultPath(vaultRoot, providerFile), "Provider declares no Dashboard items."));
+      continue;
+    }
     for (const instance of instances.filter((candidate) => candidate.data.module_id === moduleId)) {
       const documents = await documentsForInstance(vaultRoot, instance);
       for (const definition of definitions) {

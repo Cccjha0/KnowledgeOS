@@ -253,8 +253,19 @@
       }
     },
     "dashboard": {
-      "type": "object", "additionalProperties": false, "required": ["sections"],
-      "properties": { "sections": { "type": "array", "uniqueItems": true, "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" } } }
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "https://pkb.local/schemas/core/dashboard-provider.schema.json#/$defs/providerItem" }
+        },
+        "sections": {
+          "type": "array", "uniqueItems": true,
+          "items": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+          "deprecated": true
+        }
+      },
+      "anyOf": [{ "required": ["items"] }, { "required": ["sections"] }]
     },
     "testing": {
       "type": "object", "additionalProperties": false,

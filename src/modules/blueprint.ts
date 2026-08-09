@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { availableIngestionAdapter } from "../core/adapterRegistry.js";
@@ -6,6 +7,8 @@ import { PkbError } from "../core/errors.js";
 import { exists } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import { createModuleScaffold } from "./scaffold.js";
+import { loadModuleBuilderRegistry } from "./platformContract.js";
+import { creationPermissionRisks } from "./permissionRiskDiff.js";
 import type { ModuleTemplate } from "./types.js";
 
 const BLUEPRINT_SCHEMA = "https://pkb.local/schemas/core/module-blueprint.schema.json";
@@ -28,6 +31,17 @@ export interface BlueprintValidationReport extends JsonObject {
   required_components: JsonObject;
   required_rule_files: string[];
   overall: "PASS" | "PASS WITH WARNINGS" | "FAIL";
+}
+
+export interface BlueprintApprovalRequirement extends JsonObject {
+  id: string;
+  title: string;
+  impact: string;
+}
+
+export interface BlueprintApproval extends JsonObject {
+  blueprint_hash: string;
+  requirements: BlueprintApprovalRequirement[];
 }
 
 interface ResolvedBlueprint {
@@ -110,6 +124,43 @@ function representationRank(value: string): number {
   return ["metadata", "summary", "full", "sensitive-original"].indexOf(value);
 }
 
+function canonicalJson(value: JsonValue): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key]!)}`).join(",")}}`;
+  return JSON.stringify(value);
+}
+
+function approvalRequirement(id: BlueprintApprovalRequirement["id"], title: string, impact: string): BlueprintApprovalRequirement {
+  return { id, title, impact };
+}
+
+/**
+ * The Core-owned security contract for a Blueprint. Its canonical hash binds
+ * approvals to the exact proposal the user reviewed; callers cannot safely
+ * reuse an approval after changing a high-risk field.
+ */
+export function deriveBlueprintApproval(blueprint: JsonObject): BlueprintApproval {
+  const privacy = object(blueprint.privacy) ?? {};
+  const inputRoles = blueprintInputRoles(blueprint);
+  const workflows = workflowObjects(blueprint);
+  const events = object(blueprint.events) ?? {};
+  const reviewPolicy = object(blueprint.review_policy) ?? {};
+  const entityCriticalFields = entityObjects(blueprint).some((entity) => Object.values(object(object(entity.schema)?.fields) ?? {}).some((field) => object(field)?.critical === true));
+  const sensitiveFullRead = Object.values(inputRoles).some((raw) => {
+    const policy = object(raw) ?? {};
+    return Number(policy.sensitivity_class) >= 2 && representationRank(String(policy.max_representation ?? "metadata")) >= representationRank("full");
+  }) || Number(privacy.default_sensitivity_class) >= 2 && representationRank(String(privacy.default_max_representation ?? "metadata")) >= representationRank("full");
+  const risks = creationPermissionRisks(blueprint, reviewPolicy);
+  const requirements: BlueprintApprovalRequirement[] = [];
+  if (risks.some((risk) => risk.id === "network-access") || workflows.some((workflow) => workflow.requires_network === true)) requirements.push(approvalRequirement("network-access", "Allow network access", "This module may contact external services while processing its declared workflows."));
+  if (sensitiveFullRead) requirements.push(approvalRequirement("sensitive-full-read", "Allow sensitive full-text access", "One or more input roles may provide sensitive content in full to a workflow or Codex."));
+  if (privacy.user_original_content_mutable === true) requirements.push(approvalRequirement("mutable-user-original", "Allow editing user original content", "A workflow may modify content owned directly by the user."));
+  if (risks.some((risk) => risk.id === "global-event-subscription")) requirements.push(approvalRequirement("global-event-subscription", "Allow global event subscriptions", "This module may receive explicitly declared events from other modules or instances."));
+  if (risks.some((risk) => risk.id === "destructive-policy")) requirements.push(approvalRequirement("destructive-operation", "Allow review-gated destructive operations", "The Blueprint permits destructive behavior after a separate review decision."));
+  if (strings(reviewPolicy.critical_fields).length > 0 || entityCriticalFields) requirements.push(approvalRequirement("critical-fields", "Accept critical field policy", "Declared critical fields will be protected by the module Review Policy and Quality checks."));
+  return { blueprint_hash: createHash("sha256").update(canonicalJson(blueprint), "utf8").digest("hex"), requirements };
+}
+
 function check(code: string, status: BlueprintCheck["status"], message: string, itemPath: string | null = null): BlueprintCheck {
   return { code, status, message, path: itemPath };
 }
@@ -158,9 +209,9 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
   validateSchema(engineRoot, BLUEPRINT_SCHEMA, blueprint);
   const registryPath = path.join(engineRoot, PACK_REGISTRY);
   if (!(await exists(registryPath))) throw new PkbError("CAPABILITY_PACK_REGISTRY_MISSING", `Capability Pack Registry not found: ${registryPath}`);
-  const registry = parseYaml(engineRoot, registryPath);
-  const packs = object(registry.packs) ?? {};
-  const templates = object(registry.base_templates) ?? {};
+  const registry = await loadModuleBuilderRegistry(engineRoot);
+  const packs = registry.packs;
+  const templates = registry.templates;
   const requested = strings(blueprint.capability_packs);
   const resolved: string[] = [];
   const checks: BlueprintCheck[] = [check("BLUEPRINT_SCHEMA_VALID", "pass", "Blueprint v1 schema passed.", path.basename(absolute))];
@@ -257,6 +308,10 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   const events = object(blueprint.events);
   const publishedEvents = blueprintEventNames(events?.publishes);
   const subscriptions = subscriptionObjects(events?.subscribes);
+  const dashboard = object(blueprint.dashboard);
+  const dashboardItems = Array.isArray(dashboard?.items)
+    ? dashboard.items.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item))
+    : [];
 
   if (Object.keys(inboxRoles).length) {
     const defaultRole = String(inbox?.default_asset_role ?? "");
@@ -268,9 +323,10 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
       const access = object(role?.access_policy);
       const entrypoint = typeof role?.entrypoint === "string" ? role.entrypoint : "";
       const action = typeof role?.required_user_action === "string" ? role.required_user_action : "";
-      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action))
+      const validAction = ["select-route", "classify-attachment", "review-partial-extraction", "close-open-file", "resolve-review"].includes(action);
+      checks.push(access && typeof role?.inbox_subpath === "string" && (Boolean(entrypoint) || Boolean(action)) && (!action || validAction)
         ? check("SEMANTIC_INBOX_ROLE_CONTRACT_VALID", "pass", `${roleId} declares path, access policy, and a continuation.`, `inbox.roles.${roleId}`)
-        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and entrypoint or required_user_action.`, `inbox.roles.${roleId}`));
+        : check("SEMANTIC_INBOX_ROLE_CONTRACT_INVALID", "fail", `${roleId} must declare inbox_subpath, access_policy, and a valid continuation.`, `inbox.roles.${roleId}`));
       if (entrypoint) checks.push(workflowIds.includes(entrypoint)
         ? check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_VALID", "pass", `${roleId} routes to ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`)
         : check("SEMANTIC_INBOX_ROLE_ENTRYPOINT_UNKNOWN", "fail", `${roleId} routes to unknown Workflow ${entrypoint}.`, `inbox.roles.${roleId}.entrypoint`));
@@ -315,6 +371,31 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     checks.push(field?.critical === true
       ? check("SEMANTIC_REVIEW_FIELD_EXISTS", "pass", `${fieldRef} has a matching critical Entity field.`, "review_policy.critical_fields")
       : check("SEMANTIC_REVIEW_FIELD_UNKNOWN", "fail", `${fieldRef} must reference a critical field declared by an Entity.`, "review_policy.critical_fields"));
+  }
+
+  const knownSystemFields = new Set(["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "title", "created", "updated", "source_refs", "safe_summary"]);
+  const hasEntityField = (entityId: string, fieldName: string): boolean => {
+    const rootField = fieldName.split(".", 1)[0] ?? "";
+    if (knownSystemFields.has(rootField)) return true;
+    const entity = entities.find((candidate) => String(candidate.id) === entityId);
+    return Boolean(object(object(entity?.schema)?.fields)?.[rootField]);
+  };
+  if (!dashboardItems.length) checks.push(check("SEMANTIC_DASHBOARD_DESCRIPTOR_REQUIRED", "fail", "Blueprint v1.1 Dashboard must declare explicit items; legacy section names are not a runtime contract.", "dashboard.items"));
+  const dashboardIds = new Set<string>();
+  for (const item of dashboardItems) {
+    const id = String(item.id ?? "");
+    const kind = String(item.kind ?? "");
+    const entityId = String(item.entity ?? "");
+    const requiresEntity = ["entity", "due", "recent"].includes(kind);
+    const entityValid = !requiresEntity || entityIds.includes(entityId);
+    const dueValid = kind !== "due" || hasEntityField(entityId, String(item.due_field ?? ""));
+    const recentValid = kind !== "recent" || hasEntityField(entityId, String(item.date_field ?? ""));
+    const filtersValid = !requiresEntity || Object.keys(object(item.filters) ?? {}).every((field) => hasEntityField(entityId, field));
+    const unique = Boolean(id) && !dashboardIds.has(id);
+    dashboardIds.add(id);
+    checks.push(unique && entityValid && dueValid && recentValid && filtersValid
+      ? check("SEMANTIC_DASHBOARD_DESCRIPTOR_VALID", "pass", `${id} declares an executable ${kind} Dashboard projection.`, `dashboard.items.${id}`)
+      : check("SEMANTIC_DASHBOARD_DESCRIPTOR_INVALID", "fail", `${id || "Dashboard item"} must use declared entities, fields, and unique IDs.`, `dashboard.items.${id || "unknown"}`));
   }
 
   const outputs = Array.isArray(blueprint.outputs) ? blueprint.outputs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
@@ -561,6 +642,37 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
       properties[fieldId] = schemaProperty(field);
       if (field.required === true && !required.includes(fieldId)) required.push(fieldId);
     }
+    // `_field_meta` is Core-owned. It is optional because a record can contain
+    // no quality-governed values, but each declared field contract has a stable
+    // schema for the evidence / generation / review / freshness lifecycle.
+    const fieldMetaProperties: JsonObject = {};
+    for (const [fieldId, raw] of Object.entries(declaredFields)) {
+      const field = object(raw) ?? {};
+      if (field.provenance_required !== true && typeof field.freshness_days !== "number") continue;
+      fieldMetaProperties[fieldId] = {
+        type: "object",
+        additionalProperties: false,
+        required: ["authorship", "evidence_refs", "generation", "review", "verification"],
+        properties: {
+          authorship: { enum: ["user", "ai", "system", "official-source", "external-research"] },
+          evidence_refs: { type: "array", items: { type: "string" } },
+          generation: { type: ["object", "null"] },
+          review: { type: ["object", "null"] },
+          verification: {
+            type: "object", additionalProperties: false,
+            required: ["last_verified", "verification_interval_days", "stale_after", "stale", "verification_status"],
+            properties: {
+              last_verified: { type: ["string", "null"], format: "date-time" },
+              verification_interval_days: { type: ["number", "null"] },
+              stale_after: { type: ["string", "null"], format: "date-time" },
+              stale: { type: "boolean" },
+              verification_status: { enum: ["verified", "due-soon", "stale", "unverifiable", "historical", "unknown"] },
+            },
+          },
+        },
+      };
+    }
+    if (Object.keys(fieldMetaProperties).length) properties._field_meta = { type: "object", additionalProperties: false, properties: fieldMetaProperties };
     const schema = { $schema: "https://json-schema.org/draft/2020-12/schema", $id: `https://pkb.local/schemas/${moduleId}/${entityId}.schema.json`, type: "object", additionalProperties: false, required, properties };
     await fs.writeFile(path.join(moduleRoot, "schemas", `${entityId}.schema.json`), `${JSON.stringify(schema, null, 2)}\n`, "utf8");
     registeredSchemas[entityId] = { version: 1, path: `${entityId}.schema.json`, entity_type: `${moduleId}-${entityId}` };
@@ -630,21 +742,39 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   }));
   if (Object.keys(machines).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "state-machines.yaml"), { machines });
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
-  dashboard.items = dashboardProviderItems(strings(object(blueprint.dashboard)?.sections), entities);
-  dashboard.version = "2.0.0";
+  dashboard.items = blueprintDashboardItems(blueprint);
+  dashboard.version = "3.0.0";
   writeYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"), dashboard);
 }
 
 function entityIdsForOwnership(entities: JsonObject[]): string[] { return entities.map((entity) => String(entity.id)); }
 
+/**
+ * Dashboard descriptors are authored by the Blueprint.  Scaffolding copies
+ * them verbatim; it must never infer business fields from presentation IDs.
+ */
+function blueprintDashboardItems(blueprint: JsonObject): JsonObject[] {
+  const dashboard = object(blueprint.dashboard);
+  return Array.isArray(dashboard?.items)
+    ? dashboard.items.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)).map((item) => JSON.parse(JSON.stringify(item)) as JsonObject)
+    : [];
+}
+
+/*
+ * Retired legacy section-name mapper. Dashboard descriptors are now copied
+ * from the Blueprint by blueprintDashboardItems above.
+ *
 function dashboardProviderItems(sections: string[], entities: JsonObject[]): JsonObject[] {
   const entityIds = new Set(entities.map((entity) => String(entity.id)));
+  const recordEntity = entityIds.has("knowledge-record") ? "knowledge-record" : entityIds.has("record") ? "record" : null;
   const items: JsonObject[] = [];
   for (const section of sections) {
     if (section === "upcoming-deadlines" && entityIds.has("assignment")) {
       items.push({ id: section, kind: "due", entity: "assignment", due_field: "deadline", filters: { status: ["planned"] }, window_days: 14, category: "deadline", priority: { overdue: "critical", within_3_days: "high", default: "medium" }, title: "{title}", description: "截止日期：{deadline}", actions: ["open"] });
     } else if (section === "recent-lectures" && entityIds.has("lecture")) {
       items.push({ id: section, kind: "recent", entity: "lecture", date_field: "lecture_date", limit: 5, category: "summary", priority: "low", title: "{title}", description: "课程资料日期：{lecture_date}", actions: ["open"] });
+    } else if (section === "recent-records" && recordEntity) {
+      items.push({ id: section, kind: "recent", entity: recordEntity, date_field: "created", limit: 5, category: "summary", priority: "low", title: "{title}", description: "记录创建于：{created}", actions: ["open"] });
     } else if (section === "waiting-reviews") {
       items.push({ id: section, kind: "review-summary", category: "status", priority: "high", title: "{count} 项事项等待审核", description: "有 {count} 项等待你的决定。", actions: ["open"] });
     }
@@ -652,6 +782,7 @@ function dashboardProviderItems(sections: string[], entities: JsonObject[]): Jso
   return items;
 }
 
+*/
 function sourceQuerySteps(workflow: JsonObject, outputs: JsonObject[], representation: string): JsonObject[] {
   return sourceObjects(workflow).map((source, index) => {
     const entity = String(source.entity);

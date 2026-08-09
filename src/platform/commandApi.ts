@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown, writeYaml } from "../core/bridge.js";
+import { parseMarkdown, writeMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -39,8 +39,9 @@ import { resumeTasksAfterObsidianFileClose, syncObsidianOpenFiles } from "./obsi
 import { readCaptureEnvelope, updateAssetAccessPolicy } from "../core/ingestion.js";
 import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, rollbackLegacyAccessPolicyMigration } from "../core/legacyAccessMigration.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
-import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
-import { analyzeGuidedModuleRequirement } from "../modules/guidedBuilder.js";
+import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { analyzeGuidedModuleRequirement, type GuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
+import { getModuleBuilderPlatformContract } from "../modules/platformContract.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -66,6 +67,42 @@ function stringParam(params: JsonObject, key: string): string {
   const value = params[key];
   if (typeof value !== "string" || value.length === 0) throw new PkbError("INVALID_REQUEST", `${key} is required.`);
   return value;
+}
+
+function guidedAnalysisParam(params: JsonObject): GuidedBuilderAnalysis {
+  const value = params.previous_analysis;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new PkbError("INVALID_REQUEST", "previous_analysis must be a Guided Builder analysis object.");
+  return value as GuidedBuilderAnalysis;
+}
+
+function guidedAnswersParam(params: JsonObject): Array<{ question_id: string; answer: string }> {
+  if (!Array.isArray(params.answers)) return [];
+  return params.answers.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const answer = item as JsonObject;
+    return typeof answer.question_id === "string" && typeof answer.answer === "string" && answer.answer.trim()
+      ? [{ question_id: answer.question_id, answer: answer.answer.trim() }]
+      : [];
+  });
+}
+
+async function saveGuidedArtifact(vaultRoot: string, kind: "capability-gap" | "configuration-pack" | "component", analysis: GuidedBuilderAnalysis): Promise<JsonObject> {
+  const hash = String(analysis.requirement_hash || "").replace(/[^a-f0-9]/gi, "").slice(0, 16);
+  if (!hash) throw new PkbError("INVALID_REQUEST", "Guided analysis has no stable requirement hash.");
+  const directory = kind === "capability-gap" ? "Capability Gaps" : kind === "configuration-pack" ? "Configuration Packs" : "Component Designs";
+  const prefix = kind === "capability-gap" ? "GAP" : kind === "configuration-pack" ? "PACK" : "COMPONENT";
+  const target = path.join(vaultRoot, "90-System", "Module Development", directory, `${prefix}-${hash}.md`);
+  const payload = kind === "capability-gap" ? analysis.capability_gap : {
+    boundary: analysis.boundary,
+    summary: analysis.summary,
+    questions: analysis.questions,
+    platform_contract: analysis.platform_contract,
+  };
+  writeMarkdown(vaultRoot, target, {
+    data: { type: `${kind}-design`, requirement_hash: analysis.requirement_hash, generated_at: analysis.generated_at, boundary: analysis.boundary.kind, status: "draft" },
+    content: `# ${prefix} ${hash}\n\n## Summary\n\n${analysis.summary}\n\n## Boundary\n\n${analysis.boundary.rationale}\n\n## Design record\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\`\n`,
+  });
+  return { path: toVaultPath(vaultRoot, target), kind, requirement_hash: analysis.requirement_hash, status: "draft" };
 }
 
 async function moduleViews(
@@ -284,23 +321,49 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const brief = stringParam(params, "brief");
     const analysis = await analyzeGuidedModuleRequirement({
       brief,
+      engineRoot: ENGINE_ROOT,
       codexModel: typeof params.codex_model === "string" ? params.codex_model : undefined,
       codexReasoningEffort: typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
     });
     if (!analysis.proposed_blueprint) return analysis;
     const preview = await withTemporaryBlueprint(vaultRoot, requestId, analysis.proposed_blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
-    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate } } as unknown as JsonValue;
+    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate, approval: deriveBlueprintApproval(analysis.proposed_blueprint) } } as unknown as JsonValue;
   }
+  if (method === "refineModuleRequirement") {
+    const previousAnalysis = guidedAnalysisParam(params);
+    const analysis = await analyzeGuidedModuleRequirement({
+      brief: stringParam(params, "brief"), engineRoot: ENGINE_ROOT,
+      codexModel: typeof params.codex_model === "string" ? params.codex_model : undefined,
+      codexReasoningEffort: typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
+      previousAnalysis, answers: guidedAnswersParam(params),
+    });
+    if (!analysis.proposed_blueprint) return analysis;
+    const preview = await withTemporaryBlueprint(vaultRoot, requestId, analysis.proposed_blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
+    return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate, approval: deriveBlueprintApproval(analysis.proposed_blueprint) } } as unknown as JsonValue;
+  }
+  if (method === "saveModuleBuilderGapReport") return saveGuidedArtifact(vaultRoot, "capability-gap", guidedAnalysisParam(params));
+  if (method === "saveExtensionDesignDraft") {
+    const kind = params.kind === "configuration-pack" || params.kind === "component" ? params.kind : null;
+    if (!kind) throw new PkbError("INVALID_REQUEST", "kind must be configuration-pack or component.");
+    return saveGuidedArtifact(vaultRoot, kind, guidedAnalysisParam(params));
+  }
+  if (method === "getModuleBuilderPlatformContract") return getModuleBuilderPlatformContract(ENGINE_ROOT);
   if (method === "previewModuleBlueprint") {
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
     const result = await withTemporaryBlueprint(vaultRoot, requestId, blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
-    return { report: result.report, scaffold_template: result.scaffoldTemplate } as unknown as JsonValue;
+    return { report: result.report, scaffold_template: result.scaffoldTemplate, approval: deriveBlueprintApproval(blueprint) } as unknown as JsonValue;
   }
   if (method === "createModuleFromBlueprint") {
     if (params.confirm !== true) throw new PkbError("CONFIRMATION_REQUIRED", "Module generation requires explicit confirmation.");
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");
+    const expectedApproval = deriveBlueprintApproval(blueprint);
+    const approval = params.approval && typeof params.approval === "object" && !Array.isArray(params.approval) ? params.approval as JsonObject : null;
+    if (approval?.blueprint_hash !== expectedApproval.blueprint_hash) throw new PkbError("BLUEPRINT_APPROVAL_STALE", "The Blueprint changed or no matching approval was supplied. Preview the exact Blueprint again before creating it.", { expected_hash: expectedApproval.blueprint_hash, requirements: expectedApproval.requirements });
+    const approved = Array.isArray(approval.approved_requirement_ids) ? approval.approved_requirement_ids.filter((item): item is string => typeof item === "string") : [];
+    const missing = expectedApproval.requirements.filter((requirement) => !approved.includes(requirement.id));
+    if (missing.length) throw new PkbError("BLUEPRINT_APPROVAL_REQUIRED", "The Blueprint has unapproved high-risk requirements.", { blueprint_hash: expectedApproval.blueprint_hash, missing_requirements: missing, requirements: expectedApproval.requirements });
     const moduleId = typeof blueprint.module === "object" && blueprint.module && !Array.isArray(blueprint.module) && typeof (blueprint.module as JsonObject).id === "string"
       ? String((blueprint.module as JsonObject).id) : null;
     if (!moduleId) throw new PkbError("INVALID_REQUEST", "blueprint.module.id is required.");

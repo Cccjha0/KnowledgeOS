@@ -2,6 +2,7 @@ capture:
   expected_output_suffix: Lectures/module-test-capture.md
   path: module-test-capture.md
   item_id: module-test-capture
+  asset_role: lecture-material
   content: '# Fixture Capture
 
 

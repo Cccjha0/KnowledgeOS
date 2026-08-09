@@ -1,6 +1,7 @@
 capture:
   path: Assignments/module-test-assignment.md
   item_id: module-test-assignment
+  asset_role: assignment-brief
   content: |
     # Assignment brief
 

@@ -3,25 +3,31 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { parseYaml, writeYaml } from "../core/bridge.js";
 import { readJson, writeJsonAtomic } from "../core/files.js";
-import type { JsonObject, Operation } from "../core/types.js";
+import type { JsonObject, JsonValue, Operation } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
 import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "../modules/packageManager.js";
 import { syncInstalledConfiguration } from "../platform/configuration.js";
 import { generationTrace, resolveVersionedEntry } from "../modules/registries.js";
 import { createModuleScaffold } from "../modules/scaffold.js";
-import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
+import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { analyzeGuidedModuleRequirement, normalizeGuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
+import { getModuleBuilderPlatformContract, moduleBuilderContractReference } from "../modules/platformContract.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
 import { runModuleSandbox } from "../modules/sandbox.js";
 import { engineProvenance, fixtureChecksum, moduleContentChecksum } from "../modules/readinessEvidence.js";
+import { diffPermissionRisk } from "../modules/permissionRiskDiff.js";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { buildQuickBlueprint } = createRequire(import.meta.url)(path.join(SOURCE_ROOT, "plugins", "knowledgeos-obsidian", "views", "module-builder-modal.js")) as {
+  buildQuickBlueprint: (form: Record<string, unknown>) => JsonObject;
+};
 
 async function writeReadinessEvidence(engineRoot: string, moduleId: string, moduleRoot: string): Promise<void> {
   const validation = await validateModule(engineRoot, moduleRoot, { writeReport: true });
@@ -31,6 +37,11 @@ async function writeReadinessEvidence(engineRoot: string, moduleId: string, modu
   // real fixture execution is covered by the dedicated Module Test cases.
   await writeJsonAtomic(path.join(moduleRoot, "module-test-report.json"), { report_version: 1, module_id: moduleId, module_version: validation.module_version, generated_at: new Date().toISOString(), static_validation: validation, environment, checks: [], overall: "PASS", beta_eligible: true });
   await writeJsonAtomic(path.join(moduleRoot, "sandbox-report.json"), { sandbox_version: 1, module_id: moduleId, isolation: "temporary-vault", lifecycle: "created-executed-cleaned", overall: "PASS", checks: [], environment });
+}
+
+function approveBlueprint(blueprint: JsonObject): JsonObject {
+  const approval = deriveBlueprintApproval(blueprint);
+  return { blueprint_hash: approval.blueprint_hash, approved_requirement_ids: approval.requirements.map((requirement) => requirement.id) };
 }
 
 async function temporaryEngine(): Promise<string> {
@@ -56,6 +67,56 @@ test("Module Blueprint resolves templates, Capability Packs, Adapters, and Compo
   assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
   assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
   assert.equal(report.checks.some((item) => item.code === "CAPABILITY_PACK_PRIVACY_BOUND" && item.status === "pass"), true, "high-privacy and immutable-user-content must enforce executable Pack contracts.");
+});
+
+test("Module Builder Platform Contract is generated from the Engine registries", async () => {
+  const contract = await getModuleBuilderPlatformContract(SOURCE_ROOT);
+  assert.equal(contract.contract_version, "1.0.0");
+  assert.equal(typeof contract.contract_fingerprint, "string");
+  assert.equal((contract.base_templates["standard-workflow"] as JsonObject).scaffold_template, "workflow");
+  assert.equal(contract.capability_packs.some((pack) => pack.id === "periodic-summary"), true);
+  assert.equal(contract.adapters.some((adapter) => adapter.format === "pptx" && adapter.available === true), true);
+  assert.equal(contract.components.some((component) => component.id === "status-machine"), true);
+  assert.equal(contract.workflow_steps.some((step) => step.id === "component.state-transition-validation"), true);
+  assert.equal((moduleBuilderContractReference(contract).contract_fingerprint as string).length, 64);
+});
+
+test("Quick Builder emits a complete Blueprint v1.1 Record Module and a recent-records provider", async () => {
+  const engine = await temporaryEngine();
+  try {
+    const blueprint = buildQuickBlueprint({
+      id: "quick-records", name: "Quick records", description: "Capture concise records.",
+      primary: "Capture a record", excluded: "Delete source files", inputs: "markdown,pdf",
+      sensitivity: "1", representation: "full", critical: "source_url", weekly: true,
+    });
+    const blueprintPath = path.join(engine, "quick-records.blueprint.yaml");
+    writeYaml(engine, blueprintPath, blueprint);
+
+    const preview = await validateModuleBlueprint(engine, blueprintPath);
+    assert.equal(preview.report.overall, "PASS", preview.report.checks.filter((item) => item.status === "fail").map((item) => item.message).join("\n"));
+    assert.deepEqual((blueprint.entities as JsonObject[]).find((entity) => entity.id === "knowledge-record")?.schema, {
+      fields: {
+        created: { type: "datetime", required: true, description: "The time the record was created." },
+        record_kind: { type: "string", description: "The record category, when it can be determined from the capture." },
+        source_url: { type: "string", critical: true, description: "A user-designated critical source_url value." },
+      },
+    });
+    const capture = (blueprint.workflows as JsonObject[]).find((workflow) => workflow.id === "normalize-record")!;
+    assert.deepEqual(capture.input_roles, ["record-input"]);
+    assert.deepEqual(capture.operation, { type: "create-record", target: "{instance.content_root}/Records/{task.payload.item_id}.md", template: "templates/knowledge-record.md" });
+    assert.equal(((blueprint.review_policy as JsonObject).critical_fields as JsonValue[])[0], "knowledge-record.source_url");
+
+    const generated = await scaffoldModuleFromBlueprint(engine, blueprintPath);
+    const provider = parseYaml(String(generated.module_root), path.join(String(generated.module_root), "dashboard", "provider.yaml"));
+    const recent = (provider.items as JsonObject[]).find((item) => item.id === "recent-records");
+    assert.deepEqual(recent, {
+      id: "recent-records", kind: "recent", entity: "knowledge-record", date_field: "created", limit: 5,
+      category: "summary", priority: "low", title: "{title}", description: "Record created: {created}", actions: ["open"],
+    });
+    assert.deepEqual(provider.items, (blueprint.dashboard as JsonObject).items, "Scaffolding must materialize Blueprint Dashboard descriptors verbatim.");
+  } finally {
+    await fs.rm(engine, { recursive: true, force: true });
+  }
 });
 
 test("Capability Pack contracts reject Blueprint privacy drift before scaffolding", async () => {
@@ -94,6 +155,7 @@ test("Command API previews a Module Blueprint without creating source files", as
     assert.equal(response.ok, true);
     assert.equal((response.data as JsonObject).scaffold_template, "minimal-config");
     assert.equal(((response.data as JsonObject).report as JsonObject).overall, "PASS");
+    assert.equal(typeof ((response.data as JsonObject).approval as JsonObject).blueprint_hash, "string");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Cache", "Module Builder", "BLUEPRINT-PREVIEW.blueprint.yaml")).then(() => true).catch(() => false), false, "temporary Blueprint must be cleaned");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
@@ -102,31 +164,80 @@ test("Guided Module Builder preserves the extension boundary and never exposes a
   const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
   const result = await analyzeGuidedModuleRequirement({
     brief: "Organize course lectures and assignment briefs into a separate course workspace with weekly summaries.",
-    execute: async () => ({
-      stderr: "",
-      output: {
-        boundary: { kind: "module", rationale: "Course work has its own entities and lifecycle.", exclusions: ["Do not edit the original slides."] },
-        summary: "A course module is appropriate.",
-        questions: [{ id: "course-full-text", category: "content-access", question: "Allow full lecture text?", impact: "The selected content is provided to Codex." }],
-        proposed_blueprint: blueprint,
-        capability_gap: null,
-      },
-    }),
+    execute: async (request) => {
+      const contract = JSON.parse(await fs.readFile(path.join(request.contextRoot, "module-builder-platform-contract.json"), "utf8")) as JsonObject;
+      assert.equal(Array.isArray(contract.capability_packs), true, "Guided analysis must receive the generated Platform Contract, not a copied list.");
+      assert.equal(Array.isArray(contract.workflow_steps), true);
+      return {
+        stderr: "",
+        output: {
+          boundary: { kind: "module", rationale: "Course work has its own entities and lifecycle.", exclusions: ["Do not edit the original slides."] },
+          summary: "A course module is appropriate.",
+          questions: [{ id: "course-full-text", category: "content-access", question: "Allow full lecture text?", impact: "The selected content is provided to Codex." }],
+          proposed_blueprint: blueprint,
+          capability_gap: null,
+        },
+      };
+    },
   });
   assert.equal(result.boundary.kind, "module");
   assert.equal(result.questions[0]?.id, "course-full-text");
   assert.equal((result.proposed_blueprint as JsonObject).blueprint_version, 1.1);
+  assert.equal(typeof result.platform_contract?.contract_fingerprint, "string");
   assert.throws(() => normalizeGuidedBuilderAnalysis("A long enough requirement for a component.", {
     boundary: { kind: "component", rationale: "shared", exclusions: [] }, summary: "shared", questions: [], proposed_blueprint: blueprint, capability_gap: null,
   }), /Only a module decision/);
+});
+
+test("Guided Module Builder carries structured answers into a regenerated draft", async () => {
+  const previous = normalizeGuidedBuilderAnalysis("Design a private course workspace with a weekly summary and controlled source access.", {
+    boundary: { kind: "module", rationale: "A dedicated lifecycle is needed.", exclusions: [] }, summary: "Initial draft.",
+    questions: [{ id: "access", category: "content-access", question: "Allow full text?", impact: "This changes Codex context." }],
+    proposed_blueprint: parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml")), capability_gap: null,
+  });
+  const refined = await analyzeGuidedModuleRequirement({
+    brief: "Design a private course workspace with a weekly summary and controlled source access.", previousAnalysis: previous,
+    answers: [{ question_id: "access", answer: "No. Use safe summaries only." }],
+    execute: async (request) => {
+      assert.match(request.prompt, /safe summaries only/i, "The answer must enter the restricted planning prompt.");
+      const revised = structuredClone(previous.proposed_blueprint as JsonObject);
+      (revised.privacy as JsonObject).default_max_representation = "summary";
+      return { stderr: "", output: { boundary: previous.boundary, summary: "Revised draft uses summaries.", questions: [], proposed_blueprint: revised, capability_gap: null } };
+    },
+  });
+  assert.equal(refined.iteration, 2);
+  assert.equal((refined.proposed_blueprint as JsonObject).privacy && ((refined.proposed_blueprint as JsonObject).privacy as JsonObject).default_max_representation, "summary");
+  assert.equal(refined.questions.length, 0);
+});
+
+test("Command API persists capability gaps as user-visible development reports", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-guided-gap-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const analysis: JsonObject = {
+      analysis_version: 2, requirement_hash: "a".repeat(64), iteration: 1,
+      boundary: { kind: "capability-gap", rationale: "Needs a generic adapter.", exclusions: [] }, summary: "Need a reusable adapter.", questions: [], proposed_blueprint: null,
+      capability_gap: { requested_behavior: "Read an unsupported source", proposed_generic_contract: "adapter" }, platform_contract: null, generated_at: "2026-08-09T00:00:00Z",
+    };
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "GUIDED-GAP", method: "saveModuleBuilderGapReport", params: { previous_analysis: analysis } });
+    assert.equal(response.ok, true);
+    assert.equal((response.data as JsonObject).path, "90-System/Module Development/Capability Gaps/GAP-aaaaaaaaaaaaaaaa.md");
+    assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "Capability Gaps", "GAP-aaaaaaaaaaaaaaaa.md")).then(() => true), true);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("Command API creates a Blueprint module in the Vault development workspace, not Engine source", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-workspace-"));
   try {
     await initializeVault(vault, "disabled");
+    const contract = await invokeCommandApi({ vaultRoot: vault, requestId: "BUILDER-CONTRACT", method: "getModuleBuilderPlatformContract", params: {} });
+    assert.equal(contract.ok, true);
+    assert.equal(typeof (contract.data as JsonObject).contract_fingerprint, "string");
     const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
-    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    const bypass = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE-BYPASS", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    assert.equal(bypass.ok, false, "A generic confirm flag must not bypass Core approval requirements.");
+    assert.equal(bypass.error?.code, "BLUEPRINT_APPROVAL_STALE");
+    const response = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
     assert.equal(response.ok, true);
     assert.equal((response.data as JsonObject).workspace_path, "90-System/Module Development/media-library");
     assert.equal(await fs.stat(path.join(vault, "90-System", "Module Development", "media-library", "module.yaml")).then(() => true), true);
@@ -134,12 +245,48 @@ test("Command API creates a Blueprint module in the Vault development workspace,
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("Core security gate derives, binds, and enforces Blueprint approvals", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-approval-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
+    const approval = deriveBlueprintApproval(blueprint);
+    assert.deepEqual(approval.requirements.map((requirement) => requirement.id), ["sensitive-full-read", "critical-fields"]);
+    const missing = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-APPROVAL-MISSING", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: { blueprint_hash: approval.blueprint_hash, approved_requirement_ids: [] } } });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error?.code, "BLUEPRINT_APPROVAL_REQUIRED");
+    const changed = structuredClone(blueprint);
+    (changed.privacy as JsonObject).network_allowed = true;
+    const stale = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-APPROVAL-STALE", method: "createModuleFromBlueprint", params: { blueprint: changed, confirm: true, approval: approveBlueprint(blueprint) } });
+    assert.equal(stale.ok, false);
+    assert.equal(stale.error?.code, "BLUEPRINT_APPROVAL_STALE");
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Permission/Risk Diff Engine detects every privilege expansion from one shared contract", () => {
+  const previous: JsonObject = {
+    permissions: { network: false, delete: false, cross_module_write: false, global_event_subscription: false, max_sensitivity_class: 1 },
+    inbox: { asset_access_policy: { sensitivity_class: 1, max_representation: "summary" }, asset_roles: { private: { allow_codex: false, asset_access_policy: { sensitivity_class: 1, max_representation: "summary" } } } },
+    events: { subscribes: [{ event: "record.changed", scope: "instance" }] },
+  };
+  const next: JsonObject = {
+    permissions: { network: true, delete: true, cross_module_write: true, global_event_subscription: true, max_sensitivity_class: 3 },
+    inbox: { asset_access_policy: { sensitivity_class: 3, max_representation: "sensitive-original" }, asset_roles: { private: { allow_codex: true, asset_access_policy: { sensitivity_class: 3, max_representation: "sensitive-original" } } } },
+    events: { subscribes: [{ event: "record.changed", scope: "global" }] },
+  };
+  const changes = diffPermissionRisk(previous, next, { destructive_operations: "forbidden" }, { destructive_operations: "allowed" });
+  assert.deepEqual(changes.map((item) => item.id), [
+    "network-access", "delete", "cross-module-write", "global-event-subscription", "max-sensitivity-class", "representation-range", "role-codex:private", "destructive-policy",
+  ]);
+  assert.equal(changes.filter((item) => item.severity === "critical").length >= 4, true);
+});
+
 test("Module workspace readiness keeps a scaffold separate from validation and installation", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-readiness-"));
   try {
     await initializeVault(vault, "disabled");
     const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
-    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
+    const create = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-CREATE", method: "createModuleFromBlueprint", params: { blueprint, confirm: true, approval: approveBlueprint(blueprint) } });
     assert.equal(create.ok, true);
     const before = await invokeCommandApi({ vaultRoot: vault, requestId: "READINESS-STATUS", method: "getModuleReadiness", params: { module_id: "media-library" } });
     assert.equal(before.ok, true);
@@ -209,6 +356,9 @@ test("Blueprint v1.1 materializes semantic entities and rejects a mismatched Wor
       assert.deepEqual((qualityPolicy.field_policies as JsonObject)["assignment.deadline"], {
         critical: true, provenance: "required", verification_interval_days: 7,
       }, "Blueprint provenance_required and freshness_days must materialize into a Quality Policy.");
+      const assignmentSchema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", "assignment.schema.json"), "utf8")) as JsonObject;
+      const deadlineMeta = (((assignmentSchema.properties as JsonObject)._field_meta as JsonObject).properties as JsonObject).deadline as JsonObject;
+      assert.deepEqual(deadlineMeta.required, ["authorship", "evidence_refs", "generation", "review", "verification"], "Generated entities must declare the Core-owned field provenance contract.");
     const lectureWorkflowPath = path.join(moduleRoot, "workflows", "normalize-lecture", "v1.0.0.yaml");
     const lectureWorkflow = parseYaml(moduleRoot, lectureWorkflowPath);
     const eventStep = (lectureWorkflow.steps as JsonObject[]).find((step) => step.uses === "core.publish-event");
