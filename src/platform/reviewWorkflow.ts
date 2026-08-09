@@ -48,6 +48,9 @@ import { materializeFieldProvenance } from "../quality/fieldProvenance.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const MODULE_UPDATE_PROTECTED_FIELDS = new Set([
+  "id", "type", "schema_id", "schema_version", "module_version", "instance_id", "created", "updated",
+]);
 
 const SCHEMAS = {
   decision: "https://pkb.local/schemas/core/review-decision.schema.json",
@@ -398,6 +401,11 @@ async function materializeApprovedModuleFieldProvenance(
     // A review modification may come from any client; it cannot carry model-made provenance.
     delete record._field_meta;
     record.source_refs = [...new Set(authorizedSourceRefs)];
+    if (operation.type === "update-frontmatter") {
+      for (const field of MODULE_UPDATE_PROTECTED_FIELDS) delete record[field];
+      record.updated = decision.decided_at;
+      record.generation = sourceGeneration;
+    }
     const entityId = typeof record.schema_id === "string" ? record.schema_id : typeof operation.payload.schema_id === "string" ? operation.payload.schema_id : null;
     if (!entityId) continue;
     const fieldMeta = await materializeFieldProvenance({

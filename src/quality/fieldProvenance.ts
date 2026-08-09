@@ -13,6 +13,7 @@ function strings(value: unknown): string[] {
 }
 
 export interface FieldQualityContract {
+  critical: boolean;
   provenanceRequired: boolean;
   verificationIntervalDays: number | null;
 }
@@ -26,6 +27,10 @@ export function fieldQualityContracts(moduleRoot: string, manifest: JsonObject, 
   if (!relative) return new Map();
   const policy = parseYaml(moduleRoot, path.join(moduleRoot, ...relative.split("/")));
   const declared = object(policy.field_policies) ?? {};
+  const declaredCritical = new Set(strings(policy.critical_fields).flatMap((entry) => {
+    const [declaredEntity, field] = entry.split(".", 2);
+    return declaredEntity === entityId && field ? [field] : !entry.includes(".") ? [entry] : [];
+  }));
   const result = new Map<string, FieldQualityContract>();
   for (const [qualifiedField, raw] of Object.entries(declared)) {
     const [declaredEntity, field] = qualifiedField.split(".", 2);
@@ -34,8 +39,10 @@ export function fieldQualityContracts(moduleRoot: string, manifest: JsonObject, 
     const verificationIntervalDays = typeof config.verification_interval_days === "number" && config.verification_interval_days > 0
       ? config.verification_interval_days : null;
     const provenanceRequired = config.provenance === "required";
-    if (provenanceRequired || verificationIntervalDays !== null) result.set(field, { provenanceRequired, verificationIntervalDays });
+    const critical = config.critical === true || declaredCritical.has(field);
+    if (critical || provenanceRequired || verificationIntervalDays !== null) result.set(field, { critical, provenanceRequired, verificationIntervalDays });
   }
+  for (const field of declaredCritical) if (!result.has(field)) result.set(field, { critical: true, provenanceRequired: false, verificationIntervalDays: null });
   return result;
 }
 
@@ -69,7 +76,7 @@ export async function materializeFieldProvenance(options: MaterializeFieldProven
     const fieldMeta: JsonObject = {};
     for (const [field, contract] of contracts) {
       const value: JsonValue | undefined = options.output[field];
-      if (value === undefined || value === null) continue;
+      if (value === undefined || value === null || (!contract.provenanceRequired && contract.verificationIntervalDays === null)) continue;
       const evidenceRefs: string[] = [];
       if (contract.provenanceRequired) {
         for (const sourceRef of sourceRefs) {

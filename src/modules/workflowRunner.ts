@@ -3,12 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
 import { PkbError } from "../core/errors.js";
-import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
+import { deepEqual, exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import { createGitSnapshot } from "../core/git.js";
 import { allocateId } from "../core/ids.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import { writeReviewItems } from "../core/reviews.js";
-import { materializeFieldProvenance } from "../quality/fieldProvenance.js";
+import { fieldQualityContracts, materializeFieldProvenance } from "../quality/fieldProvenance.js";
 import type { JsonObject, JsonValue, OperationPlan, ReviewItem } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault } from "../core/discovery.js";
 import { ModuleSdk } from "./sdk.js";
@@ -520,6 +520,47 @@ function coreManagedOutput(output: JsonObject, state: WorkflowState): JsonObject
   return managed;
 }
 
+const SYSTEM_MANAGED_UPDATE_FIELDS = new Set([
+  "id", "type", "schema_id", "schema_version", "module_version", "instance_id", "created", "updated",
+]);
+
+/** Update workflows receive a full schema-shaped result from Codex, but only
+ * business fields may be patched. Identity and lifecycle metadata are owned by
+ * Core, and `updated` is stamped here rather than accepted from the model. */
+function coreManagedUpdatePatch(output: JsonObject): JsonObject {
+  const patch = structuredClone(output);
+  for (const field of SYSTEM_MANAGED_UPDATE_FIELDS) delete patch[field];
+  patch.updated = new Date().toISOString();
+  return patch;
+}
+
+function criticalUpdateReviewRequirements(
+  moduleRoot: string,
+  manifest: JsonObject,
+  entityId: string,
+  patch: JsonObject,
+  current: JsonObject,
+): JsonObject[] {
+  return [...fieldQualityContracts(moduleRoot, manifest, entityId).entries()]
+    .filter(([field, contract]) => contract.critical && field in patch && !deepEqual(current[field], patch[field]))
+    .map(([field]) => ({
+      field: `${entityId}.${field}`,
+      condition: "critical-field-update",
+      current_value: current[field] ?? null,
+      reason: `Core protection: ${entityId}.${field} is a Critical Field and requires user approval.`,
+    }));
+}
+
+function uniqueReviewRequirements(requirements: JsonObject[]): JsonObject[] {
+  const seen = new Set<string>();
+  return requirements.filter((requirement) => {
+    const key = `${String(requirement.field ?? "")}:${String(requirement.condition ?? "")}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function contextDocumentContent(document: DocumentInput): string {
   // parseMarkdown separates frontmatter from the body. Both are approved task
   // input, so materialize them together without copying the original Vault file.
@@ -762,7 +803,13 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
         }
         const templatePath = path.join(resolved.moduleRoot, ...relative(string(step.with.template, "build-operation-plan.template"), "build-operation-plan.template").split("/"));
         const planId = await allocateId(vaultRoot, "PLAN");
-        const reviewRequirements = pendingReviewRequirements(state);
+        const entityId = typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema);
+        const planData = operationMode === "update-record" ? coreManagedUpdatePatch(output) : output;
+        const currentData = operationMode === "update-record" ? parseMarkdown(vaultRoot, fromVaultPath(vaultRoot, target)).data : {};
+        const reviewRequirements = uniqueReviewRequirements([
+          ...pendingReviewRequirements(state),
+          ...(operationMode === "update-record" ? criticalUpdateReviewRequirements(resolved.moduleRoot, resolved.manifest, entityId, planData, currentData) : []),
+        ]);
         const reviewId = reviewRequirements.length ? await allocateId(vaultRoot, "REV") : null;
         const generated = output.generation && typeof output.generation === "object" && !Array.isArray(output.generation) ? output.generation as JsonObject : null;
         if (!reviewId) {
@@ -770,15 +817,15 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             vaultRoot,
             moduleRoot: resolved.moduleRoot,
             manifest: resolved.manifest,
-            entityId: typeof output.schema_id === "string" ? output.schema_id : String(step.with.output_schema),
+            entityId,
             target,
-            output,
+            output: planData,
             authorizedSourceRefs: authorizedSourceRefs(state),
             runId,
             generation: generated,
             review: { status: "not-required", review_id: null, reviewed_by: null, reviewed_at: null, decision: null },
           });
-          if (Object.keys(fieldMeta).length) output._field_meta = fieldMeta;
+          if (Object.keys(fieldMeta).length) planData._field_meta = fieldMeta;
         }
         const plan: OperationPlan = {
           plan_id: planId, task_id: task.task_id, source_module: task.module, instance_id: task.instance_id,
@@ -787,10 +834,10 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
             operation_id: "OP-001", type: operationType, target, risk: reviewId ? "yellow" : "green", confidence: 1,
             idempotency_key: idempotencyKey, requires_review_id: reviewId,
             payload: operationMode === "create-record"
-              ? { document: { data: output, content: documentBody(await fs.readFile(templatePath, "utf8"), output) }, schema_id: outputSchema }
+              ? { document: { data: planData, content: documentBody(await fs.readFile(templatePath, "utf8"), planData) }, schema_id: outputSchema }
               : operationMode === "update-record"
-                ? { patch: output, replace_top_level: Object.keys(output), schema_id: outputSchema, actor: "ai" }
-                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), output), marker: idempotencyKey, actor: "ai" },
+                ? { patch: planData, replace_top_level: Object.keys(planData), schema_id: outputSchema, actor: "ai" }
+                : { section: typeof step.with.section === "string" ? step.with.section : "AI Updates", content: documentBody(await fs.readFile(templatePath, "utf8"), planData), marker: idempotencyKey, actor: "ai" },
           }], review_items: [],
         };
         if (reviewId) {
