@@ -16,6 +16,7 @@ import { generationTrace, resolveVersionedEntry } from "../modules/registries.js
 import { createModuleScaffold } from "../modules/scaffold.js";
 import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { analyzeGuidedModuleRequirement, normalizeGuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
+import { getModuleBuilderPlatformContract, moduleBuilderContractReference } from "../modules/platformContract.js";
 import { ModuleSdk } from "../modules/sdk.js";
 import { testModule } from "../modules/testRunner.js";
 import { validateModule } from "../modules/validator.js";
@@ -65,6 +66,18 @@ test("Module Blueprint resolves templates, Capability Packs, Adapters, and Compo
   assert.equal(report.required_components["periodic-rollup"], "^1.0.0");
   assert.equal(report.checks.some((item) => item.code === "INPUT_ADAPTER_AVAILABLE" && item.message.includes("pptx")), true);
   assert.equal(report.checks.some((item) => item.code === "CAPABILITY_PACK_PRIVACY_BOUND" && item.status === "pass"), true, "high-privacy and immutable-user-content must enforce executable Pack contracts.");
+});
+
+test("Module Builder Platform Contract is generated from the Engine registries", async () => {
+  const contract = await getModuleBuilderPlatformContract(SOURCE_ROOT);
+  assert.equal(contract.contract_version, "1.0.0");
+  assert.equal(typeof contract.contract_fingerprint, "string");
+  assert.equal((contract.base_templates["standard-workflow"] as JsonObject).scaffold_template, "workflow");
+  assert.equal(contract.capability_packs.some((pack) => pack.id === "periodic-summary"), true);
+  assert.equal(contract.adapters.some((adapter) => adapter.format === "pptx" && adapter.available === true), true);
+  assert.equal(contract.components.some((component) => component.id === "status-machine"), true);
+  assert.equal(contract.workflow_steps.some((step) => step.id === "component.state-transition-validation"), true);
+  assert.equal((moduleBuilderContractReference(contract).contract_fingerprint as string).length, 64);
 });
 
 test("Quick Builder emits a complete Blueprint v1.1 Record Module and a recent-records provider", async () => {
@@ -149,20 +162,26 @@ test("Guided Module Builder preserves the extension boundary and never exposes a
   const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "course.blueprint.yaml"));
   const result = await analyzeGuidedModuleRequirement({
     brief: "Organize course lectures and assignment briefs into a separate course workspace with weekly summaries.",
-    execute: async () => ({
-      stderr: "",
-      output: {
-        boundary: { kind: "module", rationale: "Course work has its own entities and lifecycle.", exclusions: ["Do not edit the original slides."] },
-        summary: "A course module is appropriate.",
-        questions: [{ id: "course-full-text", category: "content-access", question: "Allow full lecture text?", impact: "The selected content is provided to Codex." }],
-        proposed_blueprint: blueprint,
-        capability_gap: null,
-      },
-    }),
+    execute: async (request) => {
+      const contract = JSON.parse(await fs.readFile(path.join(request.contextRoot, "module-builder-platform-contract.json"), "utf8")) as JsonObject;
+      assert.equal(Array.isArray(contract.capability_packs), true, "Guided analysis must receive the generated Platform Contract, not a copied list.");
+      assert.equal(Array.isArray(contract.workflow_steps), true);
+      return {
+        stderr: "",
+        output: {
+          boundary: { kind: "module", rationale: "Course work has its own entities and lifecycle.", exclusions: ["Do not edit the original slides."] },
+          summary: "A course module is appropriate.",
+          questions: [{ id: "course-full-text", category: "content-access", question: "Allow full lecture text?", impact: "The selected content is provided to Codex." }],
+          proposed_blueprint: blueprint,
+          capability_gap: null,
+        },
+      };
+    },
   });
   assert.equal(result.boundary.kind, "module");
   assert.equal(result.questions[0]?.id, "course-full-text");
   assert.equal((result.proposed_blueprint as JsonObject).blueprint_version, 1.1);
+  assert.equal(typeof result.platform_contract?.contract_fingerprint, "string");
   assert.throws(() => normalizeGuidedBuilderAnalysis("A long enough requirement for a component.", {
     boundary: { kind: "component", rationale: "shared", exclusions: [] }, summary: "shared", questions: [], proposed_blueprint: blueprint, capability_gap: null,
   }), /Only a module decision/);
@@ -172,6 +191,9 @@ test("Command API creates a Blueprint module in the Vault development workspace,
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-blueprint-workspace-"));
   try {
     await initializeVault(vault, "disabled");
+    const contract = await invokeCommandApi({ vaultRoot: vault, requestId: "BUILDER-CONTRACT", method: "getModuleBuilderPlatformContract", params: {} });
+    assert.equal(contract.ok, true);
+    assert.equal(typeof (contract.data as JsonObject).contract_fingerprint, "string");
     const blueprint = parseYaml(SOURCE_ROOT, path.join(SOURCE_ROOT, "examples", "module-blueprints", "media-library.blueprint.yaml"));
     const bypass = await invokeCommandApi({ vaultRoot: vault, requestId: "BLUEPRINT-WORKSPACE-BYPASS", method: "createModuleFromBlueprint", params: { blueprint, confirm: true } });
     assert.equal(bypass.ok, false, "A generic confirm flag must not bypass Core approval requirements.");

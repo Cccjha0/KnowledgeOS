@@ -7,6 +7,7 @@ import { PkbError } from "../core/errors.js";
 import { exists } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import { createModuleScaffold } from "./scaffold.js";
+import { loadModuleBuilderRegistry } from "./platformContract.js";
 import type { ModuleTemplate } from "./types.js";
 
 const BLUEPRINT_SCHEMA = "https://pkb.local/schemas/core/module-blueprint.schema.json";
@@ -208,9 +209,9 @@ export async function validateModuleBlueprint(engineRoot: string, blueprintPath:
   validateSchema(engineRoot, BLUEPRINT_SCHEMA, blueprint);
   const registryPath = path.join(engineRoot, PACK_REGISTRY);
   if (!(await exists(registryPath))) throw new PkbError("CAPABILITY_PACK_REGISTRY_MISSING", `Capability Pack Registry not found: ${registryPath}`);
-  const registry = parseYaml(engineRoot, registryPath);
-  const packs = object(registry.packs) ?? {};
-  const templates = object(registry.base_templates) ?? {};
+  const registry = await loadModuleBuilderRegistry(engineRoot);
+  const packs = registry.packs;
+  const templates = registry.templates;
   const requested = strings(blueprint.capability_packs);
   const resolved: string[] = [];
   const checks: BlueprintCheck[] = [check("BLUEPRINT_SCHEMA_VALID", "pass", "Blueprint v1 schema passed.", path.basename(absolute))];

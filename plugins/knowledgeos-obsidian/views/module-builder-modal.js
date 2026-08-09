@@ -76,9 +76,18 @@ function createModuleBuilderViews(deps) {
       this.guidedBrief = "";
       this.expertBlueprint = "";
       this.confirmedApprovals = new Set();
+      this.platformContract = null;
     }
 
-    onOpen() { this.render(); }
+    onOpen() { this.render(); void this.loadPlatformContract(); }
+
+    async loadPlatformContract() {
+      const response = await this.plugin.client.invoke("getModuleBuilderPlatformContract", {});
+      if (response.ok) {
+        this.platformContract = response.data;
+        this.render();
+      }
+    }
 
     render() {
       const root = this.contentEl;
@@ -87,6 +96,9 @@ function createModuleBuilderViews(deps) {
       if (this.readiness) { this.renderReadiness(root); return; }
       root.createEl("h2", { text: "Create a KnowledgeOS module" });
       root.createEl("p", { cls: "knowledgeos-builder-intro", text: "Describe the use case first. KnowledgeOS checks the extension boundary and permissions before it creates any module files." });
+      if (this.platformContract) {
+        root.createEl("p", { cls: "knowledgeos-builder-contract", text: `Platform Contract v${this.platformContract.contract_version} · ${String(this.platformContract.contract_fingerprint || "").slice(0, 12)}` });
+      }
       this.renderModePicker(root);
       if (this.mode === "guided") this.renderGuided(root);
       if (this.mode === "quick") this.renderQuick(root);

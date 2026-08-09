@@ -41,6 +41,7 @@ import { applyLegacyAccessPolicyMigration, previewLegacyAccessPolicyMigration, r
 import type { RepresentationLevel } from "../core/readLevels.js";
 import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlueprint } from "../modules/blueprint.js";
 import { analyzeGuidedModuleRequirement } from "../modules/guidedBuilder.js";
+import { getModuleBuilderPlatformContract } from "../modules/platformContract.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -284,6 +285,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const brief = stringParam(params, "brief");
     const analysis = await analyzeGuidedModuleRequirement({
       brief,
+      engineRoot: ENGINE_ROOT,
       codexModel: typeof params.codex_model === "string" ? params.codex_model : undefined,
       codexReasoningEffort: typeof params.codex_reasoning_effort === "string" ? params.codex_reasoning_effort : undefined,
     });
@@ -291,6 +293,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const preview = await withTemporaryBlueprint(vaultRoot, requestId, analysis.proposed_blueprint, (file) => validateModuleBlueprint(ENGINE_ROOT, file));
     return { ...analysis, blueprint_preview: { report: preview.report, scaffold_template: preview.scaffoldTemplate, approval: deriveBlueprintApproval(analysis.proposed_blueprint) } } as unknown as JsonValue;
   }
+  if (method === "getModuleBuilderPlatformContract") return getModuleBuilderPlatformContract(ENGINE_ROOT);
   if (method === "previewModuleBlueprint") {
     const blueprint = params.blueprint && typeof params.blueprint === "object" && !Array.isArray(params.blueprint) ? params.blueprint as JsonObject : null;
     if (!blueprint) throw new PkbError("INVALID_REQUEST", "blueprint must be an object.");

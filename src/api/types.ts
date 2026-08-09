@@ -48,6 +48,7 @@ export type CommandApiMethod =
   | "reviewPartialInboxExtraction"
   | "migrateLegacyAccessPolicies"
   | "backfillQualityMetadata"
+  | "getModuleBuilderPlatformContract"
   | "analyzeModuleRequirement"
   | "previewModuleBlueprint"
   | "createModuleFromBlueprint"
