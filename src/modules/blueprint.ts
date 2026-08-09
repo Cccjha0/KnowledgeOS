@@ -308,6 +308,10 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
   const events = object(blueprint.events);
   const publishedEvents = blueprintEventNames(events?.publishes);
   const subscriptions = subscriptionObjects(events?.subscribes);
+  const dashboard = object(blueprint.dashboard);
+  const dashboardItems = Array.isArray(dashboard?.items)
+    ? dashboard.items.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item))
+    : [];
 
   if (Object.keys(inboxRoles).length) {
     const defaultRole = String(inbox?.default_asset_role ?? "");
@@ -367,6 +371,31 @@ function validateSemanticBlueprintContract(blueprint: JsonObject, checks: Bluepr
     checks.push(field?.critical === true
       ? check("SEMANTIC_REVIEW_FIELD_EXISTS", "pass", `${fieldRef} has a matching critical Entity field.`, "review_policy.critical_fields")
       : check("SEMANTIC_REVIEW_FIELD_UNKNOWN", "fail", `${fieldRef} must reference a critical field declared by an Entity.`, "review_policy.critical_fields"));
+  }
+
+  const knownSystemFields = new Set(["id", "type", "schema_id", "schema_version", "module_version", "instance_id", "title", "created", "updated", "source_refs", "safe_summary"]);
+  const hasEntityField = (entityId: string, fieldName: string): boolean => {
+    const rootField = fieldName.split(".", 1)[0] ?? "";
+    if (knownSystemFields.has(rootField)) return true;
+    const entity = entities.find((candidate) => String(candidate.id) === entityId);
+    return Boolean(object(object(entity?.schema)?.fields)?.[rootField]);
+  };
+  if (!dashboardItems.length) checks.push(check("SEMANTIC_DASHBOARD_DESCRIPTOR_REQUIRED", "fail", "Blueprint v1.1 Dashboard must declare explicit items; legacy section names are not a runtime contract.", "dashboard.items"));
+  const dashboardIds = new Set<string>();
+  for (const item of dashboardItems) {
+    const id = String(item.id ?? "");
+    const kind = String(item.kind ?? "");
+    const entityId = String(item.entity ?? "");
+    const requiresEntity = ["entity", "due", "recent"].includes(kind);
+    const entityValid = !requiresEntity || entityIds.includes(entityId);
+    const dueValid = kind !== "due" || hasEntityField(entityId, String(item.due_field ?? ""));
+    const recentValid = kind !== "recent" || hasEntityField(entityId, String(item.date_field ?? ""));
+    const filtersValid = !requiresEntity || Object.keys(object(item.filters) ?? {}).every((field) => hasEntityField(entityId, field));
+    const unique = Boolean(id) && !dashboardIds.has(id);
+    dashboardIds.add(id);
+    checks.push(unique && entityValid && dueValid && recentValid && filtersValid
+      ? check("SEMANTIC_DASHBOARD_DESCRIPTOR_VALID", "pass", `${id} declares an executable ${kind} Dashboard projection.`, `dashboard.items.${id}`)
+      : check("SEMANTIC_DASHBOARD_DESCRIPTOR_INVALID", "fail", `${id || "Dashboard item"} must use declared entities, fields, and unique IDs.`, `dashboard.items.${id || "unknown"}`));
   }
 
   const outputs = Array.isArray(blueprint.outputs) ? blueprint.outputs.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)) : [];
@@ -713,13 +742,28 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
   }));
   if (Object.keys(machines).length) writeYaml(moduleRoot, path.join(moduleRoot, "rules", "state-machines.yaml"), { machines });
   const dashboard = parseYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"));
-  dashboard.items = dashboardProviderItems(strings(object(blueprint.dashboard)?.sections), entities);
-  dashboard.version = "2.0.0";
+  dashboard.items = blueprintDashboardItems(blueprint);
+  dashboard.version = "3.0.0";
   writeYaml(moduleRoot, path.join(moduleRoot, "dashboard", "provider.yaml"), dashboard);
 }
 
 function entityIdsForOwnership(entities: JsonObject[]): string[] { return entities.map((entity) => String(entity.id)); }
 
+/**
+ * Dashboard descriptors are authored by the Blueprint.  Scaffolding copies
+ * them verbatim; it must never infer business fields from presentation IDs.
+ */
+function blueprintDashboardItems(blueprint: JsonObject): JsonObject[] {
+  const dashboard = object(blueprint.dashboard);
+  return Array.isArray(dashboard?.items)
+    ? dashboard.items.map((item) => object(item)).filter((item): item is JsonObject => Boolean(item)).map((item) => JSON.parse(JSON.stringify(item)) as JsonObject)
+    : [];
+}
+
+/*
+ * Retired legacy section-name mapper. Dashboard descriptors are now copied
+ * from the Blueprint by blueprintDashboardItems above.
+ *
 function dashboardProviderItems(sections: string[], entities: JsonObject[]): JsonObject[] {
   const entityIds = new Set(entities.map((entity) => String(entity.id)));
   const recordEntity = entityIds.has("knowledge-record") ? "knowledge-record" : entityIds.has("record") ? "record" : null;
@@ -738,6 +782,7 @@ function dashboardProviderItems(sections: string[], entities: JsonObject[]): Jso
   return items;
 }
 
+*/
 function sourceQuerySteps(workflow: JsonObject, outputs: JsonObject[], representation: string): JsonObject[] {
   return sourceObjects(workflow).map((source, index) => {
     const entity = String(source.entity);

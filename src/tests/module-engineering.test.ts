@@ -110,8 +110,9 @@ test("Quick Builder emits a complete Blueprint v1.1 Record Module and a recent-r
     const recent = (provider.items as JsonObject[]).find((item) => item.id === "recent-records");
     assert.deepEqual(recent, {
       id: "recent-records", kind: "recent", entity: "knowledge-record", date_field: "created", limit: 5,
-      category: "summary", priority: "low", title: "{title}", description: "记录创建于：{created}", actions: ["open"],
+      category: "summary", priority: "low", title: "{title}", description: "Record created: {created}", actions: ["open"],
     });
+    assert.deepEqual(provider.items, (blueprint.dashboard as JsonObject).items, "Scaffolding must materialize Blueprint Dashboard descriptors verbatim.");
   } finally {
     await fs.rm(engine, { recursive: true, force: true });
   }

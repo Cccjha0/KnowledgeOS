@@ -1,5 +1,5 @@
 import path from "node:path";
-import { parseYaml } from "../core/bridge.js";
+import { parseYaml, validateSchema } from "../core/bridge.js";
 import { exists } from "../core/files.js";
 import type { JsonObject, JsonValue } from "../core/types.js";
 import { blueprintEventNames, isSemanticBlueprint, validateModuleBlueprint, type BlueprintCheck } from "./blueprint.js";
@@ -35,11 +35,14 @@ function runtimeInboxRoleContract(role: JsonObject | null): JsonObject {
     allow_codex: role?.allow_codex !== false,
   };
 }
-function dashboardSectionIds(value: JsonValue | undefined): string[] {
-  return Array.isArray(value)
-    ? value.map((item) => typeof item === "string" ? item : object(item)?.id).filter((item): item is string => typeof item === "string")
-    : [];
+function dashboardDescriptors(value: JsonValue | undefined): JsonObject[] { return entries(value); }
+function canonicalJson(value: JsonValue | undefined): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  const item = object(value);
+  if (item) return `{${Object.keys(item).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(item[key])}`).join(",")}}`;
+  return JSON.stringify(value ?? null);
 }
+const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
 function registryPath(moduleRoot: string, entry: JsonObject | null): string | null { return typeof entry?.path === "string" ? path.join(moduleRoot, "workflows", ...entry.path.replace(/^workflows\//, "").split("/")) : null; }
 
 async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObject, manifest: JsonObject, checks: BlueprintCheck[]): Promise<void> {
@@ -161,7 +164,12 @@ async function semanticRuntimeCompliance(moduleRoot: string, blueprint: JsonObje
     "Blueprint field quality requirements are materialized into the runtime Quality Policy.", "rules/quality-policy.yaml");
   const expectedImmutable = object(blueprint.privacy)?.user_original_content_mutable === true;
   add("V2_IMMUTABLE_CONTENT_BOUND", ownership.user_original_content_mutable === expectedImmutable && (expectedImmutable || Array.isArray(ownership.forbidden_operations)), "Runtime ownership policy enforces the Blueprint original-content policy.", "rules/ownership.yaml");
-  add("V2_DASHBOARD_BOUND", sameSet(dashboardSectionIds(dashboard.items), strings(object(blueprint.dashboard)?.sections)), "Runtime Dashboard materializes Blueprint sections as executable provider descriptors.", "dashboard/provider.yaml");
+  let dashboardSchemaValid = true;
+  try { validateSchema(moduleRoot, DASHBOARD_PROVIDER_SCHEMA, dashboard); } catch { dashboardSchemaValid = false; }
+  add("V2_DASHBOARD_SCHEMA_VALID", dashboardSchemaValid, "Runtime Dashboard Provider satisfies the public provider schema.", "dashboard/provider.yaml");
+  const declaredDashboard = dashboardDescriptors(object(blueprint.dashboard)?.items);
+  const runtimeDashboard = dashboardDescriptors(dashboard.items);
+  add("V2_DASHBOARD_BOUND", declaredDashboard.length > 0 && canonicalJson(runtimeDashboard) === canonicalJson(declaredDashboard), "Runtime Dashboard materializes Blueprint descriptors verbatim, without section-name inference.", "dashboard/provider.yaml");
 
   const jobs = entries(blueprint.jobs);
   const jobRegistry = parseYaml(moduleRoot, path.join(moduleRoot, "jobs", "jobs.yaml"));

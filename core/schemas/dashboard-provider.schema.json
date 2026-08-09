@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/dashboard-provider.schema.json",
+  "title": "KnowledgeOS Dashboard Provider v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["provider_id", "version", "items"],
+  "properties": {
+    "provider_id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+    "version": { "oneOf": [{ "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" }, { "type": "integer", "minimum": 1 }] },
+    "items": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/providerItem" }
+    }
+  },
+  "$defs": {
+    "category": { "enum": ["action", "review", "research", "summary", "deadline", "warning", "status", "system"] },
+    "priority": { "enum": ["critical", "high", "medium", "low"] },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["open", "approve", "reject", "defer", "discuss", "generate", "run", "dismiss", "reconcile", "retry", "acknowledge", "suppress", "resolve", "cancel"] }
+    },
+    "priorityPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overdue": { "$ref": "#/$defs/priority" },
+        "within_3_days": { "$ref": "#/$defs/priority" },
+        "default": { "$ref": "#/$defs/priority" }
+      }
+    },
+    "providerItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "category", "priority", "title", "description", "actions"],
+      "properties": {
+        "id": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+        "kind": { "enum": ["entity", "due", "recent", "review-summary"] },
+        "entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+        "category": { "$ref": "#/$defs/category" },
+        "due_category": { "$ref": "#/$defs/category" },
+        "priority": { "oneOf": [{ "$ref": "#/$defs/priority" }, { "$ref": "#/$defs/priorityPolicy" }] },
+        "filters": { "type": "object", "additionalProperties": true },
+        "due_field": { "type": "string", "minLength": 1 },
+        "due_state": { "enum": ["always", "overdue-only"] },
+        "date_field": { "type": "string", "minLength": 1 },
+        "window_days": { "type": "integer", "minimum": 1 },
+        "limit": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "actions": { "$ref": "#/$defs/actions" },
+        "due_actions": { "$ref": "#/$defs/actions" },
+        "created_at_field": { "type": "string", "minLength": 1 },
+        "suppress_due_when": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entity"],
+          "properties": {
+            "entity": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/moduleId" },
+            "local_field": { "type": "string", "minLength": 1 },
+            "foreign_field": { "type": "string", "minLength": 1 },
+            "filters": { "type": "object", "additionalProperties": true }
+          }
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "due" } } }, "then": { "required": ["entity", "due_field"] } },
+        { "if": { "properties": { "kind": { "const": "recent" } } }, "then": { "required": ["entity", "date_field"] } },
+        { "if": { "properties": { "kind": { "const": "entity" } } }, "then": { "required": ["entity"] } }
+      ]
+    }
+  }
+}

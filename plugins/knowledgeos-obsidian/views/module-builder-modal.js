@@ -51,7 +51,10 @@ function buildQuickBlueprint(form) {
     workflows,
     review_policy: { critical_fields: criticalNames.map((field) => `knowledge-record.${field}`), ambiguous_input: "review", destructive_operations: "forbidden" },
     jobs: summaryEnabled ? [{ id: "weekly-summary", workflow_id: "weekly-summary", schedule: "weekly", weekday: "Sun", at: "18:00", timezone: "instance", scope: "instance", catch_up: "latest", retry: { max_attempts: 3, strategy: "exponential" }, concurrency: { policy: "forbid", key: "{module}:{instance}:weekly-summary" }, max_age_days: 21 }] : [],
-    events: { publishes: [], subscribes: [] }, dashboard: { sections: ["recent-records", "waiting-reviews"] },
+    events: { publishes: [], subscribes: [] }, dashboard: { items: [
+      { id: "recent-records", kind: "recent", entity: "knowledge-record", date_field: "created", limit: 5, category: "summary", priority: "low", title: "{title}", description: "Record created: {created}", actions: ["open"] },
+      { id: "waiting-reviews", kind: "review-summary", category: "status", priority: "high", title: "{count} reviews need a decision", description: "{count} review items are waiting for your decision.", actions: ["open"] },
+    ] },
     testing: { normal_input: "required", ambiguous_input: "required", repeat_execution: "required", permission_denied: "required", paused_instance: "required", archived_instance: "required", prompt_regression: "required", periodic_job: summaryEnabled ? "required" : "not-applicable", event_publication: "not-applicable", event_consumption: "not-applicable", migration: "not-applicable", attachment_policy: attachments ? "required" : "not-applicable" },
   };
 }
