@@ -132,6 +132,49 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("a green module operation replaces model provenance with Core-authorized evidence", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-module-field-provenance-"));
+  try {
+    await initializeVault(vault, "disabled");
+    await manageModule(vault, { module_id: "course", action: "enable", preview_only: false });
+    const instanceId = "course-provenance-2026";
+    await createInstance(vault, {
+      module_id: "course", instance_id: instanceId, display_name: "Course Provenance",
+      fields: { course_code: "COMP9000", course_name: "Course Provenance", semester: "2026-S2", timezone: "Asia/Shanghai" },
+    });
+    const sourceRelative = `20-Workspace/课程管理/${instanceId}/Inbox/Assignments/brief.md`;
+    const source = path.join(vault, ...sourceRelative.split("/"));
+    await fs.mkdir(path.dirname(source), { recursive: true });
+    await fs.writeFile(source, "# Essay brief\n\nDeadline: 2026-09-01.", "utf8");
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({
+      job_id: `course.normalize-assignment.${instanceId}`, module: "course", instance_id: instanceId, task_type: "workflow", workflow: "course:normalize-assignment",
+      priority: "high", scheduled_for: "2020-08-09T10:00:00.000Z", resources: { filesystem: "required", network: "not-required", codex: "required", user: "not-required" },
+      trigger: { type: "inbox", workflow_id: "normalize-assignment", workflow_version: "1.0.0" }, catch_up_policy: "none", idempotency_key: `course:${instanceId}:field-provenance`,
+      payload: { source_file: sourceRelative, item_id: "assignment-provenance", asset_role: "assignment-brief" },
+    }).task;
+    repository.setResourceStatus({ resource: "codex", status: "available", reason: null, checked_at: new Date().toISOString(), details: { test: true } });
+    repository.close();
+    const output = {
+      id: "ASSIGN-2026-000099", type: "course-assignment", schema_id: "assignment", schema_version: 1, module_version: "0.3.0-beta", instance_id: instanceId,
+      title: "Essay", source_refs: ["fabricated-source.md"], created: "2026-08-09T18:00:00+08:00", updated: "2026-08-09T18:00:00+08:00", safe_summary: "Essay brief",
+      deadline: "2026-09-01T09:00:00+08:00", status: "planned",
+      _field_meta: { deadline: { authorship: "ai", evidence_refs: ["EVD-2099-999999"], verification: { last_verified: "2099-01-01T00:00:00Z" } } },
+    };
+    await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
+    const after = await RuntimeRepository.open(vault); assert.equal(after.getTask(task.task_id)?.status, "completed"); after.close();
+    const target = path.join(vault, "20-Workspace", "课程管理", instanceId, "Assignments", "assignment-provenance.md");
+    const data = parseMarkdown(vault, target).data;
+    assert.deepEqual(data.source_refs, [sourceRelative]);
+    const deadlineMeta = ((data._field_meta as JsonObject).deadline as JsonObject);
+    assert.notEqual((deadlineMeta.evidence_refs as string[])[0], "EVD-2099-999999");
+    assert.equal((deadlineMeta.verification as JsonObject).verification_interval_days, 7);
+    const quality = await QualityRepository.open(vault);
+    assert.equal(quality.getEvidence((deadlineMeta.evidence_refs as string[])[0]!)?.source_ref, sourceRelative);
+    quality.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("update-record and append-record use controlled executable Operations", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-record-operation-modes-"));
   try {
