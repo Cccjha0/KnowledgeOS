@@ -29,6 +29,13 @@
       "type": ["string", "null"],
       "pattern": "^TASK-\\d{4}-\\d{6,}$"
     },
+    "item_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_file": {
+      "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/vaultPath"
+    },
     "schema_version": {
       "type": "integer",
       "minimum": 1

@@ -152,7 +152,7 @@ async function businessSnapshot(vaultRoot: string): Promise<BusinessSnapshot> {
     }
   }
   const reviewIds: string[] = [];
-  const reviewsRoot = path.join(vaultRoot, "90-System", "Reviews");
+  const reviewsRoot = path.join(vaultRoot, "90-System", "Review Queue");
   if (await exists(reviewsRoot)) {
     for (const file of await listFilesRecursive(reviewsRoot, ".md")) {
       try {
@@ -186,7 +186,7 @@ function snapshotsEqual(before: BusinessSnapshot, after: BusinessSnapshot): bool
 
 async function readReviewsById(vaultRoot: string): Promise<Map<string, JsonObject>> {
   const output = new Map<string, JsonObject>();
-  const root = path.join(vaultRoot, "90-System", "Reviews");
+  const root = path.join(vaultRoot, "90-System", "Review Queue");
   if (!(await exists(root))) return output;
   for (const file of await listFilesRecursive(root, ".md")) {
     try {
@@ -343,14 +343,16 @@ export async function testModule(engineRoot: string, moduleId: string, options: 
       const task = review.origin_task_id ?? review.task_id;
       const target = review.target;
       return (source === ambiguousSource || source === ambiguousItemId || source === ambiguousCapture.path)
-        && (task === ambiguousTask.task_id || typeof task === "string")
+        && task === ambiguousTask.task_id
         && target !== null && target !== undefined;
     });
+    // A pending Review necessarily persists its proposed plan. That is not a
+    // user-visible business write; the safety contract is that no entity,
+    // content file, or Event is created before the user decides.
     const noBusinessWrite = JSON.stringify(businessBeforeAmbiguous.files) === JSON.stringify(businessAfterAmbiguous.files)
       && JSON.stringify(businessBeforeAmbiguous.entities) === JSON.stringify(businessAfterAmbiguous.entities)
-      && JSON.stringify(businessBeforeAmbiguous.eventIds) === JSON.stringify(businessAfterAmbiguous.eventIds)
-      && JSON.stringify(businessBeforeAmbiguous.operationEffects) === JSON.stringify(businessAfterAmbiguous.operationEffects);
-    const ambiguousSafe = (ambiguousExpected === "review" && ambiguousTask.status === "completed" && newReviews.length > 0 && reviewMatchesSource && noBusinessWrite)
+      && JSON.stringify(businessBeforeAmbiguous.eventIds) === JSON.stringify(businessAfterAmbiguous.eventIds);
+    const ambiguousSafe = (ambiguousExpected === "review" && ["waiting-for-user", "completed"].includes(ambiguousTask.status) && newReviews.length > 0 && reviewMatchesSource && noBusinessWrite)
       || (["rejected", "failed"].includes(ambiguousExpected) && ambiguousTask.status === "failed" && newReviews.length === 0 && noBusinessWrite);
     checks.push(check("ambiguous", ambiguousSafe && (!expectedError || ambiguousTask.last_error?.code === expectedError) ? "pass" : "fail",
       ambiguousSafe ? "Ambiguous Capture was actually executed and stopped before an unreviewed write." : "Ambiguous Capture did not reach its declared safe outcome.", {

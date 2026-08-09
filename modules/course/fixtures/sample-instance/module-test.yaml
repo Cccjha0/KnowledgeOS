@@ -7,7 +7,8 @@ scenarios:
     entrypoint: normalize-assignment
   ambiguous_capture:
     fixture: tests/behavior/ambiguous-input.md
-    expected: failed
+    expected: review
+    expected_error_code: MODULE_WORKFLOW_REVIEW_REQUIRED
   permission_denied:
     target: 20-Workspace/课程管理/forbidden.md
   resource_unavailable:

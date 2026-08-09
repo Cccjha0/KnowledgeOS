@@ -15,7 +15,10 @@ test("a declared Course dashboard provider projects active assignment deadlines 
     await initializeVault(vault, "disabled");
     await manageModule(vault, { module_id: "course", action: "enable", preview_only: false });
     const instanceId = "course-dashboard-2026";
-    await createInstance(vault, { module_id: "course", instance_id: instanceId, display_name: "Dashboard Course", fields: { timezone: "Asia/Shanghai" } });
+    await createInstance(vault, {
+      module_id: "course", instance_id: instanceId, display_name: "Dashboard Course",
+      fields: { course_code: "COMP9000", course_name: "Dashboard Course", semester: "2026-S2", timezone: "Asia/Shanghai" },
+    });
     const now = Date.now();
     const deadline = new Date(now + 2 * 86_400_000).toISOString();
     const assignment = path.join(vault, "20-Workspace", "课程管理", instanceId, "Assignments", "essay.md");

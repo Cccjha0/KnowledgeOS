@@ -102,6 +102,10 @@ export interface MarkdownDocument {
 export type ReviewItem = JsonObject & {
   review_id: string;
   origin_task_id?: string | null;
+  /** Originating Inbox item, retained to make review provenance testable. */
+  item_id?: string;
+  /** Vault-relative source that led to this Review. */
+  source_file?: string;
   schema_version: number;
   source_module: string;
   instance_id: string | null;

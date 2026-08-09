@@ -70,7 +70,10 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     await initializeVault(vault, "disabled");
     await manageModule(vault, { module_id: "course", action: "enable", preview_only: false });
     const instanceId = "course-review-2026";
-    await createInstance(vault, { module_id: "course", instance_id: instanceId, display_name: "Course Review", fields: { timezone: "Asia/Shanghai" } });
+    await createInstance(vault, {
+      module_id: "course", instance_id: instanceId, display_name: "Course Review",
+      fields: { course_code: "COMP9000", course_name: "Course Review", semester: "2026-S2", timezone: "Asia/Shanghai" },
+    });
     const sourceRelative = `20-Workspace/课程管理/${instanceId}/Inbox/Assignments/brief.md`;
     const source = path.join(vault, ...sourceRelative.split("/"));
     await fs.mkdir(path.dirname(source), { recursive: true });
