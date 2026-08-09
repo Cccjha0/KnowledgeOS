@@ -183,7 +183,7 @@ test("quality audit infers module ownership, honors frontmatter links, and suppr
       type: "workflow",
       workflow_id: "sync-due-research",
       workflow_version: "1.0.0",
-      resources: { filesystem: "required", network: "not-required", codex: "not-required", user: "required" },
+      additional_gates: { user: "required" },
       dedupe: { entity_type: "research-request", target_field: "record_path", open_statuses: ["pending", "in-progress", "needs-more-information"] },
     };
     const recordPath = "20-Workspace/Applications/demo/Records/Application.md";
@@ -239,6 +239,7 @@ test("stale followups are scheduled from the module Quality Policy, not an appli
     assert.equal(followup.module, "application-tracker");
     assert.equal(followup.workflow, "module:application-tracker:sync-due-research");
     assert.equal(followup.trigger.workflow_id, "sync-due-research");
+    assert.deepEqual(followup.resources, { filesystem: "required", network: "not-required", codex: "not-required", user: "required" }, "Quality Policy additional_gates may add the user confirmation gate but must retain Workflow resource requirements.");
     assert.equal((followup.payload.quality_followup as JsonObject).type, "workflow");
 
     const quality = await QualityRepository.open(vault); const issues = quality.listIssues(); quality.close();

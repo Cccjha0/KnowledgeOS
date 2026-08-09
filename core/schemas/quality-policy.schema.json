@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pkb.local/schemas/core/quality-policy.schema.json",
+  "title": "KnowledgeOS Quality Policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["critical_fields", "provenance_required", "freshness", "ownership", "audits", "orphan_exempt_entity_types"],
+  "properties": {
+    "critical_fields": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "provenance_required": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+    "freshness": { "type": "object", "additionalProperties": { "$ref": "#/$defs/freshnessRule" } },
+    "field_policies": { "type": "object", "additionalProperties": { "$ref": "#/$defs/fieldPolicy" } },
+    "ownership": { "type": "object" },
+    "audits": { "type": "array", "items": { "type": "string" } },
+    "orphan_exempt_entity_types": { "type": "array", "items": { "type": "string" } },
+    "default_verification_interval_days": { "type": "integer", "minimum": 1 }
+  },
+  "$defs": {
+    "resourceRequirement": { "enum": ["required", "not-required"] },
+    "additionalGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "filesystem": { "$ref": "#/$defs/resourceRequirement" },
+        "network": { "$ref": "#/$defs/resourceRequirement" },
+        "codex": { "$ref": "#/$defs/resourceRequirement" },
+        "user": { "$ref": "#/$defs/resourceRequirement" }
+      }
+    },
+    "dedupe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "target_field", "open_statuses"],
+      "properties": {
+        "entity_type": { "type": "string", "minLength": 1 },
+        "target_field": { "type": "string", "minLength": 1 },
+        "open_statuses": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      }
+    },
+    "staleAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "workflow_id", "workflow_version", "dedupe"],
+      "properties": {
+        "type": { "const": "workflow" },
+        "workflow_id": { "type": "string", "minLength": 1 },
+        "workflow_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
+        "additional_gates": { "$ref": "#/$defs/additionalGates" },
+        "dedupe": { "$ref": "#/$defs/dedupe" }
+      }
+    },
+    "freshnessRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interval_days"],
+      "properties": {
+        "interval_days": { "type": "integer", "minimum": 1 },
+        "stale_action": { "$ref": "#/$defs/staleAction" }
+      }
+    },
+    "fieldPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "critical": { "type": "boolean" },
+        "provenance": { "enum": ["required", "optional"] },
+        "verification_interval_days": { "type": "integer", "minimum": 1 },
+        "stale_action": { "$ref": "#/$defs/staleAction" }
+      }
+    }
+  }
+}
