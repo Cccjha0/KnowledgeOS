@@ -7,6 +7,8 @@ const ADAPTERS = new Map<string, ResearchReconciliationAdapter>([
   [applicationResearchReconciliationAdapter.id, applicationResearchReconciliationAdapter],
 ]);
 
+export function hasResearchReconciliationAdapter(id: string): boolean { return ADAPTERS.has(id); }
+
 /** Resolves a module-declared research reconciliation implementation. */
 export function resolveResearchReconciliationAdapter(manifest: JsonObject): ResearchReconciliationAdapter {
   const contract = manifest.research_request;

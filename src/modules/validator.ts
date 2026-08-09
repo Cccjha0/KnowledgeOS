@@ -7,6 +7,8 @@ import type { ModuleMaturity, ModuleValidationCheck, ModuleValidationReport } fr
 import { getWorkflowStepDefinition } from "./workflowStepRegistry.js";
 import { availableIngestionAdapter, getIngestionAdapter } from "../core/adapterRegistry.js";
 import { validateBlueprintCompliance } from "./blueprintCompliance.js";
+import { parseResearchRequestContract } from "../components/researchRequest.js";
+import { hasResearchReconciliationAdapter } from "./researchReconciliationAdapterRegistry.js";
 
 const MANIFEST_SCHEMA = "https://pkb.local/schemas/core/module-manifest.schema.json";
 const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
@@ -107,6 +109,30 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
     else if (!properties?.[targetField]) checks.push(check("contracts", "QUALITY_STALE_DEDUPE_TARGET_UNKNOWN", "fail", `stale_action.dedupe.target_field ${targetField} is absent from ${entityType}.`, relative, true));
   }
   checks.push(check("contracts", "QUALITY_STALE_ACTIONS_VALID", "pass", "Quality stale actions reference registered Workflows and valid dedupe targets.", relative));
+}
+
+async function validateResearchRequestContract(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+  const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((value): value is string => typeof value === "string") : []);
+  if (!capabilities.has("research-request")) return;
+  let contract;
+  try { contract = parseResearchRequestContract(manifest); }
+  catch (error) { checks.push(check("contracts", "RESEARCH_REQUEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "module.yaml", true)); return; }
+  const registryRelative = typeof object(manifest.schemas)?.registry === "string" ? String(object(manifest.schemas)!.registry) : null;
+  const schemaIds = new Set<string>();
+  if (registryRelative) {
+    try {
+      const schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, ...registryRelative.split("/"))).schemas) ?? {};
+      for (const raw of Object.values(schemas)) {
+        const entry = object(raw); if (typeof entry?.path !== "string") continue;
+        const schema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject;
+        if (typeof schema.$id === "string") schemaIds.add(schema.$id);
+      }
+    } catch { /* Registry errors are reported separately. */ }
+  }
+  const missing = [contract.record.schema, contract.request.schema].filter((id) => !schemaIds.has(id));
+  checks.push(check("contracts", missing.length ? "RESEARCH_REQUEST_SCHEMA_UNREGISTERED" : "RESEARCH_REQUEST_SCHEMAS_VALID", missing.length ? "fail" : "pass", missing.length ? `Research Request Contract references unregistered schemas: ${missing.join(", ")}.` : "Research Request Contract record/request schemas are registered.", "module.yaml", missing.length > 0));
+  const raw = object(manifest.research_request); const reconciliation = object(raw?.reconciliation); const adapter = typeof reconciliation?.adapter === "string" ? reconciliation.adapter : null;
+  if (adapter !== null) checks.push(check("contracts", hasResearchReconciliationAdapter(adapter) ? "RESEARCH_RECONCILIATION_ADAPTER_AVAILABLE" : "RESEARCH_RECONCILIATION_ADAPTER_UNAVAILABLE", hasResearchReconciliationAdapter(adapter) ? "pass" : "fail", hasResearchReconciliationAdapter(adapter) ? `${adapter} is installed.` : `${adapter} is not an installed reconciliation adapter.`, "module.yaml", !hasResearchReconciliationAdapter(adapter)));
 }
 
 async function validateRegistry(moduleRoot: string, manifest: JsonObject, section: "schemas" | "prompts" | "workflows", checks: ModuleValidationCheck[]): Promise<void> {
@@ -362,6 +388,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   await validateRegistry(moduleRoot, manifest, "prompts", checks);
   await validateRegistry(moduleRoot, manifest, "workflows", checks);
   await validateDashboardProvider(moduleRoot, manifest, checks);
+  await validateResearchRequestContract(moduleRoot, manifest, checks);
   await validateQualityPolicy(moduleRoot, manifest, checks);
   await validateEventContracts(moduleRoot, manifest, checks);
 
