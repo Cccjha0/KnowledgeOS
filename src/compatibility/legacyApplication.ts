@@ -25,10 +25,5 @@ export function resolveLegacyDocumentIdentity(data: JsonObject): LegacyApplicati
   };
 }
 
-/** @deprecated Use resolveLegacyDocumentIdentity for compatibility-only lookup. */
-export function resolveLegacyApplicationDocumentIdentity(data: JsonObject): LegacyApplicationDocumentIdentity | null {
-  return resolveLegacyDocumentIdentity(data);
-}
-
 export const LEGACY_APPLICATION_COMPATIBILITY_NOTICE =
   "The `pkb application` command group is deprecated compatibility-only. Use the Module Workflow Runner or Command API for new integrations.";
