@@ -22,6 +22,8 @@ and Components instead.
 | ID | Current location | Why it remains | Replacement contract | Removal condition |
 | --- | --- | --- | --- | --- |
 | `application-research-schema-component` | `src/components/researchReconciliation.ts`, `src/components/researchRequestScheduler.ts`, `src/platform/researchRequestWorkflow.ts`, `src/platform/reviewWorkflow.ts` | The first implementation was built around Application Record and Research Request schemas. | Versioned generic `research-request` Component with entity schema bindings provided by its consumer module. | The Component accepts module-provided record/request schema IDs and all application schema constants are removed from Core/Platform. |
+| `application-document-identity` | `src/compatibility/legacyApplication.ts` | Existing Research Reports used `research_type: application-update` instead of module-owned `type` and `module_id`. | Module-owned Inbox Processor descriptors and schema identity. | Every retained legacy report has been migrated or is readable through a versioned migration adapter. |
+| `application-cli-aliases` | `src/cli.ts`, `src/compatibility/legacyApplication.ts` | Existing scripts invoke `pkb application ...`. The aliases only forward to generic direct invocation or the generic research-request Component. | Module Workflow Runner / Command API. | A documented generic CLI workflow entry point has replaced the aliases and the deprecation window has expired. |
 
 ## Migration sequence
 
@@ -36,6 +38,9 @@ and Components instead.
    preserve existing idempotency keys during the data migration.
 5. Remove every entry above only after its focused regression test proves the
    generic path works for Application and at least one non-Application module.
+6. Vault initialization is Core-only. `config sync` provisions directories
+   declared by enabled module Manifests; it must not move module folders back
+   into `vault init` or `vault doctor`.
 
 ## Explicit non-goal
 

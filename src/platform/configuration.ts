@@ -13,6 +13,19 @@ export interface ConfigurationSyncResult {
   components: string[];
 }
 
+async function provisionEnabledModuleDirectories(vaultRoot: string, manifest: Record<string, unknown>, status: "enabled" | "disabled"): Promise<void> {
+  if (status !== "enabled") return;
+  const inbox = manifest.inbox;
+  if (!inbox || typeof inbox !== "object" || Array.isArray(inbox)) return;
+  const moduleLevel = (inbox as Record<string, unknown>).module_level;
+  if (!moduleLevel || typeof moduleLevel !== "object" || Array.isArray(moduleLevel)) return;
+  const config = moduleLevel as Record<string, unknown>;
+  if (config.enabled !== true || typeof config.path !== "string" || !config.path.trim()) return;
+  const relativePath = config.path.replaceAll("\\", "/");
+  if (relativePath.split("/").some((part) => part === "..")) return;
+  await ensureDir(path.join(vaultRoot, ...relativePath.split("/")));
+}
+
 async function checksumDirectory(root: string): Promise<string> {
   const hash = createHash("sha256");
   for (const file of (await listFilesRecursive(root)).sort()) {
@@ -45,6 +58,7 @@ export async function syncInstalledConfiguration(vaultRoot: string): Promise<Con
     await fs.cp(source, destination, { recursive: true, force: true });
     const prior = previousStatus.get(id);
     const status = prior === "enabled" || prior === "disabled" ? prior : manifest.status === "disabled" ? "disabled" : "enabled";
+    await provisionEnabledModuleDirectories(vaultRoot, manifest, status);
     modules.push({ id, version, installed_path: toVaultPath(vaultRoot, destination), status });
     const oldLock = previousLock.modules?.[id];
     moduleLock[id] = {

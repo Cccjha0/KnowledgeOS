@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { doctorVault, initializeVault } from "../core/vault.js";
+import { syncInstalledConfiguration } from "../platform/configuration.js";
 
 async function temporaryVault(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-vault-test-"));
@@ -44,6 +45,19 @@ test("vault init can create a Git repository and doctor validates it", async () 
     assert.equal(initialized.gitInitialized, true);
     assert.equal(diagnosis.status, "ok");
     assert.equal(diagnosis.gitMode, "initialize");
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("vault init stays Core-only while configuration sync provisions enabled module directories", async () => {
+  const vault = await temporaryVault();
+  try {
+    await initializeVault(vault, "disabled");
+    await assert.rejects(() => fs.access(path.join(vault, "20-Workspace", "Applications", "Inbox")));
+
+    await syncInstalledConfiguration(vault);
+    await fs.access(path.join(vault, "20-Workspace", "Applications", "Inbox"));
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
