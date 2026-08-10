@@ -8,11 +8,26 @@ import type { JsonObject } from "../core/types.js";
 export interface LegacyApplicationDocumentIdentity {
   entityType: "research-report";
   moduleId: "application-tracker";
+  /** Fields supplied only when a legacy document has not yet named them. */
+  migrationPatch: JsonObject;
 }
 
-export function resolveLegacyApplicationDocumentIdentity(data: JsonObject): LegacyApplicationDocumentIdentity | null {
+export function resolveLegacyDocumentIdentity(data: JsonObject): LegacyApplicationDocumentIdentity | null {
   if (data.research_type !== "application-update") return null;
-  return { entityType: "research-report", moduleId: "application-tracker" };
+  return {
+    entityType: "research-report",
+    moduleId: "application-tracker",
+    migrationPatch: {
+      source_module: "application-tracker",
+      type: "research-report",
+      schema_version: 1,
+    },
+  };
+}
+
+/** @deprecated Use resolveLegacyDocumentIdentity for compatibility-only lookup. */
+export function resolveLegacyApplicationDocumentIdentity(data: JsonObject): LegacyApplicationDocumentIdentity | null {
+  return resolveLegacyDocumentIdentity(data);
 }
 
 export const LEGACY_APPLICATION_COMPATIBILITY_NOTICE =

@@ -21,21 +21,21 @@ and Components instead.
 
 | ID | Current location | Why it remains | Replacement contract | Removal condition |
 | --- | --- | --- | --- | --- |
-| `application-research-schema-component` | `src/components/researchReconciliation.ts`, `src/components/researchRequestScheduler.ts`, `src/platform/researchRequestWorkflow.ts`, `src/platform/reviewWorkflow.ts` | The first implementation was built around Application Record and Research Request schemas. | Versioned generic `research-request` Component with entity schema bindings provided by its consumer module. | The Component accepts module-provided record/request schema IDs and all application schema constants are removed from Core/Platform. |
 | `application-document-identity` | `src/compatibility/legacyApplication.ts` | Existing Research Reports used `research_type: application-update` instead of module-owned `type` and `module_id`. | Module-owned Inbox Processor descriptors and schema identity. | Every retained legacy report has been migrated or is readable through a versioned migration adapter. |
 | `application-cli-aliases` | `src/cli.ts`, `src/compatibility/legacyApplication.ts` | Existing scripts invoke `pkb application ...`. The aliases only forward to generic direct invocation or the generic research-request Component. | Module Workflow Runner / Command API. | A documented generic CLI workflow entry point has replaced the aliases and the deprecation window has expired. |
 
 ## Migration sequence
 
-1. Define `research-request` Component manifest and its input/output schemas as
-   module parameters.
+1. The generic `research-request` Component now receives record/request schema
+   bindings, lifecycle values, and directory contracts from its consumer
+   module. Keep future research modules on that contract rather than adding a
+   business schema constant to Core or Platform.
 2. Inbox structured-capture matching and preview metadata are now module-owned
    `inbox_processors`; keep future processors in the Manifest rather than Core.
 3. Quality Audit now resolves a module-owned `stale_action` into a managed
    Task and uses the policy's deduplication contract; preserve that generic
    boundary as the research-request Component evolves.
-4. Move Application's `sync-due-research` behavior behind that Component and
-   preserve existing idempotency keys during the data migration.
+4. Preserve existing idempotency keys during compatible module migrations.
 5. Remove every entry above only after its focused regression test proves the
    generic path works for Application and at least one non-Application module.
 6. Vault initialization is Core-only. `config sync` provisions directories
