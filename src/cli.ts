@@ -5,7 +5,6 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { APPLICATION_VAULT_DIRECTORIES } from "./application/setup.js";
 import { parseMarkdown, parseYaml } from "./core/bridge.js";
 import { exists, toVaultPath, writeJsonAtomic } from "./core/files.js";
 import { executeModuleWorkflowNow } from "./modules/directInvocation.js";
@@ -36,6 +35,7 @@ import { testModule } from "./modules/testRunner.js";
 import { runModuleSandbox } from "./modules/sandbox.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "./modules/readiness.js";
 import type { ModuleTemplate } from "./modules/types.js";
+import { LEGACY_APPLICATION_COMPATIBILITY_NOTICE } from "./compatibility/legacyApplication.js";
 
 interface ParsedArgs {
   positional: string[];
@@ -149,7 +149,11 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function printHelp(): void {
-  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module blueprint validate BLUEPRINT\n  pkb module create --from BLUEPRINT\n  pkb module scaffold --from BLUEPRINT\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test|sandbox ID\n  pkb module readiness-run ID implement-with-ai|validate-manual|test|sandbox|pack|install [--vault PATH]\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [--vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime event-replay EVENT_ID [SUBSCRIPTION_KEY...] [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
+  console.log(`PKB CLI\n\nCommands:\n  pkb api METHOD [--input JSON] [--request-id ID] [--vault PATH]\n  pkb vault init [PATH|--vault PATH] [--git-mode initialize|existing|disabled]\n  pkb vault doctor [PATH|--vault PATH]\n  pkb config sync [--vault PATH]\n  pkb module blueprint validate BLUEPRINT\n  pkb module create --from BLUEPRINT\n  pkb module scaffold --from BLUEPRINT\n  pkb module create ID minimal-config|workflow|integration [DISPLAY_NAME]\n  pkb module validate|test|sandbox ID\n  pkb module readiness-run ID implement-with-ai|validate-manual|test|sandbox|pack|install [--vault PATH]\n  pkb module pack ID [OUTPUT]\n  pkb module install|upgrade PACKAGE [--vault PATH]\n  pkb module rollback ID [--vault PATH]\n  pkb migration plan|apply [--vault PATH]\n  pkb transaction recover|rollback [--vault PATH]\n  pkb backup create|verify|restore\n  pkb validate [--vault PATH]\n  pkb application process-report|research-sync|research-start [deprecated compatibility aliases; --vault PATH]\n  pkb review decide|reconcile|retry [--vault PATH]\n  pkb dashboard build [--vault PATH]\n  pkb runtime startup|run-once|watch [--vault PATH]\n  pkb runtime event-replay EVENT_ID [SUBSCRIPTION_KEY...] [--vault PATH]\n  pkb runtime backup DESTINATION|restore BACKUP [--vault PATH]\n`);
+}
+
+function warnLegacyApplicationAlias(): void {
+  process.stderr.write(`DEPRECATED: ${LEGACY_APPLICATION_COMPATIBILITY_NOTICE}\n`);
 }
 
 async function main(): Promise<void> {
@@ -207,11 +211,7 @@ async function main(): Promise<void> {
     if (!value && !parsed.vaultExplicit) {
       throw new Error("vault init 需要明确指定 Vault 路径");
     }
-    const result = await initializeVault(
-      value ? path.resolve(value) : parsed.vault,
-      parsed.gitMode,
-      APPLICATION_VAULT_DIRECTORIES,
-    );
+    const result = await initializeVault(value ? path.resolve(value) : parsed.vault, parsed.gitMode);
     await syncInstalledConfiguration(result.vault);
     console.log(JSON.stringify(result, null, 2));
     return;
@@ -344,10 +344,7 @@ async function main(): Promise<void> {
     if (!value && !parsed.vaultExplicit) {
       throw new Error("vault doctor 需要明确指定 Vault 路径");
     }
-    const result = await doctorVault(
-      value ? path.resolve(value) : parsed.vault,
-      APPLICATION_VAULT_DIRECTORIES,
-    );
+    const result = await doctorVault(value ? path.resolve(value) : parsed.vault);
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.status === "ok" ? 0 : 1;
     return;
@@ -409,6 +406,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "application" && subcommand === "process-report") {
+    warnLegacyApplicationAlias();
     if (!value) {
       throw new Error("缺少研究报告路径");
     }
@@ -422,12 +420,14 @@ async function main(): Promise<void> {
   }
 
   if (command === "application" && subcommand === "research-sync") {
+    warnLegacyApplicationAlias();
     const result = await syncDueResearchRequests(parsed.vault, "application-tracker");
     console.log(JSON.stringify(result, null, 2));
     return;
   }
 
   if (command === "application" && subcommand === "research-start") {
+    warnLegacyApplicationAlias();
     if (!value) throw new Error("application research-start requires REQUEST_ID");
     console.log(JSON.stringify(await startResearchRequest(parsed.vault, "application-tracker", value), null, 2));
     return;
