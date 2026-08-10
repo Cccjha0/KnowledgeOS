@@ -10,6 +10,7 @@ import type { JsonObject, Operation, OperationPlan } from "../core/types.js";
 import { QualityRepository } from "./repository.js";
 import { qualityFingerprint } from "./fingerprint.js";
 import { resolveFieldQualityPolicies } from "./policy.js";
+import { resolveLegacyDocumentIdentity } from "../compatibility/legacyApplication.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 interface Candidate { target: string; module: string; instanceId: string | null; metadata: JsonObject; ownership: JsonObject | null; fields: { field: string; sourceRefs: string[]; checkedAt: string | null }[]; }
@@ -25,16 +26,16 @@ async function candidates(vaultRoot: string): Promise<{ candidates: Candidate[];
   const output: Candidate[] = []; const blocked: JsonObject[] = [];
   for (const root of ["20-Workspace", "30-Knowledge"]) for (const file of await listFilesRecursive(path.join(vaultRoot, root), ".md")) {
     let document; try { document = parseMarkdown(vaultRoot, file); } catch { continue; }
-    const inferredModule = document.data.research_type === "application-update" ? "application-tracker" : "";
-    const module = String(document.data.source_module ?? document.data.module_id ?? inferredModule); const instanceId = typeof document.data.instance_id === "string" ? document.data.instance_id : null;
+    const legacyIdentity = resolveLegacyDocumentIdentity(document.data);
+    const module = String(document.data.source_module ?? document.data.module_id ?? legacyIdentity?.moduleId ?? ""); const instanceId = typeof document.data.instance_id === "string" ? document.data.instance_id : null;
     if (!module || (instanceId && !active.has(instanceId))) continue;
-    const policy = policies.get(module); if (!policy) continue; const type = String(document.data.type ?? (document.data.research_type === "application-update" ? "research-report" : "")); const owner = object(object(policy.ownership)?.[type]);
+    const policy = policies.get(module); if (!policy) continue; const type = String(document.data.type ?? legacyIdentity?.entityType ?? ""); const owner = object(object(policy.ownership)?.[type]);
     const expectedOwnership = owner?.required === true ? object(owner.sections) : null; const currentOwnership = object(object(document.data._ownership)?.sections);
     const ownership = expectedOwnership && JSON.stringify(currentOwnership) !== JSON.stringify(expectedOwnership) ? expectedOwnership : null;
     const metadata: JsonObject = {};
-    if (inferredModule && typeof document.data.source_module !== "string") metadata.source_module = inferredModule;
-    if (type && typeof document.data.type !== "string") metadata.type = type;
-    if (type === "research-report" && !Number.isInteger(document.data.schema_version)) metadata.schema_version = 1;
+    for (const [field, value] of Object.entries(legacyIdentity?.migrationPatch ?? {})) {
+      if (!(field in document.data)) metadata[field] = value;
+    }
     const fields: Candidate["fields"] = [];
     const entityId = typeof document.data.schema_id === "string"
       ? document.data.schema_id

@@ -15,7 +15,7 @@ import { qualityFingerprint } from "./fingerprint.js";
 import { QualityRepository } from "./repository.js";
 import { resolveWorkflowResourceContract } from "../modules/workflowResources.js";
 import { resolveFieldQualityPolicies } from "./policy.js";
-import { resolveLegacyApplicationDocumentIdentity } from "../compatibility/legacyApplication.js";
+import { resolveLegacyDocumentIdentity } from "../compatibility/legacyApplication.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ACTIVE_ISSUE_STATUSES = ["open", "acknowledged", "scheduled", "suppressed"] as const;
@@ -62,7 +62,7 @@ function compactObservationSnapshots(snapshots: JsonObject[], timezone: string):
 function priorityRank(value: QualitySeverity): number { return { critical: 0, high: 1, medium: 2, low: 3, info: 4 }[value]; }
 
 function documentEntityType(data: JsonObject): string {
-  return typeof data.type === "string" ? data.type : resolveLegacyApplicationDocumentIdentity(data)?.entityType ?? "";
+  return typeof data.type === "string" ? data.type : resolveLegacyDocumentIdentity(data)?.entityType ?? "";
 }
 
 /** A policy-owned Workflow action. Core only schedules this declared contract. */
@@ -103,7 +103,7 @@ function moduleForDocument(data: JsonObject, type: string, modulePolicies: Map<s
   if (typeof data.module_id === "string") return data.module_id;
   const schemaOwners = [...modulePolicies.values()].filter((policy) => policy.schemaIds.has(type));
   if (schemaOwners.length === 1) return schemaOwners[0]!.id;
-  const legacyIdentity = resolveLegacyApplicationDocumentIdentity(data);
+  const legacyIdentity = resolveLegacyDocumentIdentity(data);
   if (legacyIdentity) return legacyIdentity.moduleId;
   return "unowned";
 }

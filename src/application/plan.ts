@@ -1,5 +1,6 @@
 import path from "node:path";
-import type { OperationPlan, ResearchReport, UpdateResult } from "../types.js";
+import type { OperationPlan } from "../core/types.js";
+import type { ResearchReport, UpdateResult } from "./types.js";
 import { toVaultPath } from "../core/files.js";
 
 export interface PlanIds {

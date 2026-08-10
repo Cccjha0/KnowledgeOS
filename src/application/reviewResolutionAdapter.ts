@@ -1,4 +1,4 @@
-import type { ApplicationFact, ApplicationRecord } from "../types.js";
+import type { ApplicationFact, ApplicationRecord } from "./types.js";
 import type { JsonObject, JsonValue, Operation, OperationPlan, ReviewDecision, ReviewItem, ReviewTargetObservation } from "../core/types.js";
 import { PkbError } from "../core/errors.js";
 import { uniqueJsonValues } from "../core/files.js";

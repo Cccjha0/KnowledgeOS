@@ -1,4 +1,4 @@
-import type { ApplicationRecord, ResearchReport, UpdateResult } from "../types.js";
+import type { ApplicationRecord, ResearchReport, UpdateResult } from "./types.js";
 import { compareApplicationUpdate, type CompareOptions } from "./compare.js";
 
 export interface ComparisonAdapter {

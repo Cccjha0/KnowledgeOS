@@ -7,7 +7,8 @@ import { decideReview, reconcileReviews } from "../platform/reviewWorkflow.js";
 import { parseMarkdown, writeMarkdown } from "../core/bridge.js";
 import { writeReviewItems } from "../core/reviews.js";
 import { initializeVault } from "../core/vault.js";
-import type { ApplicationRecord, JsonObject, JsonValue, ReviewItem } from "../types.js";
+import type { ApplicationRecord } from "../application/types.js";
+import type { JsonObject, JsonValue, ReviewItem } from "../core/types.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
 
 const TARGET = "20-Workspace/Applications/test/Records/Test.md";

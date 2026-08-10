@@ -3,7 +3,7 @@ import { parseMarkdown, validateSchema } from "../core/bridge.js";
 import { PkbError } from "../core/errors.js";
 import { exists, fromVaultPath, listFilesRecursive, sha256File, toVaultPath } from "../core/files.js";
 import type { JsonObject, OperationPlan } from "../core/types.js";
-import type { ApplicationRecord, ResearchReport, ResearchRequest, UpdateResult } from "../types.js";
+import type { ApplicationRecord, ResearchReport, ResearchRequest, UpdateResult } from "./types.js";
 import { DeterministicComparisonAdapter } from "./adapter.js";
 import { buildOperationPlan } from "./plan.js";
 import { applyReportToResearchRequest } from "./researchRequest.js";
