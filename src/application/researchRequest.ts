@@ -1,5 +1,5 @@
 import { PkbError } from "../core/errors.js";
-import type { ApplicationRecord, ResearchReport, ResearchRequest } from "../types.js";
+import type { ApplicationRecord, ResearchReport, ResearchRequest } from "./types.js";
 
 export const OPEN_RESEARCH_REQUEST_STATUSES = new Set<ResearchRequest["status"]>([
   "pending",

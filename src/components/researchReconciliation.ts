@@ -2,10 +2,20 @@ import path from "node:path";
 import { PkbError } from "../core/errors.js";
 import { exists, fromVaultPath, readJson, sha256File } from "../core/files.js";
 import type { JsonObject, OperationPlan } from "../core/types.js";
-import type { ProcessedReportsFile } from "../types.js";
 import type { ResearchRequestContract } from "./researchRequest.js";
 
 export interface ReconciliationCandidate { path: string; data: JsonObject; }
+
+interface ProcessedReportState {
+  hash: string;
+  processed_at: string;
+  run_id: string;
+  destination: string;
+}
+
+interface ProcessedReportsFile {
+  reports: Record<string, ProcessedReportState>;
+}
 
 export interface ReconciliationAdapterInput {
   vaultRoot: string;

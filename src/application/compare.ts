@@ -2,13 +2,11 @@ import type {
   ApplicationFact,
   ApplicationRecord,
   FieldChange,
-  JsonObject,
-  JsonValue,
   ResearchFinding,
   ResearchReport,
-  ReviewItem,
   UpdateResult,
-} from "../types.js";
+} from "./types.js";
+import type { JsonObject, JsonValue, ReviewItem } from "../core/types.js";
 import { deepEqual, uniqueJsonValues } from "../core/files.js";
 import { fieldRisk } from "./fieldPolicy.js";
 

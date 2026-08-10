@@ -12,7 +12,7 @@ import { initializeVault } from "../core/vault.js";
 import { startResearchRequest, syncDueResearchRequests } from "../platform/researchRequestWorkflow.js";
 import { prepareDueResearchRequests } from "../components/researchRequestScheduler.js";
 import type { JsonObject } from "../core/types.js";
-import type { ApplicationRecord, ResearchReport } from "../types.js";
+import type { ApplicationRecord, ResearchReport } from "../application/types.js";
 
 function record(id: string, instance: string, status: ApplicationRecord["application_status"] = "open"): ApplicationRecord {
   return {

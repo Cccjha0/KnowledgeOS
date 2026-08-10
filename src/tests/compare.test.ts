@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { ApplicationRecord, ResearchReport } from "../types.js";
+import type { ApplicationRecord, ResearchReport } from "../application/types.js";
 import { compareApplicationUpdate } from "../application/compare.js";
 
 const baseRecord: ApplicationRecord = {
