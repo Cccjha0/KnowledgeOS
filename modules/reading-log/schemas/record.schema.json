@@ -60,6 +60,12 @@
     },
     "_ownership": {
       "type": "object"
+    },
+    "_field_meta": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://pkb.local/schemas/core/provenance-record.schema.json"
+      }
     }
   }
 }

@@ -468,6 +468,7 @@ test("a configuration module uses the same generic Runner for an Inbox capture",
     const output = {
       id: "READ-2026-000001", type: "reading-note", schema_id: "record", schema_version: 1, module_version: "0.1.0", instance_id: instanceId,
       title: "A practical paper", source_refs: [sourceRelative], created: "2026-08-04T10:00:00+08:00", updated: "2026-08-04T10:00:00+08:00",
+      _evidence_selection: { source_refs: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }] },
     };
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
     assert.equal(dispatched.completed, 1);
@@ -508,6 +509,7 @@ test("a module policy that allows partial PDFs reaches the Runner, Codex Context
     const output = {
       id: "READ-2026-000002", type: "reading-note", schema_id: "record", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
       title: "Partial paper", source_refs: [sourceRelative], created: "2026-08-06T10:00:00+08:00", updated: "2026-08-06T10:00:00+08:00",
+      _evidence_selection: { source_refs: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-PAGE-0001" }] },
     };
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async (options) => {
       runtimeContext = JSON.parse(await fs.readFile(path.join(options.contextRoot, "runtime-context.json"), "utf8")) as JsonObject;
