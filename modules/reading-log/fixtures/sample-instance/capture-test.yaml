@@ -16,5 +16,9 @@ capture:
     title: Fixture reading
     source_refs:
       - 20-Workspace/Reading Log/sample-instance/Inbox/module-test-capture.md
+    _evidence_selection:
+      source_refs:
+        - source_id: SRC-4ABCFA0292A1
+          locator_id: LOC-HEADING-001
     created: "2026-08-05T09:00:00+08:00"
     updated: "2026-08-05T09:00:00+08:00"

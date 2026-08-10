@@ -92,9 +92,10 @@ export interface ChangeRecord extends JsonObject {
 }
 
 export interface QualityPolicy extends JsonObject {
-  critical_fields: string[];
-  provenance_required: string[];
-  freshness: JsonObject;
+  /** Legacy v1 fields. Runtime reads them only when field_policies is absent. */
+  critical_fields: string[] | null;
+  provenance_required: string[] | null;
+  freshness: JsonObject | null;
   /** Entity-qualified rules emitted by Blueprint v1.1, e.g. assignment.deadline. */
   field_policies: JsonObject | null;
   ownership: JsonObject;

@@ -84,7 +84,12 @@ research_request:
     report_ids_field: report_ids
     idempotency_key_field: idempotency_key
     id_prefix: REQ
-    open_statuses: [pending, in-progress, needs-more-information]
+    lifecycle:
+      initial: pending
+      startable: [pending, needs-more-information]
+      in_progress: in-progress
+      completed: completed
+      open: [pending, in-progress, needs-more-information]
     reason: The application record reached its scheduled verification time.
     body:
       title: "Research Request {request_id}"

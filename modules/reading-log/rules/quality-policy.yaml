@@ -1,6 +1,6 @@
-critical_fields: []
-provenance_required: [source_refs]
-freshness: {}
+field_policies:
+  source_refs:
+    provenance: required
 ownership:
   reading-note:
     required: true

@@ -9,6 +9,7 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, Operation, OperationPlan } from "../core/types.js";
 import { QualityRepository } from "./repository.js";
 import { qualityFingerprint } from "./fingerprint.js";
+import { resolveFieldQualityPolicies } from "./policy.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 interface Candidate { target: string; module: string; instanceId: string | null; metadata: JsonObject; ownership: JsonObject | null; fields: { field: string; sourceRefs: string[]; checkedAt: string | null }[]; }
@@ -35,10 +36,16 @@ async function candidates(vaultRoot: string): Promise<{ candidates: Candidate[];
     if (type && typeof document.data.type !== "string") metadata.type = type;
     if (type === "research-report" && !Number.isInteger(document.data.schema_version)) metadata.schema_version = 1;
     const fields: Candidate["fields"] = [];
-    if (module === "application-tracker") for (const field of (policy.critical_fields as string[] | undefined) ?? []) {
+    const entityId = typeof document.data.schema_id === "string"
+      ? document.data.schema_id
+      : type.startsWith(`${module}-`) ? type.slice(module.length + 1) : type;
+    for (const [field, contract] of resolveFieldQualityPolicies(policy, entityId)) {
+      if (!contract.provenanceRequired) continue;
       const fact = object(object(document.data.facts)?.[field]); const value = field in document.data ? document.data[field] : fact?.value;
       if (value === undefined || value === null || object(document.data._field_meta)?.[field]) continue;
-      const rawRefs = Array.isArray(fact?.source_refs) ? fact!.source_refs : Array.isArray(document.data.source_files) ? document.data.source_files : [];
+      const rawRefs = Array.isArray(fact?.source_refs) ? fact!.source_refs
+        : Array.isArray(document.data.source_refs) ? document.data.source_refs
+          : Array.isArray(document.data.source_files) ? document.data.source_files : [];
       const refs = rawRefs.filter((entry): entry is string => typeof entry === "string");
       if (!refs.length) { blocked.push({ target: toVaultPath(vaultRoot, file), field, reason: "source-reference-required" }); continue; }
       fields.push({ field, sourceRefs: refs, checkedAt: typeof fact?.checked_at === "string" ? fact.checked_at : typeof object(document.data.monitoring)?.last_checked === "string" ? String(object(document.data.monitoring)!.last_checked) : null });

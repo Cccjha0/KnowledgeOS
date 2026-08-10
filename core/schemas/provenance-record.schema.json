@@ -11,7 +11,7 @@
     "generation": {
       "type": ["object", "null"],
       "additionalProperties": false,
-      "required": ["run_id", "module", "workflow", "prompt", "processor", "adapter", "model", "generated_at"],
+      "required": ["run_id", "module", "workflow", "prompt", "adapter", "model", "generated_at"],
       "properties": {
         "run_id": { "type": ["string", "null"] },
         "module": { "type": ["object", "null"] },
@@ -20,6 +20,7 @@
         "processor": { "type": ["object", "null"] },
         "adapter": { "type": ["string", "null"] },
         "model": { "type": ["string", "null"] },
+        "reasoning_effort": { "type": ["string", "null"] },
         "generated_at": { "$ref": "https://pkb.local/schemas/core/common.schema.json#/$defs/isoDateTime" }
       }
     },

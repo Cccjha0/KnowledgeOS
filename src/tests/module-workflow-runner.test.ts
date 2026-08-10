@@ -121,10 +121,32 @@ test("a Blueprint review_when rule blocks the write, creates a Review, and execu
     assert.equal((review.item.proposed_value as JsonObject).field, "assignment.deadline");
     const target = path.join(vault, "20-Workspace", "课程管理", instanceId, "Assignments", "assignment-001.md");
     await assert.rejects(fs.access(target), "Review-gated output must not be written before a user decision.");
-    const approved = { ...output, deadline: "2026-09-01T09:00:00+08:00" };
+    const approved = {
+      ...output,
+      // A create-file Review receives a complete record object. These are
+      // intentionally hostile replacements: Core must retain the original
+      // plan's system-managed values rather than trusting this payload.
+      id: "ASSIGN-OVERRIDE-000001",
+      type: "unexpected-type",
+      schema_id: "unexpected-schema",
+      schema_version: 999,
+      module_version: "999.0.0",
+      instance_id: "other-instance",
+      created: "2000-01-01T00:00:00Z",
+      updated: "2000-01-01T00:00:00Z",
+      deadline: "2026-09-01T09:00:00+08:00",
+    };
     await decideReview({ vaultRoot: vault, reviewId, decision: "approve-with-modification", modifiedValue: approved, userComment: "Confirmed the official deadline." });
     const approvedDocument = parseMarkdown(vault, target).data;
     assert.equal(approvedDocument.deadline, "2026-09-01T09:00:00+08:00");
+    assert.equal(approvedDocument.id, output.id);
+    assert.equal(approvedDocument.type, output.type);
+    assert.equal(approvedDocument.schema_id, output.schema_id);
+    assert.equal(approvedDocument.schema_version, output.schema_version);
+    assert.equal(approvedDocument.module_version, output.module_version);
+    assert.equal(approvedDocument.instance_id, output.instance_id);
+    assert.equal(approvedDocument.created, output.created);
+    assert.notEqual(approvedDocument.updated, approved.updated, "Core owns the update timestamp after a Review decision.");
     const deadlineMeta = ((approvedDocument._field_meta as JsonObject).deadline as JsonObject);
     assert.equal(deadlineMeta.authorship, "user", "A user-modified value must not be attributed to the original AI proposal.");
     assert.equal(deadlineMeta.generation, null, "A user-confirmed value must not retain AI generation provenance.");
@@ -446,6 +468,7 @@ test("a configuration module uses the same generic Runner for an Inbox capture",
     const output = {
       id: "READ-2026-000001", type: "reading-note", schema_id: "record", schema_version: 1, module_version: "0.1.0", instance_id: instanceId,
       title: "A practical paper", source_refs: [sourceRelative], created: "2026-08-04T10:00:00+08:00", updated: "2026-08-04T10:00:00+08:00",
+      _evidence_selection: { source_refs: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-HEADING-001" }] },
     };
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async () => ({ output, stderr: "" })) });
     assert.equal(dispatched.completed, 1);
@@ -486,6 +509,7 @@ test("a module policy that allows partial PDFs reaches the Runner, Codex Context
     const output = {
       id: "READ-2026-000002", type: "reading-note", schema_id: "record", schema_version: 1, module_version: "0.2.0-beta", instance_id: instanceId,
       title: "Partial paper", source_refs: [sourceRelative], created: "2026-08-06T10:00:00+08:00", updated: "2026-08-06T10:00:00+08:00",
+      _evidence_selection: { source_refs: [{ source_id: evidenceSourceId(sourceRelative), locator_id: "LOC-PAGE-0001" }] },
     };
     const dispatched = await dispatchOnce({ vaultRoot: vault, limit: 1, moduleWorkflowHandler: createModuleWorkflowRunner(async (options) => {
       runtimeContext = JSON.parse(await fs.readFile(path.join(options.contextRoot, "runtime-context.json"), "utf8")) as JsonObject;

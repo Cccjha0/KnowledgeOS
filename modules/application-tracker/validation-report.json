@@ -3,7 +3,7 @@
   "module_id": "application-tracker",
   "module_version": "0.3.0-beta",
   "maturity": "beta",
-  "generated_at": "2026-08-09T15:25:15.474Z",
+  "generated_at": "2026-08-09T18:07:54.422Z",
   "checks": [
     {
       "category": "manifest",
@@ -295,6 +295,14 @@
     },
     {
       "category": "contracts",
+      "code": "RESEARCH_REQUEST_FIELD_CONTRACT_VALID",
+      "status": "pass",
+      "message": "Research Request Contract field paths, generated fields, and lifecycle values satisfy their Schemas.",
+      "critical": false,
+      "path": "module.yaml"
+    },
+    {
+      "category": "contracts",
       "code": "RESEARCH_RECONCILIATION_ADAPTER_AVAILABLE",
       "status": "pass",
       "message": "application-deterministic is installed.",
@@ -439,7 +447,7 @@
     }
   ],
   "counts": {
-    "pass": 41,
+    "pass": 42,
     "warning": 13,
     "fail": 0,
     "critical": 0

@@ -719,9 +719,7 @@ async function materializeSemanticEntities(moduleRoot: string, blueprint: JsonOb
     }
   }
   const qualityPolicy: JsonObject = {
-    critical_fields: Object.entries(qualityFields).filter(([, field]) => object(field)?.critical === true).map(([field]) => field),
-    provenance_required: Object.entries(qualityFields).filter(([, field]) => object(field)?.provenance === "required").map(([field]) => field),
-    freshness: {}, field_policies: qualityFields,
+    field_policies: qualityFields,
     ownership: {}, audits: ["stale-fields", "missing-provenance", "schema-version", "instance-task"], orphan_exempt_entity_types: [],
     default_verification_interval_days: 30,
   };

@@ -29,6 +29,35 @@ function check(category: ModuleValidationCheck["category"], code: string, status
   return { category, code, status, message, critical, path: file };
 }
 
+function strings(value: JsonValue | undefined): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").sort() : [];
+}
+
+function qualityLegacyProjection(fieldPolicies: JsonObject): JsonObject {
+  const critical: string[] = []; const provenance: string[] = []; const freshness: JsonObject = {};
+  for (const [reference, raw] of Object.entries(fieldPolicies).sort(([left], [right]) => left.localeCompare(right))) {
+    const policy = object(raw) ?? {};
+    if (policy.critical === true) critical.push(reference);
+    if (policy.provenance === "required") provenance.push(reference);
+    if (typeof policy.verification_interval_days === "number" || object(policy.stale_action)) {
+      const rule: JsonObject = {};
+      if (typeof policy.verification_interval_days === "number") rule.interval_days = policy.verification_interval_days;
+      if (object(policy.stale_action)) rule.stale_action = policy.stale_action!;
+      freshness[reference] = rule;
+    }
+  }
+  return { critical_fields: critical, provenance_required: provenance, freshness };
+}
+
+function normalizedLegacyQuality(policy: JsonObject): JsonObject {
+  const freshness = object(policy.freshness) ?? {};
+  return {
+    critical_fields: strings(policy.critical_fields),
+    provenance_required: strings(policy.provenance_required),
+    freshness: Object.fromEntries(Object.entries(freshness).sort(([left], [right]) => left.localeCompare(right))),
+  };
+}
+
 function compatible(version: string, minimum: string, maximum: string): boolean {
   const parse = (value: string) => value.split(".").slice(0, 3).map((part) => Number(part.replace(/\D.*$/, "")) || 0);
   const compare = (left: number[], right: number[]) => left[0]! - right[0]! || left[1]! - right[1]! || left[2]! - right[2]!;
@@ -85,6 +114,17 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
     checks.push(check("schema", "QUALITY_POLICY_INVALID", "fail", error instanceof Error ? error.message : String(error), relative, true));
     return;
   }
+  const hasCanonicalPolicies = object(policy.field_policies) !== null;
+  const hasLegacyPolicies = ["critical_fields", "provenance_required", "freshness"].some((field) => Object.prototype.hasOwnProperty.call(policy, field));
+  if ((manifest.maturity === "beta" || manifest.maturity === "stable") && !hasCanonicalPolicies) {
+    checks.push(check("contracts", "QUALITY_FIELD_POLICIES_REQUIRED", "fail", "Beta/Stable modules must declare canonical field_policies; legacy Quality Policy fields are compatibility-only.", relative, true));
+  }
+  if (hasCanonicalPolicies && hasLegacyPolicies) {
+    const canonical = qualityLegacyProjection(object(policy.field_policies) ?? {});
+    const legacy = normalizedLegacyQuality(policy);
+    if (JSON.stringify(canonical) !== JSON.stringify(legacy)) checks.push(check("contracts", "QUALITY_POLICY_DUAL_SOURCE_MISMATCH", "fail", "Legacy critical_fields/provenance_required/freshness must exactly match canonical field_policies.", relative, true));
+    else checks.push(check("contracts", "QUALITY_POLICY_LEGACY_EQUIVALENT", "pass", "Legacy Quality Policy compatibility fields match field_policies.", relative));
+  }
   const workflows = object(loadRegistrySafe(moduleRoot, manifest, "workflows")?.workflows) ?? {};
   let schemas: JsonObject = {};
   try {
@@ -96,7 +136,7 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
     const entry = object(raw); if (!entry || typeof entry.entity_type !== "string" || typeof entry.path !== "string") continue;
     try { entitySchemas.set(entry.entity_type, JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject); } catch { /* Registry validation reports this independently. */ }
   }
-  const rules = [object(policy.freshness) ?? {}, object(policy.field_policies) ?? {}];
+  const rules = [object(policy.field_policies) ?? object(policy.freshness) ?? {}];
   for (const raw of rules.flatMap((section) => Object.values(section))) {
     const action = object(object(raw)?.stale_action); if (!action) continue;
     const workflowId = typeof action.workflow_id === "string" ? action.workflow_id : "";
@@ -111,26 +151,141 @@ async function validateQualityPolicy(moduleRoot: string, manifest: JsonObject, c
   checks.push(check("contracts", "QUALITY_STALE_ACTIONS_VALID", "pass", "Quality stale actions reference registered Workflows and valid dedupe targets.", relative));
 }
 
-async function validateResearchRequestContract(moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
+interface ResolvedSchema { schema: JsonObject; document: JsonObject; }
+
+function resolveSchemaPointer(document: JsonObject, pointer: string): JsonObject | null {
+  if (pointer === "#" || pointer === "") return document;
+  if (!pointer.startsWith("#/")) return null;
+  let current: JsonValue | undefined = document;
+  for (const part of pointer.slice(2).split("/").map((item) => item.replaceAll("~1", "/").replaceAll("~0", "~"))) {
+    const currentObject = object(current);
+    if (!currentObject || !(part in currentObject)) return null;
+    current = currentObject[part];
+  }
+  return object(current);
+}
+
+function resolveSchema(schema: JsonObject, document: JsonObject, documents: Map<string, JsonObject>): ResolvedSchema | null {
+  let current = schema; let currentDocument = document; const seen = new Set<string>();
+  while (typeof current.$ref === "string") {
+    const reference = current.$ref;
+    if (seen.has(reference)) return null;
+    seen.add(reference);
+    const hash = reference.indexOf("#");
+    const documentId = hash < 0 ? reference : reference.slice(0, hash);
+    const pointer = hash < 0 ? "#" : reference.slice(hash);
+    if (documentId) { const target = documents.get(documentId); if (!target) return null; currentDocument = target; }
+    const resolved = resolveSchemaPointer(currentDocument, pointer);
+    if (!resolved) return null;
+    current = resolved;
+  }
+  return { schema: current, document: currentDocument };
+}
+
+function schemaAtPath(root: JsonObject, dottedPath: string, documents: Map<string, JsonObject>): ResolvedSchema | null {
+  let current: ResolvedSchema | null = { schema: root, document: root };
+  for (const part of dottedPath.split(".")) {
+    if (!current) return null;
+    current = resolveSchema(current.schema, current.document, documents);
+    const properties = current ? object(current.schema.properties) : null;
+    const next = properties?.[part] ?? current?.schema.additionalProperties;
+    const nextSchema = object(next);
+    if (!nextSchema || !current) return null;
+    current = { schema: nextSchema, document: current.document };
+  }
+  return current ? resolveSchema(current.schema, current.document, documents) : null;
+}
+
+function schemaAllowsType(resolved: ResolvedSchema | null, expected: "string" | "boolean" | "array" | "object" | "integer", documents: Map<string, JsonObject>): boolean {
+  if (!resolved) return false;
+  const accepts = (schema: JsonObject): boolean => {
+    const type = schema.type;
+    return type === expected || (Array.isArray(type) && type.includes(expected)) ||
+      (expected === "string" && (typeof schema.const === "string" || (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "string")))) ||
+      (expected === "integer" && (typeof schema.const === "number" || (Array.isArray(schema.enum) && schema.enum.every((item) => typeof item === "number" && Number.isInteger(item)))));
+  };
+  if (accepts(resolved.schema)) return true;
+  return [...(Array.isArray(resolved.schema.anyOf) ? resolved.schema.anyOf : []), ...(Array.isArray(resolved.schema.oneOf) ? resolved.schema.oneOf : [])]
+    .map(object).filter((item): item is JsonObject => item !== null)
+    .map((item) => resolveSchema(item, resolved.document, documents)?.schema).filter((item): item is JsonObject => item !== null).some(accepts);
+}
+
+function schemaAllowsLiteral(resolved: ResolvedSchema | null, value: JsonValue, documents: Map<string, JsonObject>): boolean {
+  if (!resolved) return false;
+  const accepts = (schema: JsonObject): boolean => {
+    if (Object.prototype.hasOwnProperty.call(schema, "const")) return JSON.stringify(schema.const) === JSON.stringify(value);
+    if (Array.isArray(schema.enum)) return schema.enum.some((item) => JSON.stringify(item) === JSON.stringify(value));
+    return schemaAllowsType({ schema, document: resolved.document }, typeof value === "number" ? "integer" : "string", documents);
+  };
+  if (accepts(resolved.schema)) return true;
+  return [...(Array.isArray(resolved.schema.anyOf) ? resolved.schema.anyOf : []), ...(Array.isArray(resolved.schema.oneOf) ? resolved.schema.oneOf : [])]
+    .map(object).filter((item): item is JsonObject => item !== null)
+    .map((item) => resolveSchema(item, resolved.document, documents)?.schema).filter((item): item is JsonObject => item !== null).some(accepts);
+}
+
+async function researchRequestSchemaDocuments(engineRoot: string, moduleRoot: string, manifest: JsonObject): Promise<Map<string, JsonObject>> {
+  const documents = new Map<string, JsonObject>();
+  const registryRelative = typeof object(manifest.schemas)?.registry === "string" ? String(object(manifest.schemas)!.registry) : null;
+  if (registryRelative) {
+    const schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, ...registryRelative.split("/"))).schemas) ?? {};
+    for (const raw of Object.values(schemas)) {
+      const entry = object(raw); if (typeof entry?.path !== "string") continue;
+      const schema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject;
+      if (typeof schema.$id === "string") documents.set(schema.$id, schema);
+    }
+  }
+  for (const file of await listFilesRecursive(path.join(engineRoot, "core", "schemas"))) {
+    if (!file.endsWith(".json")) continue;
+    try { const schema = JSON.parse(await fs.readFile(file, "utf8")) as JsonObject; if (typeof schema.$id === "string") documents.set(schema.$id, schema); } catch { /* Reported by schema validation. */ }
+  }
+  return documents;
+}
+
+async function validateResearchRequestContract(engineRoot: string, moduleRoot: string, manifest: JsonObject, checks: ModuleValidationCheck[]): Promise<void> {
   const capabilities = new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities.filter((value): value is string => typeof value === "string") : []);
   if (!capabilities.has("research-request")) return;
   let contract;
   try { contract = parseResearchRequestContract(manifest); }
   catch (error) { checks.push(check("contracts", "RESEARCH_REQUEST_CONTRACT_INVALID", "fail", error instanceof Error ? error.message : String(error), "module.yaml", true)); return; }
-  const registryRelative = typeof object(manifest.schemas)?.registry === "string" ? String(object(manifest.schemas)!.registry) : null;
-  const schemaIds = new Set<string>();
-  if (registryRelative) {
-    try {
-      const schemas = object(parseYaml(moduleRoot, path.join(moduleRoot, ...registryRelative.split("/"))).schemas) ?? {};
-      for (const raw of Object.values(schemas)) {
-        const entry = object(raw); if (typeof entry?.path !== "string") continue;
-        const schema = JSON.parse(await fs.readFile(path.join(moduleRoot, "schemas", ...entry.path.split("/")), "utf8")) as JsonObject;
-        if (typeof schema.$id === "string") schemaIds.add(schema.$id);
-      }
-    } catch { /* Registry errors are reported separately. */ }
-  }
-  const missing = [contract.record.schema, contract.request.schema].filter((id) => !schemaIds.has(id));
+  let documents = new Map<string, JsonObject>();
+  try { documents = await researchRequestSchemaDocuments(engineRoot, moduleRoot, manifest); }
+  catch { /* Registry errors are reported separately. */ }
+  const missing = [contract.record.schema, contract.request.schema].filter((id) => !documents.has(id));
   checks.push(check("contracts", missing.length ? "RESEARCH_REQUEST_SCHEMA_UNREGISTERED" : "RESEARCH_REQUEST_SCHEMAS_VALID", missing.length ? "fail" : "pass", missing.length ? `Research Request Contract references unregistered schemas: ${missing.join(", ")}.` : "Research Request Contract record/request schemas are registered.", "module.yaml", missing.length > 0));
+  const recordSchema = documents.get(contract.record.schema);
+  const requestSchema = documents.get(contract.request.schema);
+  const invalid: string[] = [];
+  const requireField = (label: string, schema: JsonObject | undefined, fieldPath: string, type: "string" | "boolean" | "array" | "object" | "integer") => {
+    if (!schema || !schemaAllowsType(schemaAtPath(schema, fieldPath, documents), type, documents)) invalid.push(`${label} (${fieldPath}) must exist and accept ${type}.`);
+  };
+  requireField("record.id_field", recordSchema, contract.record.id_field, "string");
+  requireField("record.instance_id_field", recordSchema, contract.record.instance_id_field, "string");
+  requireField("record.active_path", recordSchema, contract.record.active_path, "boolean");
+  requireField("record.due_path", recordSchema, contract.record.due_path, "string");
+  requireField("record.requested_fields_path", recordSchema, contract.record.requested_fields_path, "object");
+  const requestedFields = recordSchema ? schemaAtPath(recordSchema, contract.record.requested_fields_path, documents) : null;
+  const requestedFieldEntry = requestedFields && object(requestedFields.schema.additionalProperties)
+    ? resolveSchema(object(requestedFields.schema.additionalProperties)!, requestedFields.document, documents) : null;
+  if (!requestedFieldEntry || !schemaAllowsType(schemaAtPath(requestedFieldEntry.schema, contract.record.requested_field_status_path, documents), "string", documents)) {
+    invalid.push(`record.requested_field_status_path (${contract.record.requested_fields_path}.${contract.record.requested_field_status_path}) must exist for each requested field and accept string.`);
+  }
+  requireField("request.id_field", requestSchema, contract.request.id_field, "string");
+  requireField("request.record_id_field", requestSchema, contract.request.record_id_field, "string");
+  requireField("request.record_path_field", requestSchema, contract.request.record_path_field, "string");
+  requireField("request.instance_id_field", requestSchema, contract.request.instance_id_field, "string");
+  requireField("request.status_field", requestSchema, contract.request.status_field, "string");
+  requireField("request.report_ids_field", requestSchema, contract.request.report_ids_field, "array");
+  requireField("request.idempotency_key_field", requestSchema, contract.request.idempotency_key_field, "string");
+  for (const [field, type] of [["type", "string"], ["reason", "string"], ["requested_fields", "array"], ["created_at", "string"], ["updated_at", "string"], ["completed_at", "string"], ["next_action_at", "string"], ["schema_version", "integer"]] as const) {
+    requireField("request generated field", requestSchema, field, type);
+  }
+  const statusSchema = requestSchema ? schemaAtPath(requestSchema, contract.request.status_field, documents) : null;
+  for (const status of new Set([contract.request.lifecycle.initial, contract.request.lifecycle.in_progress, contract.request.lifecycle.completed, ...contract.request.lifecycle.startable, ...contract.request.lifecycle.open])) {
+    if (!schemaAllowsLiteral(statusSchema, status, documents)) invalid.push(`request.lifecycle status ${status} is not accepted by ${contract.request.status_field}.`);
+  }
+  if (!schemaAllowsLiteral(requestSchema ? schemaAtPath(requestSchema, "type", documents) : null, contract.request.type, documents)) invalid.push(`request.type ${contract.request.type} is not accepted by the request Schema.`);
+  if (!schemaAllowsLiteral(requestSchema ? schemaAtPath(requestSchema, "schema_version", documents) : null, 1, documents)) invalid.push("request Schema must accept Component-generated schema_version 1.");
+  checks.push(check("contracts", invalid.length ? "RESEARCH_REQUEST_FIELD_CONTRACT_INVALID" : "RESEARCH_REQUEST_FIELD_CONTRACT_VALID", invalid.length ? "fail" : "pass", invalid.length ? invalid.join(" ") : "Research Request Contract field paths, generated fields, and lifecycle values satisfy their Schemas.", "module.yaml", invalid.length > 0));
   const raw = object(manifest.research_request); const reconciliation = object(raw?.reconciliation); const adapter = typeof reconciliation?.adapter === "string" ? reconciliation.adapter : null;
   if (adapter !== null) checks.push(check("contracts", hasResearchReconciliationAdapter(adapter) ? "RESEARCH_RECONCILIATION_ADAPTER_AVAILABLE" : "RESEARCH_RECONCILIATION_ADAPTER_UNAVAILABLE", hasResearchReconciliationAdapter(adapter) ? "pass" : "fail", hasResearchReconciliationAdapter(adapter) ? `${adapter} is installed.` : `${adapter} is not an installed reconciliation adapter.`, "module.yaml", !hasResearchReconciliationAdapter(adapter)));
 }
@@ -388,7 +543,7 @@ export async function validateModule(engineRoot: string, moduleRoot: string, opt
   await validateRegistry(moduleRoot, manifest, "prompts", checks);
   await validateRegistry(moduleRoot, manifest, "workflows", checks);
   await validateDashboardProvider(moduleRoot, manifest, checks);
-  await validateResearchRequestContract(moduleRoot, manifest, checks);
+  await validateResearchRequestContract(engineRoot, moduleRoot, manifest, checks);
   await validateQualityPolicy(moduleRoot, manifest, checks);
   await validateEventContracts(moduleRoot, manifest, checks);
 
