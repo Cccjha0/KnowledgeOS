@@ -81,6 +81,11 @@ python -m pip install -r requirements.txt
 npm run build
 ```
 
+The committed lockfile uses the official npm registry. A clean checkout must
+install with `npm ci` without relying on an existing `node_modules` directory
+or a shared npm cache; developer-specific registry settings must not be written
+back to `package-lock.json`.
+
 Run the CLI through `node dist/cli.js`, or optionally register `pkb` locally:
 
 ```powershell
