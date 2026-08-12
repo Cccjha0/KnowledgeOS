@@ -32,6 +32,7 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
       const presentation = taskPresentation(task, presentationCatalog);
       const common = { item_id: `DSH-TASK-${task.task_id}`, source_module: task.module, instance_id: task.instance_id, title: presentation.title, target: null, created_at: task.created_at, blocks_count: 0, active_context: ["critical", "high"].includes(task.priority), actions: ["open"] };
       if (task.status === "failed") item = { ...common, category: "system", priority, description: task.last_error?.message ?? "任务重试已用尽。", due_at: null };
+      else if (task.status === "interrupted") item = { ...common, category: "system", priority, description: task.last_error?.message ?? "任务执行已中断，需要恢复。", due_at: null, actions: ["open", "run"] };
       else if (task.status === "waiting-for-user") item = { ...common, category: "action", priority, description: task.job_id === "quality.stale-field-followup" ? presentation.description : task.last_error?.message ?? "等待用户操作。", due_at: task.defer_until };
       else if (["waiting-for-network", "waiting-for-ai"].includes(task.status)) {
         const waitingFor = Date.parse(task.updated_at || task.created_at); const longWaiting = Number.isFinite(waitingFor) && now - waitingFor >= 86_400_000;

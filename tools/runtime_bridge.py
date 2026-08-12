@@ -11,7 +11,7 @@ if os.name == "nt":
 else:
     import fcntl
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -303,6 +303,25 @@ def migrate(connection):
           COMMIT;
         """)
         current = 5
+    if current < 6:
+        if original_version >= 5:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(status, priority, scheduled_for, updated_at);
+          UPDATE runtime_metadata SET value='6' WHERE key='schema_version';
+          COMMIT;
+        """)
+        current = 6
 
 
 def decode_json(value, fallback):
@@ -522,8 +541,18 @@ def dispatch(command, connection, payload):
             "audits": dispatch("list-audits", connection, {"limit": 50}),
         }
     if command == "today-data":
+        tasks = [task_dict(row) for row in connection.execute("""
+          SELECT * FROM tasks
+          WHERE status IN ('failed', 'waiting-for-user', 'interrupted')
+             OR (status IN ('waiting-for-network', 'waiting-for-ai')
+                 AND (priority <> 'low' OR updated_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')))
+             OR (status = 'queued' AND priority IN ('critical', 'high')
+                 AND scheduled_for <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day'))
+          ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                   scheduled_for, created_at, task_id
+        """)]
         return {
-            "tasks": dispatch("list-tasks", connection, {"statuses": []}),
+            "tasks": tasks,
             "quality_active": dispatch("list-quality-issues", connection, {
                 "statuses": ["open", "acknowledged", "scheduled"], "limit": 500,
             }),
