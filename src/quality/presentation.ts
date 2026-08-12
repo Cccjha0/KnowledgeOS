@@ -10,27 +10,17 @@ import { legacyAccessPolicyMigrationSummary } from "../core/legacyAccessMigratio
 function groupCount<T>(values: T[], key: (value: T) => string): JsonObject { const output: JsonObject = {}; for (const value of values) { const name = key(value); output[name] = Number(output[name] ?? 0) + 1; } return output; }
 function ageBucket(created: string, now = Date.now()): string { const days = Math.floor((now - Date.parse(created)) / 86_400_000); return days <= 3 ? "0-3d" : days <= 7 ? "4-7d" : days <= 30 ? "8-30d" : "over-30d"; }
 
-const QUALITY_FIELD_LABELS: Record<string, string> = {
-  application_open: "申请开放状态",
-  application_status: "申请状态",
-  deadline: "申请截止日期",
-  tuition: "学费",
-  academic_requirement: "学术要求",
-  english_requirement: "英语要求",
-  credit_exemption: "学分减免",
-};
-
 function qualityFieldLabel(field: unknown): string {
   const value = String(field ?? "").trim();
-  return QUALITY_FIELD_LABELS[value] ?? (value ? value.replaceAll("_", " ") : "重要信息");
+  return value ? value.replaceAll("_", " ") : "重要信息";
 }
 
 function qualityIssuePresentation(issue: QualityIssue): { title: string; description: string } {
   const field = qualityFieldLabel(issue.target.field);
-  if (issue.issue_type === "stale-critical-field") return { title: "重要申请信息需要重新核验", description: `「${field}」已超过建议核验周期。请发起一次申请信息核验；系统会先创建核验请求，不会直接覆盖正式档案。` };
-  if (issue.issue_type === "due-soon-field") return { title: "重要申请信息即将需要核验", description: `「${field}」即将达到建议核验时间。可以提前安排一次申请信息核验。` };
+  if (issue.issue_type === "stale-critical-field") return { title: "重要信息需要重新核验", description: `「${field}」已超过建议核验周期。系统会按所属模块的质量策略创建后续任务，不会直接覆盖正式数据。` };
+  if (issue.issue_type === "due-soon-field") return { title: "重要信息即将需要核验", description: `「${field}」即将达到建议核验时间，可以提前安排一次复核。` };
   if (issue.issue_type === "missing-provenance") return { title: "重要信息缺少来源", description: `「${field}」目前没有足够的来源记录，请补充证据后再作为正式信息使用。` };
-  if (issue.issue_type === "conflicting-evidence") return { title: "申请信息存在来源冲突", description: `「${field}」的来源给出了不同结果，需要比较证据后再决定保留哪个值。` };
+  if (issue.issue_type === "conflicting-evidence") return { title: "信息存在来源冲突", description: `「${field}」的来源给出了不同结果，需要比较证据后再决定保留哪个值。` };
   if (issue.issue_type === "unowned-file") return { title: "文件尚未归类", description: "请为这个文件选择所属模块或实例，避免它脱离 KnowledgeOS 的管理范围。" };
   if (issue.issue_type === "orphan-file") return { title: "发现未关联文件", description: "这个文件没有明确的知识归属或链接，建议检查后决定保留位置。" };
   return { title: issue.issue_type.replaceAll("-", " "), description: String(issue.recommended_action.type ?? "需要检查相关信息") };
