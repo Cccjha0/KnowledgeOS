@@ -142,6 +142,12 @@ test("Core API server correlates multiple requests over one process", async () =
   }
 });
 
+test("Core API server only treats Today requests without Markdown writes as concurrent", async () => {
+  const source = await fs.readFile(path.resolve("src", "cli.ts"), "utf8");
+  assert.match(source, /method === "getTodayItems"\) return params\.refresh_markdown === false/);
+  assert.match(source, /commandApiRequestCanRunConcurrently\(parsedRequest\.method/);
+});
+
 test("rollback refuses changed files and requires confirmation for later overlapping runs", async () => {
   const changedVault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-changed-"));
   const dependentVault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-system-dependent-"));

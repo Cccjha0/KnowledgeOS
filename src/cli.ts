@@ -35,6 +35,12 @@ const CONCURRENT_COMMAND_API_METHODS = new Set<CommandApiMethod>([
   "listCodexModels", "getQualityDashboard", "listQualityIssues", "getFieldProvenance", "getModuleBuilderPlatformContract",
   "previewModuleBlueprint", "getModuleReadiness",
 ]);
+
+function commandApiRequestCanRunConcurrently(method: CommandApiMethod | null, params: Record<string, JsonValue> = {}): boolean {
+  if (!method || !CONCURRENT_COMMAND_API_METHODS.has(method)) return false;
+  if (method === "getTodayItems") return params.refresh_markdown === false;
+  return true;
+}
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "./modules/blueprint.js";
 import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "./modules/packageManager.js";
 import { validateModule } from "./modules/validator.js";
@@ -213,9 +219,9 @@ async function main(): Promise<void> {
     };
     for await (const line of lines) {
       if (!line.trim()) continue;
-      let parsedMethod: CommandApiMethod | null = null;
-      try { parsedMethod = (JSON.parse(line) as { method?: CommandApiMethod }).method ?? null; } catch { /* handled by handleRequest */ }
-      const operation = CONCURRENT_COMMAND_API_METHODS.has(parsedMethod as CommandApiMethod)
+      let parsedRequest: { method?: CommandApiMethod; params?: Record<string, JsonValue> } = {};
+      try { parsedRequest = JSON.parse(line) as typeof parsedRequest; } catch { /* handled by handleRequest */ }
+      const operation = commandApiRequestCanRunConcurrently(parsedRequest.method ?? null, parsedRequest.params)
         ? handleRequest(line)
         : (mutationTail = mutationTail.then(() => handleRequest(line), () => handleRequest(line)));
       active.add(operation);
