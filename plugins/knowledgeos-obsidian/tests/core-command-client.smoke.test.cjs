@@ -15,16 +15,21 @@ const { createSystemCenterViews } = require("../views/system-center");
 const { createTodayViews } = require("../views/today");
 const { createSettingsViews } = require("../views/settings-tab");
 const { createModuleBuilderViews } = require("../views/module-builder-modal");
-const { affectedKnowledgeViews } = require("../services/view-refresh-policy");
+const { affectedKnowledgeViews, affectedKnowledgeViewsForPaths } = require("../services/view-refresh-policy");
 const { rollbackLabel } = require("../components/rollback-modal");
 
 test("Vault changes invalidate only the affected KnowledgeOS views", () => {
   assert.deepEqual(affectedKnowledgeViews("Today.md"), []);
-  assert.deepEqual(affectedKnowledgeViews("90-System/Logs/run.md"), []);
+  assert.deepEqual(affectedKnowledgeViews("90-System/Logs/run.md"), ["today", "system"]);
+  assert.deepEqual(affectedKnowledgeViews("00-Inbox/capture.md"), ["today", "inbox"]);
   assert.deepEqual(affectedKnowledgeViews("20-Workspace/Reading/Inbox/book.pdf"), ["today", "inbox"]);
   assert.deepEqual(affectedKnowledgeViews("90-System/Review Queue/REV-1.md"), ["today", "reviews", "system"]);
   assert.deepEqual(affectedKnowledgeViews("90-System/State/Sidecars/asset.json"), ["today", "inbox"]);
+  assert.deepEqual(affectedKnowledgeViews("90-System/State/Inbox/item.json"), ["today", "inbox"]);
   assert.deepEqual(affectedKnowledgeViews("20-Workspace/Courses/course-1/Assignments/A1.md"), ["today", "system"]);
+  assert.deepEqual(affectedKnowledgeViewsForPaths([
+    "90-System/Review Queue/Pending/REV-1.md", "00-Inbox/capture.md",
+  ]), ["today", "reviews", "system", "inbox"]);
 });
 
 test("shared rollback presentation describes unavailable and confirmable recovery", () => {

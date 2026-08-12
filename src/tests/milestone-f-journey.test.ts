@@ -92,7 +92,7 @@ test("F07 plugin contract includes shortcuts, bounded lists, accessible status, 
   assert.match(source, /找不到已编译的 Core CLI/);
   assert.match(source, /npm run build/);
   assert.match(source, /renderBackgroundStatus\("更新中…"\)/);
-  assert.match(source, /invoke\("getSystemCenterSnapshot", \{ section \}\)/);
+  assert.match(source, /invoke\("getSystemCenterSnapshot", \{[\s\S]*section, \.\.\.\(\["tasks", "history"\]\.includes\(section\)[\s\S]*page_size/);
   assert.match(source, /"api-server"/);
   assert.match(source, /this\.pending = new Map\(\)/);
   assert.doesNotMatch(source, /const \[modules, instances, inbox, reviews, runs, tasks, runtime, quality\] = await Promise\.all/);

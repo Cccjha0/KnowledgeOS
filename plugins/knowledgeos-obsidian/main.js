@@ -4,7 +4,7 @@ const { registerKnowledgeViews } = require("./views/register");
 const settingsDefaults = require("./settings/defaults");
 const { ModuleUiMetadataStore } = require("./services/module-ui-metadata");
 const { CoreCommandClient: SharedCoreCommandClient } = require("./services/core-command-client");
-const { affectedKnowledgeViews } = require("./services/view-refresh-policy");
+const { affectedKnowledgeViewsForPaths } = require("./services/view-refresh-policy");
 const { createPresentationFormatters } = require("./formatters/presentation");
 const { createReviewCenterViews } = require("./views/review-center");
 const { createInboxCenterViews } = require("./views/inbox-center");
@@ -589,26 +589,10 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
         .onClick(() => this.openCapture(file.path)));
     }));
     this.addSettingTab(new this.viewConstructors.KnowledgeOSSettingTab(this.app, this));
-    this.registerEvent(this.app.vault.on("modify", (file) => {
-      this.wakeTaskCycle();
-      if (!this.settings.autoRefresh) return;
-      const affectedViews = affectedKnowledgeViews(file.path);
-      if (!affectedViews.length) return;
-      this.pendingRefreshViews ??= new Set();
-      for (const view of affectedViews) this.pendingRefreshViews.add(view);
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = setTimeout(() => {
-        const views = new Set(this.pendingRefreshViews);
-        this.pendingRefreshViews.clear();
-        if (views.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
-        if (views.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) leaf.view.loadReviews();
-        if (views.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
-        if (views.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
-      }, 1500);
-    }));
-    this.registerEvent(this.app.vault.on("create", () => this.wakeTaskCycle()));
-    this.registerEvent(this.app.vault.on("delete", () => this.wakeTaskCycle()));
-    this.registerEvent(this.app.vault.on("rename", () => this.wakeTaskCycle()));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("create", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.handleVaultPathsChanged([oldPath, file.path])));
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.openTodayOnStartup) await this.activateToday();
       void this.refreshModuleUiMetadata();
@@ -623,6 +607,24 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     await this.saveData(this.settings);
     this.client.settings = this.settings;
     this.taskClient.settings = this.settings;
+  }
+
+  handleVaultPathsChanged(paths) {
+    this.wakeTaskCycle();
+    if (!this.settings.autoRefresh) return;
+    const affectedViews = affectedKnowledgeViewsForPaths(paths);
+    if (!affectedViews.length) return;
+    this.pendingRefreshViews ??= new Set();
+    for (const view of affectedViews) this.pendingRefreshViews.add(view);
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      const views = new Set(this.pendingRefreshViews);
+      this.pendingRefreshViews.clear();
+      if (views.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
+      if (views.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) leaf.view.loadReviews();
+      if (views.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
+      if (views.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
+    }, 1500);
   }
 
   onunload() { clearTimeout(this.refreshTimer); clearTimeout(this.taskWakeTimer); this.client?.close(); this.taskClient?.close(); }
