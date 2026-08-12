@@ -59,6 +59,11 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Build and verify Obsidian plugin bundle
+        run: |
+          npm run build:plugin
+          node --check plugins/knowledgeos-obsidian/dist/main.js
+
       - name: Validate Python schemas and versioned fixtures
         run: python tools/validate.py
 

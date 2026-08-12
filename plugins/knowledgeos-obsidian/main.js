@@ -604,7 +604,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.taskClient.settings = this.settings;
   }
 
-  onunload() { this.client?.close(); this.taskClient?.close(); }
+  onunload() { clearTimeout(this.refreshTimer); this.client?.close(); this.taskClient?.close(); }
 
   async refreshModuleUiMetadata() {
     if (this.moduleUiMetadataPromise) return this.moduleUiMetadataPromise;
