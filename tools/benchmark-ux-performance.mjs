@@ -132,7 +132,7 @@ export async function runBenchmark(options) {
     { name: "system-modules", method: "getSystemCenterSnapshot", params: { section: "modules" } },
     { name: "system-history", method: "getSystemCenterSnapshot", params: { section: "history", page_size: 20 } },
     { name: "getRecentRuns", method: "getRecentRuns", params: { page_size: 20, include_rollback: false } },
-    { name: "taskCycle-idle", method: "runTaskCycle", params: { limit: 0, network_probe_url: "http://127.0.0.1:1", codex_executable: "knowledgeos-benchmark-codex-unavailable" } },
+    { name: "taskCycle-resource-wait", method: "runTaskCycle", params: { limit: 0, network_probe_url: "http://127.0.0.1:1", codex_executable: "knowledgeos-benchmark-codex-unavailable" } },
   ];
   try {
     const results = {};

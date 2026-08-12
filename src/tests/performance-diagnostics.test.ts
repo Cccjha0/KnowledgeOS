@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseMarkdown, parseMarkdownBatch } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch, validateSchemaBatch } from "../core/bridge.js";
 import { listFilesRecursive } from "../core/files.js";
 import { enablePerformanceDiagnostics, performanceDiagnosticsSnapshot, resetPerformanceDiagnostics } from "../core/performanceDiagnostics.js";
 
@@ -27,4 +27,23 @@ test("performance diagnostics count structure without recording paths or content
     assert.equal(snapshot.files_discovered, 2);
     assert.doesNotMatch(JSON.stringify(snapshot), /Synthetic secret marker|first\.md/);
   } finally { enablePerformanceDiagnostics(false); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("batch Schema validation reuses only content-identical results", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-schema-cache-"));
+  try {
+    enablePerformanceDiagnostics();
+    const valid = { item_id: "DSH-CACHE-1", source_module: "core", instance_id: null, category: "status", priority: "low", title: "Cache test", description: "Content-addressed validation fixture.", target: null, due_at: null, actions: ["open"], created_at: null, blocks_count: 0, active_context: false };
+    const schemaId = "https://pkb.local/schemas/core/dashboard-item.schema.json";
+    assert.equal(validateSchemaBatch(vault, [{ schemaId, data: valid }])[0]?.ok, true);
+    resetPerformanceDiagnostics();
+    assert.equal(validateSchemaBatch(vault, [{ schemaId, data: structuredClone(valid) }])[0]?.ok, true);
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 0);
+    resetPerformanceDiagnostics();
+    assert.equal(validateSchemaBatch(vault, [{ schemaId, data: { ...valid, title: "Changed" } }])[0]?.ok, true);
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 1);
+  } finally {
+    enablePerformanceDiagnostics(false);
+    await fs.rm(vault, { recursive: true, force: true });
+  }
 });

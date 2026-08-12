@@ -8,9 +8,11 @@ import { incrementPerformanceDiagnostic } from "./performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCUMENT_CACHE_LIMIT = 1_000;
+const SCHEMA_RESULT_CACHE_LIMIT = 2_000;
 const documentCache = new Map<string, { mtimeMs: number; size: number; value: MarkdownDocument }>();
 const yamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
 const validatedYamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
+const schemaResultCache = new Map<string, SchemaBatchValidationResult>();
 
 function schemaRegistryRevision(): string {
   const entries: string[] = [];
@@ -52,6 +54,15 @@ function remember<T>(cache: Map<string, { mtimeMs: number; size: number; value: 
 }
 
 function invalidate(filePath: string): void { documentCache.delete(filePath); yamlCache.delete(filePath); }
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
 
 function runBridge(
   vaultRoot: string,
@@ -208,6 +219,31 @@ export function validateSchemaBatch(
 ): SchemaBatchValidationResult[] {
   if (!items.length) return [];
   incrementPerformanceDiagnostic("schema_validations", items.length);
-  const output = runBridge(vaultRoot, ["validate-batch", ENGINE_ROOT], items.map((item) => ({ schema_id: item.schemaId, data: item.data })));
-  return JSON.parse(output) as SchemaBatchValidationResult[];
+  const revision = schemaRegistryRevision();
+  const results: Array<SchemaBatchValidationResult | null> = Array.from({ length: items.length }, () => null);
+  const misses: Array<{ index: number; key: string; item: { schemaId: string; data: unknown } }> = [];
+  for (const [index, item] of items.entries()) {
+    const key = `${revision}\0${item.schemaId}\0${canonicalJson(item.data)}`;
+    const cachedResult = schemaResultCache.get(key);
+    if (cachedResult) {
+      incrementPerformanceDiagnostic("parse_cache_hits");
+      schemaResultCache.delete(key); schemaResultCache.set(key, cachedResult);
+      results[index] = { ...structuredClone(cachedResult), index };
+    } else {
+      incrementPerformanceDiagnostic("parse_cache_misses");
+      misses.push({ index, key, item });
+    }
+  }
+  if (misses.length) {
+    const output = runBridge(vaultRoot, ["validate-batch", ENGINE_ROOT], misses.map(({ item }) => ({ schema_id: item.schemaId, data: item.data })));
+    const validated = JSON.parse(output) as SchemaBatchValidationResult[];
+    for (const [offset, miss] of misses.entries()) {
+      const result = validated[offset] ?? { ok: false, index: offset, errors: [{ path: "", message: "Batch validation omitted item." }] };
+      const normalized = { ...result, index: miss.index };
+      results[miss.index] = normalized;
+      schemaResultCache.set(miss.key, { ...structuredClone(result), index: 0 });
+      while (schemaResultCache.size > SCHEMA_RESULT_CACHE_LIMIT) schemaResultCache.delete(schemaResultCache.keys().next().value!);
+    }
+  }
+  return results.map((result, index) => result ?? { ok: false, index, errors: [{ path: "", message: "Batch validation omitted item." }] });
 }

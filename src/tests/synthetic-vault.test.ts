@@ -57,4 +57,6 @@ test("UX benchmark scenarios exercise bounded first-page APIs", async () => {
   assert.match(source, /section: "history", page_size: 20/);
   assert.match(source, /getRecentRuns"[^\n]*page_size: 20/);
   assert.doesNotMatch(source, /getInboxCenterSnapshot"[^\n]*limit:/);
+  assert.match(source, /name: "taskCycle-resource-wait"/);
+  assert.doesNotMatch(source, /name: "taskCycle-idle"/);
 });

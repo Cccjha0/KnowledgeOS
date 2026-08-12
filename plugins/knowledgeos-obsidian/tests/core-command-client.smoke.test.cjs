@@ -345,3 +345,14 @@ test("plugin presentation time follows the Vault timezone without fixed locale a
   assert.match(today, /formatTodayHeading/);
   assert.match(reviews, /zonedLocalToIso/);
 });
+
+test("idle task wake calculation stays local and bounded without a Core request", () => {
+  const source = require("node:fs").readFileSync(require("node:path").resolve(__dirname, "../main.js"), "utf8");
+  const match = source.match(/function taskWakeDelay\(data, now = Date\.now\(\)\) \{([\s\S]*?)\n\}/);
+  assert.ok(match);
+  const taskWakeDelay = new Function("TASK_WAKE_MIN_MS", "TASK_WAKE_MAX_MS", `return function taskWakeDelay(data, now) {${match[1]}\n}`)(1_000, 300_000);
+  const started = process.hrtime.bigint();
+  for (let index = 0; index < 10_000; index += 1) assert.equal(taskWakeDelay({ has_work: false, next_wake_at: null }, Date.now()), 300_000);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+  assert.ok(elapsedMs < 250, `10,000 idle wake calculations took ${elapsedMs.toFixed(3)}ms`);
+});
