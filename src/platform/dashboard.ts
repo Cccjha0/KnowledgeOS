@@ -1,8 +1,9 @@
 import { buildTodaySnapshot, writeTodayMarkdown, writeTodayMarkdownWithResult, type TodayWriteResult } from "../core/dashboard.js";
 import type { DashboardItem, TodaySnapshot } from "../core/types.js";
 import { qualityIssueToDashboardItem } from "../quality/presentation.js";
-import { QualityRepository } from "../quality/repository.js";
+import type { QualityIssue } from "../quality/domain.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import type { RuntimeTask } from "../runtime/domain.js";
 import { discoverInboxContext, discoverInboxItems, inboxDashboardItem } from "./inboxDiscovery.js";
 import { collectModuleDashboardItems } from "../modules/dashboardProvider.js";
 import { createTaskPresentationCatalog, taskPresentation } from "./taskDashboardPresentation.js";
@@ -18,8 +19,9 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
   items.push(...await collectModuleDashboardItems(vaultRoot, Date.now(), context));
   const runtime = await RuntimeRepository.open(vaultRoot);
   try {
+    const runtimeData = runtime.todayData();
     const now = Date.now();
-    for (const task of runtime.listTasks()) {
+    for (const task of (runtimeData.tasks ?? []) as unknown as RuntimeTask[]) {
       // The active Quality Issue is the user-facing action. Keep the
       // follow-up Task in Task Center, but do not show a second internal row
       // for the same stale-field problem in Today while it is waiting.
@@ -38,13 +40,10 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
       else if (task.status === "queued" && Date.parse(task.scheduled_for) - now < 86_400_000 && ["critical", "high"].includes(task.priority)) item = { ...common, category: "deadline", priority, description: task.job_id === "quality.stale-field-followup" ? presentation.description : "即将执行的重要任务。", due_at: task.scheduled_for };
       if (item) items.push(item as DashboardItem);
     }
-  } finally { runtime.close(); }
-  const quality = await QualityRepository.open(vaultRoot);
-  try {
-    items.push(...quality.listIssues({ statuses: ["open", "acknowledged", "scheduled"] })
+    items.push(...((runtimeData.quality_active ?? []) as unknown as QualityIssue[])
       .filter((issue) => ["critical", "high"].includes(issue.severity) || issue.issue_type === "overdue-review")
       .map(qualityIssueToDashboardItem));
-  } finally { quality.close(); }
+  } finally { runtime.close(); }
   return buildTodaySnapshot(vaultRoot, items, enabled);
 }
 

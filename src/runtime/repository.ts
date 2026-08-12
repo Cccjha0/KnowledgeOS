@@ -73,6 +73,7 @@ export class RuntimeRepository {
   schemaVersion(): number { return this.call<number>("schema-version"); }
   runtimeStats(): JsonObject { return this.call<JsonObject>("runtime-stats"); }
   systemCenterData(since: string): JsonObject { return this.call<JsonObject>("system-center-data", { since }); }
+  todayData(): JsonObject { return this.call<JsonObject>("today-data"); }
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
   listJobs(): JobDefinition[] { return this.call<JobDefinition[]>("list-jobs"); }
   createTask(input: CreateTaskInput): { task: RuntimeTask; deduplicated: boolean } {

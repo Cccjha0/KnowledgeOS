@@ -521,6 +521,13 @@ def dispatch(command, connection, payload):
             "metrics": dispatch("aggregate-metrics", connection, {"since": payload.get("since")}),
             "audits": dispatch("list-audits", connection, {"limit": 50}),
         }
+    if command == "today-data":
+        return {
+            "tasks": dispatch("list-tasks", connection, {"statuses": []}),
+            "quality_active": dispatch("list-quality-issues", connection, {
+                "statuses": ["open", "acknowledged", "scheduled"], "limit": 500,
+            }),
+        }
     if command == "register-job":
         connection.execute("""INSERT INTO job_definitions(job_id,source,module,scope,enabled,definition_json,updated_at) VALUES(?,?,?,?,?,?,?)
           ON CONFLICT(job_id) DO UPDATE SET source=excluded.source,module=excluded.module,scope=excluded.scope,enabled=excluded.enabled,
