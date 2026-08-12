@@ -12,6 +12,7 @@ const { createSystemCenterViews } = require("./views/system-center");
 const { createTodayViews } = require("./views/today");
 const { createSettingsViews } = require("./views/settings-tab");
 const { createModuleBuilderViews } = require("./views/module-builder-modal");
+const { createRollbackModalSupport } = require("./components/rollback-modal");
 
 const moduleUiMetadata = new ModuleUiMetadataStore();
 const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
@@ -253,6 +254,7 @@ function createViewDependencies() {
     markLiveRegion, taskCycleChanged, missingBuiltCliFailure,
     labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime,
     friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError,
+    displayJson,
   };
 }
 class QuickCaptureModal extends Modal {
@@ -532,6 +534,7 @@ function displayJson(value) {
 module.exports = class KnowledgeOSPlugin extends Plugin {
   async onload() {
     const viewDependencies = createViewDependencies();
+    Object.assign(viewDependencies, createRollbackModalSupport(viewDependencies));
     this.viewConstructors = {
       ...createReviewCenterViews(viewDependencies),
       ...createInboxCenterViews(viewDependencies),

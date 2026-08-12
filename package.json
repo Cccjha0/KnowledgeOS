@@ -12,7 +12,7 @@
     "build:plugin": "esbuild plugins/knowledgeos-obsidian/main.js --bundle --platform=node --format=cjs --target=es2022 --external:obsidian --outfile=plugins/knowledgeos-obsidian/dist/main.js",
     "pack:plugin": "node tools/pack-obsidian-plugin.mjs",
     "check:boundaries": "python -X utf8 tools/check_core_boundaries.py",
-    "lint": "node tools/check-source-format.mjs && npm run typecheck",
+    "lint": "node tools/check-source-format.mjs && eslint plugins/knowledgeos-obsidian --max-warnings 0 && npm run typecheck",
     "prepare": "npm run build",
     "validate": "node dist/cli.js validate --vault ../knowledgeos-vault",
     "test": "npm run check:boundaries && npm run build && npm run test:engine",
@@ -27,6 +27,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
     "typescript": "^5.8.3"
   }
 }

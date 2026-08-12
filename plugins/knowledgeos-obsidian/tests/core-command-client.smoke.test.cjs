@@ -15,6 +15,7 @@ const { createTodayViews } = require("../views/today");
 const { createSettingsViews } = require("../views/settings-tab");
 const { createModuleBuilderViews } = require("../views/module-builder-modal");
 const { affectedKnowledgeViews } = require("../services/view-refresh-policy");
+const { rollbackLabel } = require("../components/rollback-modal");
 
 test("Vault changes invalidate only the affected KnowledgeOS views", () => {
   assert.deepEqual(affectedKnowledgeViews("Today.md"), []);
@@ -23,6 +24,12 @@ test("Vault changes invalidate only the affected KnowledgeOS views", () => {
   assert.deepEqual(affectedKnowledgeViews("90-System/Review Queue/REV-1.md"), ["today", "reviews", "system"]);
   assert.deepEqual(affectedKnowledgeViews("90-System/State/Sidecars/asset.json"), ["today", "inbox"]);
   assert.deepEqual(affectedKnowledgeViews("20-Workspace/Courses/course-1/Assignments/A1.md"), ["today", "system"]);
+});
+
+test("shared rollback presentation describes unavailable and confirmable recovery", () => {
+  assert.equal(rollbackLabel({ can_rollback: false }), "不可自动撤销");
+  assert.equal(rollbackLabel({ can_rollback: true, requires_confirmation: false }), "安全撤销");
+  assert.equal(rollbackLabel({ can_rollback: true, requires_confirmation: true }), "撤销（需要确认）");
 });
 
 function createMockBridge(onRequest) {
