@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { DashboardItem, RecentRunSummary, TodayInboxGroup, TodaySnapshot } from "./types.js";
-import { parseMarkdown, validateSchema } from "./bridge.js";
+import { parseMarkdownBatch, validateSchemaBatch } from "./bridge.js";
 import { exists, listFilesRecursive, toVaultPath } from "./files.js";
 import { requeueDueReviews } from "./reviews.js";
 
@@ -55,8 +55,13 @@ function sortItems(items: DashboardItem[], now = Date.now()): DashboardItem[] {
 async function collectReviewDashboardItems(vaultRoot: string): Promise<DashboardItem[]> {
   const items: DashboardItem[] = [];
   const pendingRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
-  for (const file of await listFilesRecursive(pendingRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
+  const pendingFiles = await listFilesRecursive(pendingRoot, ".md");
+  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
+  const errorFiles = await listFilesRecursive(errorRoot, ".md");
+  const parsed = parseMarkdownBatch(vaultRoot, [...pendingFiles, ...errorFiles]);
+  for (const file of pendingFiles) {
+    const document = parsed.get(file);
+    if (!document) continue;
     if (document.data.status !== "pending") continue;
     const observation = document.data.target_observation;
     const warning = Boolean(
@@ -84,9 +89,9 @@ async function collectReviewDashboardItems(vaultRoot: string): Promise<Dashboard
     });
   }
 
-  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
-  for (const file of await listFilesRecursive(errorRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
+  for (const file of errorFiles) {
+    const document = parsed.get(file);
+    if (!document) continue;
     items.push({
       item_id: `DSH-ERROR-${String(document.data.review_id)}`,
       source_module: String(document.data.source_module),
@@ -109,8 +114,11 @@ async function collectReviewDashboardItems(vaultRoot: string): Promise<Dashboard
 async function collectRecentRuns(vaultRoot: string): Promise<RecentRunSummary[]> {
   const output: RecentRunSummary[] = [];
   const logRoot = path.join(vaultRoot, "90-System", "Logs");
-  for (const file of await listFilesRecursive(logRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
+  const files = await listFilesRecursive(logRoot, ".md");
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  for (const file of files) {
+    const document = parsed.get(file);
+    if (!document) continue;
     if (typeof document.data.run_id !== "string" || typeof document.data.completed_at !== "string") continue;
     const status = document.data.status === "failed" ? "failed" : "completed";
     output.push({
@@ -169,8 +177,18 @@ export async function buildTodaySnapshot(
     ...reviewItems.filter((item) => !enabledModules || enabledModules.has(item.source_module)),
     ...moduleItems,
   ]);
-  for (const item of all) validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
-  const sorted = sortItems(all);
+  const validation = validateSchemaBatch(vaultRoot, all.map((item) => ({ schemaId: DASHBOARD_SCHEMA, data: item })));
+  const invalid = validation.filter((entry) => !entry.ok);
+  const valid = all.filter((_item, index) => validation[index]?.ok === true);
+  if (invalid.length) {
+    valid.push({
+      item_id: "DSH-CORE-DASHBOARD-VALIDATION", source_module: "core", instance_id: null,
+      category: "system", priority: "high", title: "Dashboard data needs attention",
+      description: `${invalid.length} item(s) failed runtime schema validation. Open System Center for details.`,
+      target: null, due_at: null, actions: ["open"], created_at: null, blocks_count: invalid.length, active_context: true,
+    });
+  }
+  const sorted = sortItems(valid);
   const reviews = sorted.filter((item) => item.category === "review");
   const inboxItems = sorted.filter((item) => item.category !== "system" && isInboxTarget(item.target));
   const failures = sorted.filter((item) => item.category === "system");

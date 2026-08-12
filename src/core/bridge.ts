@@ -195,3 +195,19 @@ export function validateSchema(
   incrementPerformanceDiagnostic("schema_validations");
   runBridge(vaultRoot, ["validate", ENGINE_ROOT, schemaId], data);
 }
+
+export interface SchemaBatchValidationResult {
+  ok: boolean;
+  index: number;
+  errors: Array<{ path: string; message: string }>;
+}
+
+export function validateSchemaBatch(
+  vaultRoot: string,
+  items: Array<{ schemaId: string; data: unknown }>,
+): SchemaBatchValidationResult[] {
+  if (!items.length) return [];
+  incrementPerformanceDiagnostic("schema_validations", items.length);
+  const output = runBridge(vaultRoot, ["validate-batch", ENGINE_ROOT], items.map((item) => ({ schema_id: item.schemaId, data: item.data })));
+  return JSON.parse(output) as SchemaBatchValidationResult[];
+}

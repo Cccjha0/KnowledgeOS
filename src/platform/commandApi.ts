@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown, writeMarkdown, writeYaml } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch, writeMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -163,7 +163,6 @@ function instanceViews(
 }
 
 async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
-  await requeueDueReviews(vaultRoot);
   const requested = Array.isArray(params.statuses)
     ? new Set(params.statuses.filter((value): value is string => typeof value === "string"))
     : new Set(["pending", "error"]);
@@ -176,9 +175,14 @@ async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonV
   const reviewAfterFrom = typeof params.review_after_from === "string" ? Date.parse(params.review_after_from) : null;
   const reviewAfterTo = typeof params.review_after_to === "string" ? Date.parse(params.review_after_to) : null;
   const result: Array<Awaited<ReturnType<typeof buildReviewView>>> = [];
-  for (const directory of REVIEW_DIRECTORIES) {
-    for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", directory), ".md")) {
-      const item = parseMarkdown(vaultRoot, file).data as unknown as ReviewItem;
+  const directories = [...new Set([...requested].map((status) => status === "pending" ? "Pending" : status === "error" ? "Error" : status === "deferred" ? "Deferred" : "Closed"))];
+  if (directories.includes("Deferred")) await requeueDueReviews(vaultRoot);
+  const files = (await Promise.all(directories.map((directory) => listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", directory), ".md")))).flat();
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  for (const file of files) {
+      const document = parsed.get(file);
+      if (!document) continue;
+      const item = document.data as unknown as ReviewItem;
       if (!requested.has(item.status)) continue;
       if (moduleId && item.source_module !== moduleId) continue;
       if (instanceId && item.instance_id !== instanceId) continue;
@@ -191,7 +195,6 @@ async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonV
       if (reviewAfterFrom !== null && (reviewAfter === null || reviewAfter < reviewAfterFrom)) continue;
       if (reviewAfterTo !== null && (reviewAfter === null || reviewAfter > reviewAfterTo)) continue;
       result.push(await buildReviewView(vaultRoot, item, toVaultPath(vaultRoot, file)));
-    }
   }
   const priorityWeight: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
   return result.sort((a, b) =>

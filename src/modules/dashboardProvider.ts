@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml } from "../core/bridge.js";
+import { parseMarkdownBatch, parseYaml } from "../core/bridge.js";
 import { listFilesRecursive, toVaultPath } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue, Priority } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
@@ -105,11 +105,12 @@ async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocum
   const root = typeof instance.data.content_root === "string" ? path.join(vaultRoot, ...instance.data.content_root.split("/")) : null;
   if (!root) return [];
   const documents: LocatedDocument[] = [];
-  for (const file of await listFilesRecursive(root, ".md")) {
-    const relative = toVaultPath(vaultRoot, file);
-    if (/(?:^|\/)Inbox(?:\/|$)/.test(relative)) continue;
+  const files = (await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file)));
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  for (const file of files) {
     try {
-      const document = parseMarkdown(vaultRoot, file);
+      const document = parsed.get(file);
+      if (!document) continue;
       if (document.data.instance_id !== instance.data.instance_id) continue;
       documents.push({ path: file, data: document.data });
     } catch {
@@ -218,16 +219,12 @@ function hasSuppressingDocument(moduleId: string, definition: ProviderItem, docu
 }
 
 async function reviewSummary(
-  vaultRoot: string,
   moduleId: string,
   instanceId: string,
   definition: ProviderItem,
+  reviewCounts: ReadonlyMap<string, number>,
 ): Promise<DashboardItem | null> {
-  let count = 0;
-  for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md")) {
-    const review = parseMarkdown(vaultRoot, file).data;
-    if (review.source_module === moduleId && review.instance_id === instanceId && review.status === "pending") count += 1;
-  }
+  const count = reviewCounts.get(`${moduleId}\0${instanceId}`) ?? 0;
   if (!count) return null;
   return {
     item_id: `DSH-MODULE-${moduleId}-${instanceId}-${definition.id}`,
@@ -258,6 +255,15 @@ export async function collectModuleDashboardItems(
   const instances = (discovery?.instances ?? await discoverInstances(vaultRoot))
     .filter((instance) => instance.data.status === "active");
   const result: DashboardItem[] = [];
+  const pendingReviewFiles = await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md");
+  const pendingReviews = parseMarkdownBatch(vaultRoot, pendingReviewFiles);
+  const reviewCounts = new Map<string, number>();
+  for (const file of pendingReviewFiles) {
+    const review = pendingReviews.get(file)?.data;
+    if (!review || review.status !== "pending" || typeof review.source_module !== "string" || typeof review.instance_id !== "string") continue;
+    const key = `${review.source_module}\0${review.instance_id}`;
+    reviewCounts.set(key, (reviewCounts.get(key) ?? 0) + 1);
+  }
   for (const module of modules) {
     const moduleId = String(module.data.id);
     const dashboard = object(module.data.dashboard);
@@ -281,7 +287,7 @@ export async function collectModuleDashboardItems(
       const documents = await documentsForInstance(vaultRoot, instance);
       for (const definition of definitions) {
         if (definition.kind === "review-summary") {
-          const summary = await reviewSummary(vaultRoot, moduleId, String(instance.data.instance_id), definition);
+          const summary = await reviewSummary(moduleId, String(instance.data.instance_id), definition, reviewCounts);
           if (summary) result.push(summary);
           continue;
         }
