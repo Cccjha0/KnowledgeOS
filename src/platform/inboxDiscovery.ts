@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch } from "../core/bridge.js";
 import { discoverRoutingContext, type DiscoveredDocument, type RoutingDiscoveryContext } from "../core/discovery.js";
 import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtomic } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
@@ -189,6 +189,7 @@ async function inspectItem(
   root: InboxRoot,
   modules: DiscoveredDocument[],
   instances: DiscoveredDocument[],
+  parsedDocument?: ReturnType<typeof parseMarkdown> | null,
 ): Promise<InboxItemView> {
   const vaultPath = toVaultPath(vaultRoot, absolute);
   const id = itemId(vaultPath);
@@ -199,7 +200,8 @@ async function inspectItem(
   let content = "";
   if (extension === ".md") {
     try {
-      const document = parseMarkdown(vaultRoot, absolute);
+      const document = parsedDocument === undefined ? parseMarkdown(vaultRoot, absolute) : parsedDocument;
+      if (!document) throw new Error("Markdown could not be parsed.");
       data = document.data;
       content = document.content;
     } catch { data = {}; }
@@ -279,13 +281,20 @@ export async function discoverInboxItems(vaultRoot: string, context?: InboxDisco
   const discovered = context ?? await discoverInboxContext(vaultRoot);
   const seen = new Set<string>();
   const output: InboxItemView[] = [];
+  const candidates: Array<{ absolute: string; root: InboxRoot }> = [];
   for (const root of discovered.roots) {
     for (const absolute of await listFilesRecursive(fromVaultPath(vaultRoot, root.path))) {
       const relative = toVaultPath(vaultRoot, absolute);
       if (seen.has(relative)) continue;
       seen.add(relative);
-      output.push(await inspectItem(vaultRoot, absolute, root, discovered.modules, discovered.instances));
+      candidates.push({ absolute, root });
     }
+  }
+  const markdownFiles = candidates.map((candidate) => candidate.absolute).filter((file) => path.extname(file).toLowerCase() === ".md");
+  const parsed = parseMarkdownBatch(vaultRoot, markdownFiles);
+  for (const candidate of candidates) {
+    const document = parsed.has(candidate.absolute) ? parsed.get(candidate.absolute)! : undefined;
+    output.push(await inspectItem(vaultRoot, candidate.absolute, candidate.root, discovered.modules, discovered.instances, document));
   }
   return output.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.path.localeCompare(b.path));
 }

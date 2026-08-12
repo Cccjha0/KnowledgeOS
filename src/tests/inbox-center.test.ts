@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch } from "../core/bridge.js";
 import { exists, listFilesRecursive, readJson } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
@@ -17,6 +17,19 @@ async function writeCapture(vault: string, filename: string, frontmatter: string
   await fs.writeFile(target, ["---", ...frontmatter, "---", "", body, ""].join("\n"), "utf8");
   return target;
 }
+
+test("Markdown batch parsing isolates invalid files and returns valid documents", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-markdown-batch-"));
+  try {
+    const valid = path.join(vault, "valid.md");
+    const missing = path.join(vault, "missing.md");
+    await fs.writeFile(valid, "---\ntitle: Valid\n---\n\nBody\n", "utf8");
+    const parsed = parseMarkdownBatch(vault, [valid, missing]);
+    assert.equal(parsed.get(valid)?.data.title, "Valid");
+    assert.equal(parsed.get(valid)?.content.trim(), "Body");
+    assert.equal(parsed.get(missing), null);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
 
 test("Inbox Center discovers only managed inboxes and explains routing without writing", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-list-"));

@@ -89,6 +89,24 @@ def main():
         print(json.dumps({"data": data, "content": content}, ensure_ascii=False))
         return
 
+    if command == "parse-markdown-batch":
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, list):
+            fail("Batch payload must be a list")
+        output = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, str):
+                output.append({"ok": False, "path": None, "error": f"Item {index} is not a path string"})
+                continue
+            try:
+                file_path = Path(item)
+                data, content = parse_frontmatter(file_path.read_text(encoding="utf-8"))
+                output.append({"ok": True, "path": item, "document": {"data": data, "content": content}})
+            except Exception as error:
+                output.append({"ok": False, "path": item, "error": str(error)})
+        print(json.dumps(output, ensure_ascii=False))
+        return
+
     if command == "write-markdown":
         path = Path(sys.argv[2])
         payload = json.load(sys.stdin)

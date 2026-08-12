@@ -68,6 +68,31 @@ export function parseMarkdown(vaultRoot: string, filePath: string): MarkdownDocu
   return remember(documentCache, filePath, JSON.parse(output) as MarkdownDocument);
 }
 
+export function parseMarkdownBatch(vaultRoot: string, filePaths: string[]): Map<string, MarkdownDocument | null> {
+  const result = new Map<string, MarkdownDocument | null>();
+  const misses: string[] = [];
+  for (const filePath of filePaths) {
+    try {
+      const hit = cached(documentCache, filePath);
+      if (hit) result.set(filePath, hit);
+      else misses.push(filePath);
+    } catch { result.set(filePath, null); }
+  }
+  if (!misses.length) return result;
+  const output = JSON.parse(runBridge(vaultRoot, ["parse-markdown-batch"], misses)) as Array<{
+    ok: boolean;
+    path: string | null;
+    document?: MarkdownDocument;
+  }>;
+  for (const entry of output) {
+    if (!entry.path) continue;
+    if (!entry.ok || !entry.document) result.set(entry.path, null);
+    else result.set(entry.path, remember(documentCache, entry.path, entry.document));
+  }
+  for (const filePath of misses) if (!result.has(filePath)) result.set(filePath, null);
+  return result;
+}
+
 export function writeMarkdown(
   vaultRoot: string,
   filePath: string,
