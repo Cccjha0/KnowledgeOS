@@ -86,7 +86,7 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /this\.taskClient = new SharedCoreCommandClient\(this\.settings/);
   assert.match(plugin, /this\.taskClient\.invoke\("runTaskCycle"/);
   assert.doesNotMatch(plugin, /this\.client\.invoke\("runTaskCycle"/);
-  assert.match(plugin, /if \(this\.settings\.openTodayOnStartup\) await this\.activateToday\(\);\s+void this\.runTaskCycle\(true\)/);
+  assert.match(plugin, /if \(this\.settings\.openTodayOnStartup\) await this\.activateToday\(\);\s+void this\.refreshModuleUiMetadata\(\);\s+void this\.runTaskCycle\(true\)/);
   assert.match(plugin, /invoke\("processInboxItem"/);
   assert.match(plugin, /invoke\("processInboxBatch"/);
   assert.match(plugin, /class SystemCenterView/);

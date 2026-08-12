@@ -56,6 +56,9 @@ jobs:
       - name: Enforce Core boundaries
         run: npm run check:boundaries
 
+      - name: Lint and type-check sources
+        run: npm run lint
+
       - name: Build TypeScript
         run: npm run build
 
