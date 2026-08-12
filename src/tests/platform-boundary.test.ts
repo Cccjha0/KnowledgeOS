@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { discoverInstances, discoverModules } from "../core/discovery.js";
 import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { OperationPlan } from "../core/types.js";
+import { enablePerformanceDiagnostics, performanceDiagnosticsSnapshot, resetPerformanceDiagnostics } from "../core/performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -34,6 +35,32 @@ test("Core discovers module manifests and generic instances", async () => {
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("discovery batches schema validation and invalidates on instance changes", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-discovery-batch-"));
+  try {
+    const roots = ["first-instance", "second-instance"];
+    for (const id of roots) {
+      const directory = path.join(vault, "90-System", "Instances", id);
+      await fs.mkdir(directory, { recursive: true });
+      await fs.writeFile(path.join(directory, "instance.yaml"), [
+        `instance_id: ${id}`, "module_id: experience-log", "status: active", `display_name: ${id}`,
+        `content_root: 20-Workspace/${id}`, 'created: "2026-01-01T00:00:00Z"', 'updated: "2026-01-01T00:00:00Z"', "",
+      ].join("\n"), "utf8");
+    }
+    enablePerformanceDiagnostics(); resetPerformanceDiagnostics();
+    assert.equal((await discoverInstances(vault)).length, 2);
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 1);
+    resetPerformanceDiagnostics();
+    assert.equal((await discoverInstances(vault)).length, 2);
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 0);
+    await fs.appendFile(path.join(vault, "90-System", "Instances", roots[0]!, "instance.yaml"), "timezone: UTC\n", "utf8");
+    resetPerformanceDiagnostics();
+    assert.equal((await discoverInstances(vault))[0]?.data.timezone, "UTC");
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 1);
+    assert.equal(performanceDiagnosticsSnapshot().schema_validations, 1);
+  } finally { enablePerformanceDiagnostics(false); await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("Core executes an authorized plan and rolls back a failed plan", async () => {

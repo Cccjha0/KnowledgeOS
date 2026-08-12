@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonObject, MarkdownDocument } from "./types.js";
@@ -10,6 +10,24 @@ const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const DOCUMENT_CACHE_LIMIT = 1_000;
 const documentCache = new Map<string, { mtimeMs: number; size: number; value: MarkdownDocument }>();
 const yamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
+const validatedYamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
+
+function schemaRegistryRevision(): string {
+  const entries: string[] = [];
+  const visit = (root: string): void => {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      const absolute = path.join(root, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.name.endsWith(".schema.json")) {
+        const stat = statSync(absolute);
+        entries.push(`${absolute}:${stat.mtimeMs}:${stat.size}`);
+      }
+    }
+  };
+  visit(path.join(ENGINE_ROOT, "core", "schemas"));
+  visit(path.join(ENGINE_ROOT, "modules"));
+  return entries.sort().join("|");
+}
 
 function cached<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string): T | null {
   const stat = statSync(filePath);
@@ -128,10 +146,40 @@ export function parseValidateYamlBatch(
   items: Array<{ path: string; schema_id: string }>,
 ): JsonObject[] {
   if (items.length === 0) return [];
-  incrementPerformanceDiagnostic("yaml_parse_requests", items.length);
-  incrementPerformanceDiagnostic("schema_validations", items.length);
-  const output = runBridge(ENGINE_ROOT, ["parse-validate-yaml-batch", ENGINE_ROOT], items);
-  return JSON.parse(output) as JsonObject[];
+  const schemaRevision = schemaRegistryRevision();
+  const results: Array<JsonObject | null> = Array.from({ length: items.length }, () => null);
+  const misses: Array<{ index: number; path: string; schema_id: string; key: string }> = [];
+  for (const [index, item] of items.entries()) {
+    const key = `${item.path}\0${item.schema_id}\0${schemaRevision}`;
+    const stat = statSync(item.path);
+    const entry = validatedYamlCache.get(key);
+    if (entry && entry.mtimeMs === stat.mtimeMs && entry.size === stat.size) {
+      incrementPerformanceDiagnostic("parse_cache_hits");
+      validatedYamlCache.delete(key); validatedYamlCache.set(key, entry);
+      results[index] = structuredClone(entry.value);
+    } else {
+      incrementPerformanceDiagnostic("parse_cache_misses");
+      misses.push({ index, ...item, key });
+    }
+  }
+  if (misses.length) {
+    incrementPerformanceDiagnostic("yaml_parse_requests", misses.length);
+    incrementPerformanceDiagnostic("schema_validations", misses.length);
+    const output = runBridge(ENGINE_ROOT, ["parse-validate-yaml-batch", ENGINE_ROOT], misses.map(({ path: filePath, schema_id }) => ({ path: filePath, schema_id })));
+    const parsed = JSON.parse(output) as JsonObject[];
+    for (const [offset, miss] of misses.entries()) {
+      const value = parsed[offset];
+      if (!value) throw new PkbError("PYTHON_BRIDGE_FAILED", `Batch validation omitted item ${miss.index}.`);
+      const originalStat = statSync(miss.path);
+      validatedYamlCache.set(miss.key, { mtimeMs: originalStat.mtimeMs, size: originalStat.size, value: structuredClone(value) });
+      while (validatedYamlCache.size > DOCUMENT_CACHE_LIMIT) {
+        validatedYamlCache.delete(validatedYamlCache.keys().next().value!);
+        incrementPerformanceDiagnostic("parse_cache_evictions");
+      }
+      results[miss.index] = structuredClone(value);
+    }
+  }
+  return results.map((value, index) => value ?? (() => { throw new PkbError("PYTHON_BRIDGE_FAILED", `Batch validation omitted item ${index}.`); })());
 }
 
 export function writeYaml(vaultRoot: string, filePath: string, data: JsonObject): void {
