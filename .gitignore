@@ -1,5 +1,6 @@
 node_modules/
 dist/
+plugins/knowledgeos-obsidian/dist/
 __pycache__/
 *.pyc
 *.tmp-*

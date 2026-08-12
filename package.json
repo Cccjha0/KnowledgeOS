@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:plugin": "esbuild plugins/knowledgeos-obsidian/main.js --bundle --platform=node --format=cjs --target=es2022 --external:obsidian --outfile=plugins/knowledgeos-obsidian/dist/main.js",
     "check:boundaries": "python -X utf8 tools/check_core_boundaries.py",
     "prepare": "npm run build",
     "validate": "node dist/cli.js validate --vault ../knowledgeos-vault",
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.8.3"
   }
 }
