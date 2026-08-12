@@ -1,7 +1,7 @@
 const { LatestRequestGate } = require("../services/latest-request");
 
 function createSystemCenterViews(deps) {
-  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson, rollbackLabel, RollbackConfirmModal } = deps;
+  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, presentationTimeZone, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson, rollbackLabel, RollbackConfirmModal } = deps;
 class RunDetailsModal extends Modal {
   constructor(app, plugin, runId, onChanged) {
     super(app); this.plugin = plugin; this.runId = runId; this.onChanged = onChanged;
@@ -1079,7 +1079,7 @@ class SystemCenterView extends ItemView {
     if (this.plugin.settings.developerMode) {
       const observationPanel = section.createEl("details", { cls: "knowledgeos-technical" });
       observationPanel.createEl("summary", { text: "I14 真实观察" });
-      observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 时区 ${evaluation.timezone || observation.timezone || "Asia/Shanghai"} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
+      observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 时区 ${evaluation.timezone || observation.timezone || presentationTimeZone()} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
       observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `初步结论 ${evaluation.overall || "insufficient-evidence"} · 最终评估资格 ${evaluation.eligible_for_final_review ? "已满足" : "未满足"}` });
       for (const [criterion, result] of Object.entries(evaluation.criteria || {})) observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `${criterion}: ${result?.status || "insufficient-evidence"}` });
     }

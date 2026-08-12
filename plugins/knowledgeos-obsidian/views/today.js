@@ -1,7 +1,7 @@
 const { LatestRequestGate } = require("../services/latest-request");
 
 function createTodayViews(deps) {
-  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
+  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, formatTodayHeading, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
 class TodayView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -93,7 +93,7 @@ class TodayView extends ItemView {
     const titleIcon = titleRow.createSpan({ cls: "knowledgeos-title-icon", attr: { "aria-hidden": "true" } });
     setIcon(titleIcon, "calendar-check");
     titleRow.createEl("h2", { text: "今天" });
-    heading.createDiv({ cls: "knowledgeos-page-subtitle", text: new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" }).format(new Date()) });
+    heading.createDiv({ cls: "knowledgeos-page-subtitle", text: formatTodayHeading(new Date()) });
     if (generatedAt) createTime(heading.createDiv({ cls: "knowledgeos-today-updated" }), generatedAt, "更新于 ");
     const actions = header.createDiv({ cls: "knowledgeos-header-actions" });
     const refresh = createToolbarButton(actions, "refresh-cw", "刷新", { iconOnly: true });

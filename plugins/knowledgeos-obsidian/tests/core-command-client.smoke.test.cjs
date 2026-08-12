@@ -333,3 +333,15 @@ test("Setup Doctor presents every check state and explicit Vault mutation warnin
   assert.match(source, /打开 Today/);
   assert.doesNotMatch(source, /invoke\("getModules", \{\}\)/);
 });
+
+test("plugin presentation time follows the Vault timezone without fixed locale assumptions", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const main = fs.readFileSync(path.resolve(__dirname, "../main.js"), "utf8");
+  const today = fs.readFileSync(path.resolve(__dirname, "../views/today.js"), "utf8");
+  const reviews = fs.readFileSync(path.resolve(__dirname, "../views/review-center.js"), "utf8");
+  assert.doesNotMatch(`${main}\n${today}\n${reviews}`, /timeZone: "Asia\/Shanghai"|new Intl\.DateTimeFormat\("zh-CN"|getTimezoneOffset\(\)/);
+  assert.match(main, /vault-config\.json/);
+  assert.match(today, /formatTodayHeading/);
+  assert.match(reviews, /zonedLocalToIso/);
+});

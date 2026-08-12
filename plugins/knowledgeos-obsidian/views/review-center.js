@@ -1,7 +1,7 @@
 const { LatestRequestGate } = require("../services/latest-request");
 
 function createReviewCenterViews(deps) {
-  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson } = deps;
+  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, localDateTimeAfterDays, zonedLocalToIso, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson } = deps;
 class ReviewActionModal extends Modal {
   constructor(app, plugin, review, decision, onComplete) {
     super(app);
@@ -32,14 +32,12 @@ class ReviewActionModal extends Modal {
     if (this.decision === "defer") {
       const dateLabel = root.createEl("label", { text: "提醒时间" });
       this.dateInput = dateLabel.createEl("input", { type: "datetime-local" });
-      const tomorrow = new Date(Date.now() + 86_400_000);
-      this.dateInput.value = new Date(tomorrow.getTime() - tomorrow.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+      this.dateInput.value = localDateTimeAfterDays(new Date(), 1);
       const presets = root.createDiv({ cls: "knowledgeos-review-presets" });
       for (const [label, days] of [["明天", 1], ["三天后", 3], ["一周后", 7]]) {
         const button = presets.createEl("button", { text: label });
         button.onclick = () => {
-          const date = new Date(Date.now() + days * 86_400_000);
-          this.dateInput.value = new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+          this.dateInput.value = localDateTimeAfterDays(new Date(), days);
         };
       }
     }
@@ -71,7 +69,8 @@ class ReviewActionModal extends Modal {
     }
     if (this.decision === "defer") {
       if (!this.dateInput.value) { this.statusEl.setText("请选择提醒时间。"); return; }
-      params.review_after = new Date(this.dateInput.value).toISOString();
+      params.review_after = zonedLocalToIso(this.dateInput.value);
+      if (!params.review_after) { this.statusEl.setText("该本地时间在 Vault 时区中不存在或无效，请重新选择。"); return; }
     }
     this.submitButton.disabled = true;
     this.statusEl.setText("审核决定已提交，将在列表中继续处理…");
