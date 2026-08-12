@@ -312,6 +312,10 @@ function runtimeView(runtimeData: JsonObject): JsonObject {
       counts[task.status] = Number(counts[task.status] ?? 0) + 1;
     }
   }
+  for (const status of [
+    "queued", "running", "waiting-for-network", "waiting-for-ai", "waiting-for-user",
+    "deferred", "completed", "failed", "cancelled", "interrupted",
+  ]) counts[status] = Number(counts[status] ?? 0);
   return {
     integrity: runtimeData.integrity ?? "unknown",
     schema_version: runtimeData.schema_version ?? null,

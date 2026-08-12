@@ -91,7 +91,7 @@ test("Obsidian UI delegates data access to the Core API", async () => {
   assert.match(plugin, /invoke\("processInboxBatch"/);
   assert.match(plugin, /class SystemCenterView/);
   assert.match(plugin, /invoke\("getSystemCenterSnapshot"/);
-  assert.match(plugin, /getSystemCenterSnapshot", \{ section \}/);
+  assert.match(plugin, /getSystemCenterSnapshot", \{\s+section,.*page_size/s);
   assert.match(plugin, /this\.sectionData = new Map\(\)/);
   assert.match(plugin, /async openSection\(section\)/);
   assert.doesNotMatch(plugin, /if \(startup\) return true/);
