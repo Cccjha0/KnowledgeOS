@@ -7,6 +7,14 @@ const MUTATING_METHODS = new Set([
   "saveModuleBuilderGapReport", "saveExtensionDesignDraft", "createModuleFromBlueprint", "runModuleReadinessAction",
 ]);
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 class CoreCommandClient {
   constructor(settings, options = {}) {
     this.settings = settings;
@@ -23,14 +31,29 @@ class CoreCommandClient {
     this.stderrBuffer = "";
     this.pending = new Map();
     this.operations = new Map();
+    this.inFlightReads = new Map();
   }
 
   invoke(method, params = {}, requestId = null, options = {}) {
     if (!this.settings.coreCliPath || !this.settings.vaultPath) {
       return Promise.resolve({ ok: false, state: "failed", error: { message: "尚未配置 Core CLI 或 Vault 路径。", impact: "Today 暂时无法刷新，已有 Markdown 数据不受影响。", recovery_actions: ["打开 KnowledgeOS 设置并填写路径"] } });
     }
-    const serverReady = this.ensureServer();
     const mutation = MUTATING_METHODS.has(method);
+    if (mutation) return this.invokeRequest(method, params, requestId, options, true);
+    const readKey = `${method}:${canonicalJson(params)}`;
+    const existingRead = this.inFlightReads.get(readKey);
+    if (existingRead) return existingRead;
+    const request = this.invokeRequest(method, params, requestId, options, false);
+    const tracked = Promise.resolve(request).then(
+      (response) => { if (this.inFlightReads.get(readKey) === tracked) this.inFlightReads.delete(readKey); return response; },
+      (error) => { if (this.inFlightReads.get(readKey) === tracked) this.inFlightReads.delete(readKey); throw error; },
+    );
+    this.inFlightReads.set(readKey, tracked);
+    return tracked;
+  }
+
+  invokeRequest(method, params, requestId, options, mutation) {
+    const serverReady = this.ensureServer();
     const operationKey = mutation ? JSON.stringify([method, params]) : null;
     const existing = operationKey ? this.operations.get(operationKey) : null;
     if (existing && existing.expiresAt > Date.now()) {
@@ -165,6 +188,7 @@ class CoreCommandClient {
     this.serverKey = null;
     this.resolveAllPending(this.failure("Core API server is restarting."));
     this.operations.clear();
+    this.inFlightReads.clear();
     if (server && !server.killed) server.stdin.end();
   }
 }

@@ -169,6 +169,33 @@ test("CoreCommandClient matches concurrent requests to their own responses", asy
   client.close();
 });
 
+test("CoreCommandClient deduplicates canonical concurrent reads and clears them after success or failure", async () => {
+  let requestCount = 0;
+  let fail = false;
+  const client = new CoreCommandClient(clientSettings, {
+    spawn: () => createMockBridge((bridge, request) => {
+      requestCount += 1;
+      setTimeout(() => bridge.stdout.write(`${JSON.stringify(fail
+        ? { request_id: request.request_id, ok: false, state: "failed", error: { message: "synthetic failure" } }
+        : { request_id: request.request_id, ok: true, data: request.params })}\n`), 10);
+    }),
+  });
+  const [first, second] = await Promise.all([
+    client.invoke("getInstances", { module_id: "reading-log", filters: { active: true, status: "open" } }),
+    client.invoke("getInstances", { filters: { status: "open", active: true }, module_id: "reading-log" }),
+  ]);
+  assert.deepEqual(first.data, second.data);
+  assert.equal(requestCount, 1);
+  assert.equal(client.inFlightReads.size, 0);
+  fail = true;
+  assert.equal((await client.invoke("getInstances", { module_id: "reading-log" })).ok, false);
+  assert.equal(client.inFlightReads.size, 0);
+  fail = false;
+  assert.equal((await client.invoke("getInstances", { module_id: "reading-log" })).ok, true);
+  assert.equal(requestCount, 3, "a completed or failed read must not become a persistent cache");
+  client.close();
+});
+
 test("CoreCommandClient fails malformed JSON safely and starts a fresh bridge", async () => {
   const broken = createMockBridge((bridge) => bridge.stdout.write("not-json\n"));
   const healthy = createMockBridge();
