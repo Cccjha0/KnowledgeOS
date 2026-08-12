@@ -1,0 +1,597 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "os": "win32 10.0.26200 x64",
+    "node": "v22.11.0",
+    "python": "Python 3.13.11",
+    "commit_sha": "5c1e29b9c70d583d460f8c2adc04a4532c7dc545",
+    "fixture_scale": "medium",
+    "generated_at": "2026-08-12T21:30:18.163Z"
+  },
+  "fixture_counts": {
+    "modules": 3,
+    "instances": 10,
+    "records": 1000,
+    "inbox": 200,
+    "reviews": 200,
+    "runs": 3000,
+    "tasks": 3000,
+    "quality": 1000
+  },
+  "methodology": {
+    "warmups": 1,
+    "iterations": 5,
+    "statistics": [
+      "median",
+      "p95",
+      "min",
+      "max"
+    ],
+    "content_logged": false
+  },
+  "results": {
+    "api-server-cold-start": {
+      "samples": 5,
+      "median_ms": 959.474,
+      "p95_ms": 969.695,
+      "min_ms": 950.164,
+      "max_ms": 969.695,
+      "response_bytes": {
+        "median": 3839,
+        "p95": 3839
+      }
+    },
+    "getModules": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 2213.128,
+        "p95_ms": 2247.149,
+        "min_ms": 2202.333,
+        "max_ms": 2247.149,
+        "response_bytes": {
+          "median": 5650,
+          "p95": 5650
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 3,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 18,
+          "schema_validations": 18,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 18,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 35.621,
+        "p95_ms": 37.559,
+        "min_ms": 35.396,
+        "max_ms": 37.559,
+        "response_bytes": {
+          "median": 5651,
+          "p95": 5651
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 0,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 18,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "getInstances": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 712.737,
+        "p95_ms": 728.723,
+        "min_ms": 705.176,
+        "max_ms": 728.723,
+        "response_bytes": {
+          "median": 3852,
+          "p95": 3852
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 10,
+          "schema_validations": 10,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 10,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 11.817,
+        "p95_ms": 12.417,
+        "min_ms": 11.49,
+        "max_ms": 12.417,
+        "response_bytes": {
+          "median": 3853,
+          "p95": 3853
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 0,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 10,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "getTodayItems": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 11743.613,
+        "p95_ms": 11813.751,
+        "min_ms": 11684.783,
+        "max_ms": 11813.751,
+        "response_bytes": {
+          "median": 1101369,
+          "p95": 1101369
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 23,
+          "files_discovered": 4600,
+          "markdown_parse_requests": 14,
+          "markdown_files_parsed": 4600,
+          "yaml_parse_requests": 21,
+          "schema_validations": 3229,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 7832,
+          "parse_cache_evictions": 3600
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 8299.926,
+        "p95_ms": 8305.627,
+        "min_ms": 8241.182,
+        "max_ms": 8305.627,
+        "response_bytes": {
+          "median": 1101370,
+          "p95": 1101370
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 16,
+          "files_discovered": 4600,
+          "markdown_parse_requests": 14,
+          "markdown_files_parsed": 4600,
+          "yaml_parse_requests": 3,
+          "schema_validations": 3211,
+          "parse_cache_hits": 2021,
+          "parse_cache_misses": 5811,
+          "parse_cache_evictions": 4600
+        }
+      }
+    },
+    "getInboxCenterSnapshot": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 2488.504,
+        "p95_ms": 2792.5,
+        "min_ms": 2477.044,
+        "max_ms": 2792.5,
+        "response_bytes": {
+          "median": 97334,
+          "p95": 97334
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 5.2,
+          "files_discovered": 240,
+          "markdown_parse_requests": 1.2,
+          "markdown_files_parsed": 80,
+          "yaml_parse_requests": 18,
+          "schema_validations": 18,
+          "parse_cache_hits": 10,
+          "parse_cache_misses": 98,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 170.039,
+        "p95_ms": 170.794,
+        "min_ms": 169.045,
+        "max_ms": 170.794,
+        "response_bytes": {
+          "median": 97335,
+          "p95": 97335
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 200,
+          "markdown_parse_requests": 1,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 68,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "listReviewItems": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 5529.18,
+        "p95_ms": 6040.868,
+        "min_ms": 5506.021,
+        "max_ms": 6040.868,
+        "response_bytes": {
+          "median": 49928,
+          "p95": 49928
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 53.2,
+          "files_discovered": 200,
+          "markdown_parse_requests": 51.2,
+          "markdown_files_parsed": 130,
+          "yaml_parse_requests": 0,
+          "schema_validations": 90,
+          "parse_cache_hits": 20,
+          "parse_cache_misses": 210,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 133.372,
+        "p95_ms": 140.437,
+        "min_ms": 132.602,
+        "max_ms": 140.437,
+        "response_bytes": {
+          "median": 49929,
+          "p95": 49929
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 200,
+          "markdown_parse_requests": 51,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 50,
+          "parse_cache_hits": 150,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "system-overview": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 21584.178,
+        "p95_ms": 25108.563,
+        "min_ms": 21305.672,
+        "max_ms": 25108.563,
+        "response_bytes": {
+          "median": 780380,
+          "p95": 780380
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 208.4,
+          "files_discovered": 1000,
+          "markdown_parse_requests": 202.2,
+          "markdown_files_parsed": 1200,
+          "yaml_parse_requests": 18,
+          "schema_validations": 18,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 1218,
+          "parse_cache_evictions": 520
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 484.393,
+        "p95_ms": 490.28,
+        "min_ms": 477.813,
+        "max_ms": 490.28,
+        "response_bytes": {
+          "median": 780381,
+          "p95": 780381
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 2,
+          "files_discovered": 400,
+          "markdown_parse_requests": 202,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 618,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "system-tasks": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 263.19,
+        "p95_ms": 270.127,
+        "min_ms": 262.144,
+        "max_ms": 270.127,
+        "response_bytes": {
+          "median": 50159,
+          "p95": 50159
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 2,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 155.385,
+        "p95_ms": 160.474,
+        "min_ms": 154.318,
+        "max_ms": 160.474,
+        "response_bytes": {
+          "median": 50160,
+          "p95": 50160
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "system-quality": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 18653.331,
+        "p95_ms": 127054.092,
+        "min_ms": 18592.42,
+        "max_ms": 127054.092,
+        "response_bytes": {
+          "median": 281888,
+          "p95": 281888
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 442.2,
+          "files_discovered": 1091.4,
+          "markdown_parse_requests": 440.2,
+          "markdown_files_parsed": 440.2,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 440.2,
+          "parse_cache_evictions": 80.2
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 286.327,
+        "p95_ms": 288.996,
+        "min_ms": 283.555,
+        "max_ms": 288.996,
+        "response_bytes": {
+          "median": 281889,
+          "p95": 281889
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 200,
+          "markdown_parse_requests": 200,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 200,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "system-modules": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 21186.98,
+        "p95_ms": 21216.221,
+        "min_ms": 21159.872,
+        "max_ms": 21216.221,
+        "response_bytes": {
+          "median": 595853,
+          "p95": 595853
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 206,
+          "files_discovered": 400,
+          "markdown_parse_requests": 202,
+          "markdown_files_parsed": 600,
+          "yaml_parse_requests": 18,
+          "schema_validations": 18,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 618,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 220.74,
+        "p95_ms": 222.707,
+        "min_ms": 213.677,
+        "max_ms": 222.707,
+        "response_bytes": {
+          "median": 595854,
+          "p95": 595854
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 400,
+          "markdown_parse_requests": 202,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 618,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "system-history": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 98.095,
+        "p95_ms": 98.731,
+        "min_ms": 95.72,
+        "max_ms": 98.731,
+        "response_bytes": {
+          "median": 17424,
+          "p95": 17424
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 86.94,
+        "p95_ms": 87.737,
+        "min_ms": 86.228,
+        "max_ms": 87.737,
+        "response_bytes": {
+          "median": 17425,
+          "p95": 17425
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "getRecentRuns": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 96.998,
+        "p95_ms": 97.941,
+        "min_ms": 95.974,
+        "max_ms": 97.941,
+        "response_bytes": {
+          "median": 8809,
+          "p95": 8809
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 87.047,
+        "p95_ms": 87.298,
+        "min_ms": 85.679,
+        "max_ms": 87.298,
+        "response_bytes": {
+          "median": 8810,
+          "p95": 8810
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "taskCycle-resource-wait": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 8044.523,
+        "p95_ms": 8087.767,
+        "min_ms": 8007.846,
+        "max_ms": 8087.767,
+        "response_bytes": {
+          "median": 1172,
+          "p95": 1172
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 56.2,
+          "files_discovered": 200,
+          "markdown_parse_requests": 1,
+          "markdown_files_parsed": 200,
+          "yaml_parse_requests": 36,
+          "schema_validations": 18,
+          "parse_cache_hits": 26,
+          "parse_cache_misses": 228,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 4526.004,
+        "p95_ms": 4545.755,
+        "min_ms": 4510.978,
+        "max_ms": 4545.755,
+        "response_bytes": {
+          "median": 1173,
+          "p95": 1173
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 41,
+          "files_discovered": 200,
+          "markdown_parse_requests": 1,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 18,
+          "schema_validations": 0,
+          "parse_cache_hits": 254,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    }
+  }
+}

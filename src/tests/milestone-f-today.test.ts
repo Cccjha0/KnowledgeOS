@@ -59,6 +59,17 @@ test("Today uses one ranked, deduplicated snapshot and preserves the user area",
   }
 });
 
+test("Today bounds rendered sections while preserving global counts", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-today-bounded-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const inputs = Array.from({ length: 75 }, (_, index) => item(index + 1, { target: null, category: "deadline", due_at: "2026-08-14T00:00:00Z" }));
+    const snapshot = await buildTodaySnapshot(vault, inputs);
+    assert.equal(snapshot.due.length, 50);
+    assert.equal(snapshot.counts.due, 75);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("missing Inbox items fail through the stable user-facing envelope", async () => {
   const response = await invokeCommandApi({
     vaultRoot: "unused",

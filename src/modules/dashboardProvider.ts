@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMarkdownBatch, parseYaml } from "../core/bridge.js";
@@ -8,6 +10,9 @@ import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } f
 type ProviderKind = "entity" | "due" | "recent" | "review-summary";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DASHBOARD_SNAPSHOT_VAULT_LIMIT = 4;
+const DASHBOARD_SNAPSHOT_ITEM_LIMIT = 20_000;
+const dashboardSnapshots = new Map<string, { revision: string; expiresAt: number; items: DashboardItem[] }>();
 
 interface ProviderItem {
   id: string;
@@ -101,11 +106,11 @@ function isEntityDocument(data: JsonObject, moduleId: string, entity: string): b
   return data.schema_id === entity || data.type === `${moduleId}-${entity}` || data.type === entity;
 }
 
-async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocument): Promise<LocatedDocument[]> {
+async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocument, selectedFiles?: string[]): Promise<LocatedDocument[]> {
   const root = typeof instance.data.content_root === "string" ? path.join(vaultRoot, ...instance.data.content_root.split("/")) : null;
   if (!root) return [];
   const documents: LocatedDocument[] = [];
-  const files = (await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file)));
+  const files = (selectedFiles ?? await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file)));
   const parsed = parseMarkdownBatch(vaultRoot, files);
   for (const file of files) {
     try {
@@ -118,6 +123,22 @@ async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocum
     }
   }
   return documents.filter((document) => typeof document.data.type === "string" || typeof document.data.schema_id === "string");
+}
+
+async function snapshotInputs(vaultRoot: string, modules: DiscoveredDocument[], instances: DiscoveredDocument[]): Promise<{ revision: string; filesByInstance: Map<string, string[]>; pendingReviewFiles: string[] }> {
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify(modules.map((module) => module.data)));
+  hash.update(JSON.stringify(instances.map((instance) => instance.data)));
+  const filesByInstance = new Map<string, string[]>();
+  for (const instance of instances) {
+    const root = typeof instance.data.content_root === "string" ? path.join(vaultRoot, ...instance.data.content_root.split("/")) : null;
+    const files = root ? (await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file))) : [];
+    filesByInstance.set(String(instance.data.instance_id), files);
+    for (const file of files) { const stat = await fs.stat(file); hash.update(`${toVaultPath(vaultRoot, file)}\0${stat.size}\0${stat.mtimeMs}\n`); }
+  }
+  const pendingReviewFiles = await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md");
+  for (const file of pendingReviewFiles) { const stat = await fs.stat(file); hash.update(`${toVaultPath(vaultRoot, file)}\0${stat.size}\0${stat.mtimeMs}\n`); }
+  return { revision: hash.digest("hex"), filesByInstance, pendingReviewFiles };
 }
 
 function providerItems(provider: JsonObject): ProviderItem[] {
@@ -254,8 +275,14 @@ export async function collectModuleDashboardItems(
     .filter((module) => module.data.status === "enabled");
   const instances = (discovery?.instances ?? await discoverInstances(vaultRoot))
     .filter((instance) => instance.data.status === "active");
+  const inputs = await snapshotInputs(vaultRoot, modules, instances);
+  const cached = dashboardSnapshots.get(vaultRoot);
+  if (cached?.revision === inputs.revision && cached.expiresAt > Date.now()) {
+    dashboardSnapshots.delete(vaultRoot); dashboardSnapshots.set(vaultRoot, cached);
+    return structuredClone(cached.items);
+  }
   const result: DashboardItem[] = [];
-  const pendingReviewFiles = await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md");
+  const pendingReviewFiles = inputs.pendingReviewFiles;
   const pendingReviews = parseMarkdownBatch(vaultRoot, pendingReviewFiles);
   const reviewCounts = new Map<string, number>();
   for (const file of pendingReviewFiles) {
@@ -284,7 +311,7 @@ export async function collectModuleDashboardItems(
       continue;
     }
     for (const instance of instances.filter((candidate) => candidate.data.module_id === moduleId)) {
-      const documents = await documentsForInstance(vaultRoot, instance);
+      const documents = await documentsForInstance(vaultRoot, instance, inputs.filesByInstance.get(String(instance.data.instance_id)));
       for (const definition of definitions) {
         if (definition.kind === "review-summary") {
           const summary = await reviewSummary(moduleId, String(instance.data.instance_id), definition, reviewCounts);
@@ -303,6 +330,10 @@ export async function collectModuleDashboardItems(
         }
       }
     }
+  }
+  if (result.length <= DASHBOARD_SNAPSHOT_ITEM_LIMIT) {
+    dashboardSnapshots.set(vaultRoot, { revision: inputs.revision, expiresAt: Date.now() + 10_000, items: structuredClone(result) });
+    while (dashboardSnapshots.size > DASHBOARD_SNAPSHOT_VAULT_LIMIT) dashboardSnapshots.delete(dashboardSnapshots.keys().next().value!);
   }
   return result;
 }

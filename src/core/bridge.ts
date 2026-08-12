@@ -8,7 +8,7 @@ import { incrementPerformanceDiagnostic } from "./performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCUMENT_CACHE_LIMIT = 1_000;
-const SCHEMA_RESULT_CACHE_LIMIT = 2_000;
+const SCHEMA_RESULT_CACHE_LIMIT = 20_000;
 const documentCache = new Map<string, { mtimeMs: number; size: number; value: MarkdownDocument }>();
 const yamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
 const validatedYamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
@@ -56,6 +56,7 @@ function remember<T>(cache: Map<string, { mtimeMs: number; size: number; value: 
 function invalidate(filePath: string): void { documentCache.delete(filePath); yamlCache.delete(filePath); }
 
 function canonicalJson(value: unknown): string {
+  if (value === undefined) return "undefined";
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (value && typeof value === "object") {
     const object = value as Record<string, unknown>;
