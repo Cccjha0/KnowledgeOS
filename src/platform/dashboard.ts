@@ -35,7 +35,7 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
   const inboxItemIds = new Set(discoveredInbox.map((item) => item.item_id));
   const items = discoveredInbox
     .filter((item) => !["ignored", "unmanaged", "processed", "deferred"].includes(item.state)).map(inboxDashboardItem);
-  items.push(...await collectModuleDashboardItems(vaultRoot));
+  items.push(...await collectModuleDashboardItems(vaultRoot, Date.now(), context));
   const runtime = await RuntimeRepository.open(vaultRoot);
   try {
     const now = Date.now();

@@ -1,14 +1,13 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
+import { parseMarkdown, parseYaml } from "../core/bridge.js";
 import { listFilesRecursive, toVaultPath } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue, Priority } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 
-const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
-
 type ProviderKind = "entity" | "due" | "recent" | "review-summary";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface ProviderItem {
   id: string;
@@ -34,6 +33,11 @@ interface ProviderItem {
 interface LocatedDocument {
   path: string;
   data: JsonObject;
+}
+
+export interface DashboardDiscoveryContext {
+  modules: DiscoveredDocument[];
+  instances: DiscoveredDocument[];
 }
 
 function object(value: unknown): JsonObject | null {
@@ -117,6 +121,38 @@ async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocum
 
 function providerItems(provider: JsonObject): ProviderItem[] {
   return (Array.isArray(provider.items) ? provider.items : []).map((entry) => entry as unknown as ProviderItem);
+}
+
+/**
+ * Dashboard providers are fully schema-validated when a module is installed or
+ * tested. Today is a hot path, so it deliberately uses this small structural
+ * gate instead of spawning the Python JSON-Schema bridge once per provider.
+ *
+ * Keep this gate fail-closed: an old or malformed provider becomes a visible
+ * configuration warning rather than silently contributing incorrect items.
+ */
+function runtimeProviderContractError(provider: JsonObject): string | null {
+  if (typeof provider.provider_id !== "string" || !provider.provider_id.trim()) return "Provider requires a non-empty provider_id.";
+  if (typeof provider.version !== "string" && typeof provider.version !== "number") return "Provider requires a version.";
+  if (!Array.isArray(provider.items) || !provider.items.length) return "Provider declares no Dashboard items.";
+  for (const [index, value] of provider.items.entries()) {
+    const item = object(value);
+    if (!item) return `Provider item ${index + 1} must be an object.`;
+    if (typeof item.id !== "string" || !item.id.trim()) return `Provider item ${index + 1} requires a non-empty id.`;
+    if (item.kind !== "entity" && item.kind !== "due" && item.kind !== "recent" && item.kind !== "review-summary") {
+      return `Provider item ${index + 1} declares an unsupported kind.`;
+    }
+    if (item.kind !== "review-summary" && (typeof item.entity !== "string" || !item.entity.trim())) {
+      return `Provider item ${index + 1} requires an entity.`;
+    }
+    if (item.kind === "due" && (typeof item.due_field !== "string" || !item.due_field.trim())) {
+      return `Provider item ${index + 1} requires a due_field.`;
+    }
+    if (item.kind === "recent" && (typeof item.date_field !== "string" || !item.date_field.trim())) {
+      return `Provider item ${index + 1} requires a date_field.`;
+    }
+  }
+  return null;
 }
 
 function providerDiagnostic(moduleId: string, providerPath: string, reason: string): DashboardItem {
@@ -209,9 +245,18 @@ async function reviewSummary(
  * Providers are intentionally deterministic: they query only their active
  * instance content roots and normalize each result into a DashboardItem.
  */
-export async function collectModuleDashboardItems(vaultRoot: string, now = Date.now()): Promise<DashboardItem[]> {
-  const modules = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).filter((module) => module.data.status === "enabled");
-  const instances = (await discoverInstances(vaultRoot)).filter((instance) => instance.data.status === "active");
+export async function collectModuleDashboardItems(
+  vaultRoot: string,
+  now = Date.now(),
+  discovery?: DashboardDiscoveryContext,
+): Promise<DashboardItem[]> {
+  // Today already discovers these documents for Inbox routing. Reuse that
+  // trusted snapshot when supplied so a single view refresh does not repeat
+  // expensive module/instance schema discovery.
+  const modules = (discovery?.modules ?? await discoverModulesForVault(ENGINE_ROOT, vaultRoot))
+    .filter((module) => module.data.status === "enabled");
+  const instances = (discovery?.instances ?? await discoverInstances(vaultRoot))
+    .filter((instance) => instance.data.status === "active");
   const result: DashboardItem[] = [];
   for (const module of modules) {
     const moduleId = String(module.data.id);
@@ -221,7 +266,8 @@ export async function collectModuleDashboardItems(vaultRoot: string, now = Date.
     let provider: JsonObject;
     try {
       provider = parseYaml(vaultRoot, providerFile);
-      validateSchema(ENGINE_ROOT, DASHBOARD_PROVIDER_SCHEMA, provider);
+      const contractError = runtimeProviderContractError(provider);
+      if (contractError) throw new Error(contractError);
     } catch (error) {
       result.push(providerDiagnostic(moduleId, toVaultPath(vaultRoot, providerFile), `Provider could not be loaded safely: ${error instanceof Error ? error.message : String(error)}`));
       continue;
