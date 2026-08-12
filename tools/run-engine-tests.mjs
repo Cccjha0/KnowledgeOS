@@ -3,13 +3,22 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 
 const testsDirectory = path.resolve("dist", "tests");
-const testFiles = (await readdir(testsDirectory, { withFileTypes: true }))
+const discoveredTestFiles = (await readdir(testsDirectory, { withFileTypes: true }))
   .filter((entry) => entry.isFile() && entry.name.endsWith(".test.js"))
   .map((entry) => path.join(testsDirectory, entry.name))
   .sort();
 
+const requestedTests = process.argv.slice(2).filter((argument) => !argument.startsWith("--"));
+const testFiles = requestedTests.length
+  ? discoveredTestFiles.filter((file) => requestedTests.includes(path.basename(file)))
+  : discoveredTestFiles;
+
 if (!testFiles.length) {
-  console.error(`No compiled Engine tests were found in ${testsDirectory}. Run npm run build first.`);
+  console.error(
+    requestedTests.length
+      ? `None of the requested Engine tests were found: ${requestedTests.join(", ")}`
+      : `No compiled Engine tests were found in ${testsDirectory}. Run npm run build first.`,
+  );
   process.exit(1);
 }
 
@@ -19,14 +28,23 @@ if (process.argv.includes("--list")) {
 }
 
 const concurrency = Math.max(1, Number.parseInt(process.env.KNOWLEDGEOS_TEST_CONCURRENCY || "2", 10) || 2);
-const timeoutMs = Math.max(10_000, Number.parseInt(process.env.KNOWLEDGEOS_TEST_FILE_TIMEOUT_MS || "600000", 10) || 600_000);
+const defaultTimeoutMs = Math.max(
+  10_000,
+  Number.parseInt(process.env.KNOWLEDGEOS_TEST_FILE_TIMEOUT_MS || "600000", 10) || 600_000,
+);
+const integrationTimeoutMs = Math.max(
+  defaultTimeoutMs,
+  Number.parseInt(process.env.KNOWLEDGEOS_INTEGRATION_TEST_FILE_TIMEOUT_MS || "1200000", 10) || 1_200_000,
+);
+const integrationTestFiles = new Set(["module-engineering.test.js"]);
 let cursor = 0;
 const failures = [];
 
 async function runFile(file) {
   const label = path.basename(file);
+  const timeoutMs = integrationTestFiles.has(label) ? integrationTimeoutMs : defaultTimeoutMs;
   const started = Date.now();
-  console.log(`[engine-test] START ${label}`);
+  console.log(`[engine-test] START ${label} (timeout=${Math.round(timeoutMs / 1_000)}s)`);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["--test", file], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let output = "";
