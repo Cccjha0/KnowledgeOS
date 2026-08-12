@@ -250,7 +250,7 @@ function createViewDependencies() {
     ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon,
     VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE,
     settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS,
-    markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure,
+    markLiveRegion, taskCycleChanged, missingBuiltCliFailure,
     labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime,
     friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError,
   };

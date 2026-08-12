@@ -18,7 +18,7 @@
     "test": "npm run check:boundaries && npm run build && npm run test:engine",
     "test:engine": "node tools/run-engine-tests.mjs",
     "test:codex-isolation": "node --test dist/tests/codex-context.integration.test.js",
-    "test:plugin-smoke": "node plugins/knowledgeos-obsidian/tests/core-command-client.smoke.test.cjs",
+    "test:plugin-smoke": "npm run build:plugin && node --test plugins/knowledgeos-obsidian/tests/*.smoke.test.cjs",
     "chain": "node dist/cli.js application process-report 20-Workspace/Applications/australia-masters-2027/Inbox/2026-07-27-Monash-C6007-Update.md --vault ../knowledgeos-vault"
   },
   "engines": {
