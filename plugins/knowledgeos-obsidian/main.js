@@ -4,6 +4,7 @@ const { registerKnowledgeViews } = require("./views/register");
 const settingsDefaults = require("./settings/defaults");
 const { ModuleUiMetadataStore } = require("./services/module-ui-metadata");
 const { CoreCommandClient: SharedCoreCommandClient } = require("./services/core-command-client");
+const { affectedKnowledgeViews } = require("./services/view-refresh-policy");
 const { createPresentationFormatters } = require("./formatters/presentation");
 const { createReviewCenterViews } = require("./views/review-center");
 const { createInboxCenterViews } = require("./views/inbox-center");
@@ -44,12 +45,6 @@ function taskCycleChanged(data) {
   const created = [data?.startup_task?.created, data?.field_due?.created, data?.inbox?.created, data?.startup?.scheduler?.created];
   return created.some((items) => Array.isArray(items) && items.length > 0)
     || Array.isArray(data?.dispatch?.tasks) && data.dispatch.tasks.length > 0;
-}
-
-function shouldAutoRefreshPath(filePath) {
-  const normalized = String(filePath || "").replaceAll("\\", "/");
-  if (!normalized || normalized === "Today.md" || normalized.startsWith(".obsidian/")) return false;
-  return !["90-System/Logs/", "90-System/Cache/", "90-System/Backups/"].some((prefix) => normalized.startsWith(prefix));
 }
 
 function missingBuiltCliFailure(message, cliPath) {
@@ -580,12 +575,18 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.addSettingTab(new this.viewConstructors.KnowledgeOSSettingTab(this.app, this));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       if (!this.settings.autoRefresh) return;
-      if (!shouldAutoRefreshPath(file.path)) return;
+      const affectedViews = affectedKnowledgeViews(file.path);
+      if (!affectedViews.length) return;
+      this.pendingRefreshViews ??= new Set();
+      for (const view of affectedViews) this.pendingRefreshViews.add(view);
       clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
-        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
-        for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
-        for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
+        const views = new Set(this.pendingRefreshViews);
+        this.pendingRefreshViews.clear();
+        if (views.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
+        if (views.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) leaf.view.loadReviews();
+        if (views.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
+        if (views.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
       }, 1500);
     }));
     this.app.workspace.onLayoutReady(async () => {
