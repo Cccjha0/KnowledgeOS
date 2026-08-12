@@ -522,6 +522,54 @@ def dispatch(command, connection, payload):
         retries = connection.execute("SELECT COALESCE(SUM(CASE WHEN attempt_count>1 THEN attempt_count-1 ELSE 0 END),0) FROM tasks").fetchone()[0]
         return {"counts": counts, "queue_length": counts.get("queued", 0), "recent_24h_runs": recent,
                 "oldest_waiting": dict(oldest) if oldest else None, "retry_count": retries, "metrics": metrics}
+    if command == "next-wake":
+        now = payload.get("now") or now_iso()
+        dependency_ready = """
+          json_array_length(t.dependency_task_ids_json) = 0
+          OR (t.dependency_policy = 'all-success' AND NOT EXISTS (
+            SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+            LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+            WHERE dependency.task_id IS NULL OR dependency.status <> 'completed'
+          ))
+          OR (t.dependency_policy = 'all-finished' AND NOT EXISTS (
+            SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+            LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+            WHERE dependency.task_id IS NULL OR dependency.status NOT IN ('completed','failed','cancelled')
+          ))
+          OR (t.dependency_policy = 'any-success'
+            AND NOT EXISTS (
+              SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+              LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+              WHERE dependency.task_id IS NULL
+            )
+            AND EXISTS (
+              SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+              JOIN tasks dependency ON dependency.task_id = wanted.value
+              WHERE dependency.status = 'completed'
+            ))
+        """
+        task_row = connection.execute(f"""
+          SELECT MIN(CASE
+            WHEN next_retry_at IS NOT NULL AND next_retry_at > available_after THEN next_retry_at
+            ELSE available_after END) AS wake_at
+          FROM tasks t
+          WHERE status = 'queued' AND ({dependency_ready})
+        """).fetchone()
+        deferred_row = connection.execute(
+            "SELECT MIN(defer_until) AS wake_at FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL"
+        ).fetchone()
+        checkpoint_row = connection.execute(
+            "SELECT MIN(next_evaluation_at) AS wake_at FROM scheduler_checkpoints WHERE next_evaluation_at IS NOT NULL"
+        ).fetchone()
+        candidates = [row["wake_at"] for row in (task_row, deferred_row, checkpoint_row) if row and row["wake_at"]]
+        next_wake_at = min(candidates) if candidates else None
+        waiting_resources = connection.execute("""SELECT COUNT(*) FROM tasks
+          WHERE status IN ('waiting-for-network','waiting-for-ai')""").fetchone()[0]
+        return {
+            "has_work": bool(next_wake_at and next_wake_at <= now),
+            "next_wake_at": next_wake_at,
+            "waiting_for_resources": int(waiting_resources),
+        }
     if command == "system-center-data":
         return {
             "tasks": dispatch("list-tasks", connection, {"statuses": []}),
@@ -804,6 +852,15 @@ def dispatch(command, connection, payload):
         due = [row["task_id"] for row in connection.execute("SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"],))]
         connection.execute("UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"], payload["now"]))
         connection.commit(); return {"interrupted": interrupted, "deferred_requeued": due}
+    if command == "wake-due-tasks":
+        now = payload.get("now") or now_iso()
+        due = [row["task_id"] for row in connection.execute(
+            "SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (now,)
+        )]
+        connection.execute("""UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL
+          WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?""", (now, now))
+        connection.commit()
+        return {"requeued": due}
     if command == "cleanup-history":
         days = max(30, int(payload.get("retain_days", 90)))
         cursor = connection.execute("""DELETE FROM task_runs WHERE status IN ('completed','cancelled')

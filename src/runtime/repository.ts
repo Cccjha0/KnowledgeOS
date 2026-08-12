@@ -74,6 +74,7 @@ export class RuntimeRepository {
   integrityCheck(): string { return this.call<string>("integrity-check"); }
   schemaVersion(): number { return this.call<number>("schema-version"); }
   runtimeStats(): JsonObject { return this.call<JsonObject>("runtime-stats"); }
+  nextWake(now = new Date().toISOString()): JsonObject { return this.call<JsonObject>("next-wake", { now }); }
   systemCenterData(since: string): JsonObject { return this.call<JsonObject>("system-center-data", { since }); }
   todayData(): JsonObject { return this.call<JsonObject>("today-data"); }
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
@@ -132,6 +133,7 @@ export class RuntimeRepository {
   setCheckpoint(checkpoint: SchedulerCheckpoint): void { this.call("set-checkpoint", checkpoint); }
   getCheckpoints(): SchedulerCheckpoint[] { return this.call("get-checkpoints"); }
   reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
+  wakeDueTasks(now = new Date().toISOString()): JsonObject { return this.call<JsonObject>("wake-due-tasks", { now }); }
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
   refreshWaitingTask(taskId: string, resources: RuntimeTask["resources"], payload: JsonObject): RuntimeTask {
     return this.call("refresh-waiting-task", { task_id: taskId, resources, payload });

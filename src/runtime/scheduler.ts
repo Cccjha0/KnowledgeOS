@@ -54,6 +54,29 @@ function windowsFor(job: JobDefinition, from: Date, to: Date): Array<{ at: Date;
   return output;
 }
 
+function nextEvaluationAt(job: JobDefinition, now: Date): string {
+  if (String(job.trigger.type) === "cron") {
+    return new Date(Math.floor(now.getTime() / 60_000) * 60_000 + 60_000).toISOString();
+  }
+  const timezone = String(job.trigger.timezone ?? "UTC");
+  const current = localParts(now, timezone);
+  const at = String(job.trigger.at ?? "00:00").split(":").map(Number);
+  const horizonDays = String(job.trigger.type) === "monthly" ? 32 : String(job.trigger.type) === "weekly" ? 8 : 2;
+  for (let offset = 0; offset <= horizonDays; offset += 1) {
+    const calendar = new Date(Date.UTC(Number(current.year), Number(current.month) - 1, Number(current.day) + offset));
+    const desired = Date.UTC(calendar.getUTCFullYear(), calendar.getUTCMonth(), calendar.getUTCDate(), at[0], at[1]);
+    let candidate = desired;
+    for (let iteration = 0; iteration < 3; iteration += 1) {
+      const parts = localParts(new Date(candidate), timezone);
+      const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+      candidate += desired - represented;
+    }
+    const date = new Date(candidate);
+    if (date > now && matches(job, date).matches) return date.toISOString();
+  }
+  return new Date(now.getTime() + 5 * 60_000).toISOString();
+}
+
 export async function evaluateScheduler(vaultRoot: string, now = new Date()): Promise<{ created: string[]; deduplicated: number; skipped: number }> {
   const repository = await RuntimeRepository.open(vaultRoot);
   const output = { created: [] as string[], deduplicated: 0, skipped: 0 };
@@ -82,7 +105,11 @@ export async function evaluateScheduler(vaultRoot: string, now = new Date()): Pr
         if (result.deduplicated) output.deduplicated += 1; else output.created.push(result.task.task_id);
       }
       output.skipped += Math.max(0, windowsFor(job, from, now).length - groups.length);
-      repository.setCheckpoint({ job_id: job.job_id, last_evaluated_at: now.toISOString(), last_created_window: due.at(-1)?.window ?? checkpoint?.last_created_window ?? null, next_evaluation_at: null });
+      repository.setCheckpoint({
+        job_id: job.job_id, last_evaluated_at: now.toISOString(),
+        last_created_window: due.at(-1)?.window ?? checkpoint?.last_created_window ?? null,
+        next_evaluation_at: nextEvaluationAt(job, now),
+      });
     }
     return output;
   } finally { repository.close(); }

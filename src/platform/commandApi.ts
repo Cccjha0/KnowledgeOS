@@ -598,8 +598,20 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const startupTask = params.startup === true ? await materializeStartupJobs(vaultRoot) : null;
     const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
+    const dueRepository = await RuntimeRepository.open(vaultRoot);
+    let deferred_due: JsonObject;
+    try { deferred_due = dueRepository.wakeDueTasks(); }
+    finally { dueRepository.close(); }
     const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2 });
-    return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, resumed_after_file_close, dispatch } as unknown as JsonValue;
+    const wakeRepository = await RuntimeRepository.open(vaultRoot);
+    let wake: JsonObject;
+    try { wake = wakeRepository.nextWake(); }
+    finally { wakeRepository.close(); }
+    return {
+      jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup,
+      resumed_after_file_close, deferred_due, dispatch,
+      has_work: wake.has_work, next_wake_at: wake.next_wake_at, waiting_for_resources: wake.waiting_for_resources,
+    } as unknown as JsonValue;
   }
   if (method === "listCodexModels") {
     const models = await listCodexModels(typeof params.codex_executable === "string" ? params.codex_executable : undefined);

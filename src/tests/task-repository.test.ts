@@ -47,6 +47,36 @@ test("runtime repository persists Tasks and deduplicates one business window", a
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("runtime wake hints include runnable, retry, and deferred work without polling blocked dependencies", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-wake-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    const now = new Date("2026-08-13T00:00:00.000Z");
+    const future = new Date(now.getTime() + 90_000).toISOString();
+    const base = {
+      job_id: "core.wake", module: "core", task_type: "core-operation" as const, workflow: "core:test",
+      resources: localResources, trigger: { type: "manual" }, catch_up_policy: "none" as const,
+    };
+    const dependency = repository.createTask({ ...base, idempotency_key: "wake:dependency", available_after: future }).task;
+    repository.createTask({
+      ...base, idempotency_key: "wake:blocked", available_after: now.toISOString(),
+      dependency_task_ids: [dependency.task_id], dependency_policy: "all-success",
+    });
+    assert.deepEqual(repository.nextWake(now.toISOString()), {
+      has_work: false, next_wake_at: future, waiting_for_resources: 0,
+    });
+
+    const deferred = repository.createTask({ ...base, idempotency_key: "wake:deferred" }).task;
+    repository.transitionTask(deferred.task_id, "deferred", { deferUntil: future });
+    assert.equal(repository.nextWake(now.toISOString()).next_wake_at, future);
+    const woken = repository.wakeDueTasks(new Date(now.getTime() + 91_000).toISOString());
+    assert.deepEqual(woken.requeued, [deferred.task_id]);
+    assert.equal(repository.getTask(deferred.task_id)?.status, "queued");
+    assert.equal(repository.nextWake(new Date(now.getTime() + 91_000).toISOString()).has_work, true);
+    repository.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Today runtime projection excludes terminal history and unrelated queued work", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-today-projection-"));
   try {

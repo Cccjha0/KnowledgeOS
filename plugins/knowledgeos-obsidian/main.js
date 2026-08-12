@@ -48,6 +48,16 @@ function taskCycleChanged(data) {
     || Array.isArray(data?.dispatch?.tasks) && data.dispatch.tasks.length > 0;
 }
 
+const TASK_WAKE_MIN_MS = 1_000;
+const TASK_WAKE_MAX_MS = 5 * 60_000;
+
+function taskWakeDelay(data, now = Date.now()) {
+  if (data?.has_work === true) return TASK_WAKE_MIN_MS;
+  const next = typeof data?.next_wake_at === "string" ? Date.parse(data.next_wake_at) : Number.NaN;
+  if (!Number.isFinite(next)) return TASK_WAKE_MAX_MS;
+  return Math.min(TASK_WAKE_MAX_MS, Math.max(TASK_WAKE_MIN_MS, next - now));
+}
+
 function missingBuiltCliFailure(message, cliPath) {
   const detail = String(message || "");
   const configuredPath = String(cliPath || "").replaceAll("\\", "/");
@@ -577,6 +587,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     }));
     this.addSettingTab(new this.viewConstructors.KnowledgeOSSettingTab(this.app, this));
     this.registerEvent(this.app.vault.on("modify", (file) => {
+      this.wakeTaskCycle();
       if (!this.settings.autoRefresh) return;
       const affectedViews = affectedKnowledgeViews(file.path);
       if (!affectedViews.length) return;
@@ -592,12 +603,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
         if (views.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
       }, 1500);
     }));
+    this.registerEvent(this.app.vault.on("create", () => this.wakeTaskCycle()));
+    this.registerEvent(this.app.vault.on("delete", () => this.wakeTaskCycle()));
+    this.registerEvent(this.app.vault.on("rename", () => this.wakeTaskCycle()));
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.openTodayOnStartup) await this.activateToday();
       void this.refreshModuleUiMetadata();
       void this.runTaskCycle(true);
     });
-    this.registerInterval(setInterval(() => this.runTaskCycle(false), 60_000));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.wakeTaskCycle()));
   }
 
   async saveSettings() {
@@ -608,7 +622,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.taskClient.settings = this.settings;
   }
 
-  onunload() { clearTimeout(this.refreshTimer); this.client?.close(); this.taskClient?.close(); }
+  onunload() { clearTimeout(this.refreshTimer); clearTimeout(this.taskWakeTimer); this.client?.close(); this.taskClient?.close(); }
 
   async refreshModuleUiMetadata() {
     if (this.moduleUiMetadataPromise) return this.moduleUiMetadataPromise;
@@ -635,22 +649,45 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       .filter((filePath) => typeof filePath === "string" && filePath.endsWith(".md")))].sort();
   }
 
+  scheduleTaskCycle(data = null, delayOverride = null) {
+    clearTimeout(this.taskWakeTimer);
+    const delay = delayOverride ?? taskWakeDelay(data);
+    this.taskWakeTimer = setTimeout(() => {
+      this.taskWakeTimer = null;
+      void this.runTaskCycle(false);
+    }, delay);
+  }
+
+  wakeTaskCycle() {
+    if (this.taskCycleRunning) { this.taskCycleWakePending = true; return; }
+    this.scheduleTaskCycle(null, TASK_WAKE_MIN_MS);
+  }
+
   async runTaskCycle(startup = false) {
-    if (this.taskCycleRunning) return;
+    if (this.taskCycleRunning) { this.taskCycleWakePending = true; return; }
     this.taskCycleRunning = true;
+    let wakeData = null;
     try {
       const response = await this.taskClient.invoke("runTaskCycle", {
         startup, limit: 2,
+        cycle_requested_at: new Date().toISOString(),
         network_probe_url: this.settings.networkProbeUrl || undefined,
         codex_model: this.settings.codexModel,
         codex_reasoning_effort: this.settings.codexReasoningEffort,
         obsidian_open_paths: this.getOpenMarkdownPaths(),
       });
       if (!response.ok) return;
+      wakeData = response.data;
       if (!taskCycleChanged(response.data)) return;
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) await leaf.view.refresh({ background: true });
       for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) await leaf.view.refresh({ background: true });
-    } finally { this.taskCycleRunning = false; }
+    } finally {
+      this.taskCycleRunning = false;
+      if (this.taskCycleWakePending) {
+        this.taskCycleWakePending = false;
+        this.scheduleTaskCycle(null, TASK_WAKE_MIN_MS);
+      } else this.scheduleTaskCycle(wakeData);
+    }
   }
 
   async activateToday() {

@@ -60,5 +60,12 @@ test("Today surfaces only actionable runtime Tasks and plugin exposes Task Cente
     assert.match(plugin, /class TaskDetailsModal/);
     assert.match(plugin, /renderTasks\(root\)/);
     assert.match(plugin, /runTaskCycle/);
+    const main = await readPluginSource("main.js");
+    assert.match(main, /taskWakeDelay/);
+    assert.match(main, /next_wake_at/);
+    assert.match(main, /active-leaf-change/);
+    assert.match(main, /cycle_requested_at: new Date\(\)\.toISOString\(\)/);
+    assert.match(main, /vault\.on\("create"/);
+    assert.doesNotMatch(main, /setInterval\(\(\) => this\.runTaskCycle/);
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });

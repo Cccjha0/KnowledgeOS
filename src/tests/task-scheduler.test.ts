@@ -41,6 +41,8 @@ test("Scheduler applies latest, all, and aggregate catch-up without duplicate wi
     const reopened = await RuntimeRepository.open(vault);
     const aggregate = reopened.listTasks().find((task) => task.job_id === "core.daily-aggregate")!;
     assert.equal((aggregate.payload.windows as string[]).length, 4);
+    const checkpoint = reopened.getCheckpoints().find((item) => item.job_id === "core.daily-latest");
+    assert.equal(checkpoint?.next_evaluation_at, "2026-07-29T08:00:00.000Z");
     reopened.close();
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
