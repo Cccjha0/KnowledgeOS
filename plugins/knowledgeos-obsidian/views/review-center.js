@@ -1,3 +1,5 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createReviewCenterViews(deps) {
   const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson } = deps;
 class ReviewActionModal extends Modal {
@@ -185,6 +187,7 @@ class ReviewCenterView extends ItemView {
     this.pendingReviewActions = new Map();
     this.reviewActionErrors = new Map();
     this.activeReviewId = null;
+    this.loadGate = new LatestRequestGate();
   }
   getViewType() { return REVIEW_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS Reviews"; }
@@ -303,6 +306,7 @@ class ReviewCenterView extends ItemView {
   }
 
   async loadReviews(selectedReviewId = null) {
+    this.loadGate.request();
     if (selectedReviewId) {
       this.pendingReviewId = selectedReviewId;
       this.activeReviewId = selectedReviewId;
@@ -316,14 +320,14 @@ class ReviewCenterView extends ItemView {
         this.loadQueued = false;
         const nextReviewId = this.pendingReviewId;
         this.pendingReviewId = null;
-        await this.performReviewLoad(nextReviewId);
+        await this.performReviewLoad(nextReviewId, this.loadGate.current());
       } while (this.loadQueued);
     })();
     try { await this.loadPromise; }
     finally { this.loadPromise = null; }
   }
 
-  async performReviewLoad(selectedReviewId = null) {
+  async performReviewLoad(selectedReviewId = null, generation = this.loadGate.current()) {
     const preserveContent = Array.isArray(this.reviews) && this.listEl.childElementCount > 0;
     this.listEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderReviewBackgroundStatus("更新中…");
@@ -346,6 +350,7 @@ class ReviewCenterView extends ItemView {
       params.review_after_to = new Date(`${this.deferredFilter.value}T23:59:59.999`).toISOString();
     }
     const response = await this.plugin.client.invoke("listReviewItems", params);
+    if (!this.loadGate.isCurrent(generation)) return;
     this.listEl.removeAttribute("aria-busy");
     if (!response.ok) {
       const reason = response.error?.message ? `：${response.error.message}` : "";

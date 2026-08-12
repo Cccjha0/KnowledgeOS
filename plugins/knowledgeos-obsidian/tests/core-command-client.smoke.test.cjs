@@ -8,6 +8,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { CoreCommandClient } = require("../services/core-command-client");
+const { LatestRequestGate } = require("../services/latest-request");
 const { createReviewCenterViews } = require("../views/review-center");
 const { createInboxCenterViews } = require("../views/inbox-center");
 const { createSystemCenterViews } = require("../views/system-center");
@@ -194,6 +195,25 @@ test("CoreCommandClient deduplicates canonical concurrent reads and clears them 
   assert.equal((await client.invoke("getInstances", { module_id: "reading-log" })).ok, true);
   assert.equal(requestCount, 3, "a completed or failed read must not become a persistent cache");
   client.close();
+});
+
+test("LatestRequestGate discards out-of-order responses and accepts only the newest generation", async () => {
+  const gate = new LatestRequestGate();
+  const committed = [];
+  const firstGeneration = gate.request();
+  const first = new Promise((resolve) => setTimeout(() => {
+    if (gate.isCurrent(firstGeneration)) committed.push("old");
+    resolve();
+  }, 20));
+  const secondGeneration = gate.request();
+  const second = new Promise((resolve) => setTimeout(() => {
+    if (gate.isCurrent(secondGeneration)) committed.push("new");
+    resolve();
+  }, 1));
+  await Promise.all([first, second]);
+  assert.deepEqual(committed, ["new"]);
+  gate.invalidate();
+  assert.equal(gate.isCurrent(secondGeneration), false);
 });
 
 test("CoreCommandClient fails malformed JSON safely and starts a fresh bridge", async () => {

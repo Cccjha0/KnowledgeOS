@@ -1,3 +1,5 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createSystemCenterViews(deps) {
   const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson, rollbackLabel, RollbackConfirmModal } = deps;
 class RunDetailsModal extends Modal {
@@ -558,6 +560,7 @@ class SystemCenterView extends ItemView {
     this.sectionData = new Map();
     this.sectionFetchedAt = new Map();
     this.sectionWarnings = new Map();
+    this.refreshGate = new LatestRequestGate();
   }
   getViewType() { return SYSTEM_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS System"; }
@@ -565,6 +568,7 @@ class SystemCenterView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(options = {}) {
+    this.refreshGate.request();
     const background = options.background === true;
     if (options.preserveCache !== true) this.sectionData.clear();
     if (this.refreshPromise) {
@@ -575,7 +579,7 @@ class SystemCenterView extends ItemView {
       let nextIsBackground = background;
       do {
         this.refreshQueued = false;
-        await this.performRefresh(nextIsBackground);
+        await this.performRefresh(nextIsBackground, this.refreshGate.current());
         nextIsBackground = true;
       } while (this.refreshQueued);
     })();
@@ -583,7 +587,7 @@ class SystemCenterView extends ItemView {
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(background) {
+  async performRefresh(background, generation = this.refreshGate.current()) {
     const section = this.activeSection;
     const currentData = this.data?.section === section ? this.data : this.sectionData.get(section);
     const preserveContent = Boolean(currentData && this.contentEl.childElementCount > 0);
@@ -591,6 +595,7 @@ class SystemCenterView extends ItemView {
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else this.renderLoading();
     const response = await this.plugin.client.invoke("getSystemCenterSnapshot", { section });
+    if (!this.refreshGate.isCurrent(generation)) return;
     this.contentEl.removeAttribute("aria-busy");
     if (!response.ok) {
       if (preserveContent) this.renderStaleStatus(response.error);
@@ -616,6 +621,7 @@ class SystemCenterView extends ItemView {
   async openSection(section) {
     if (this.activeSection === section) return;
     this.activeSection = section;
+    this.refreshGate.request();
     const cached = this.sectionData.get(section);
     if (cached) {
       this.data = cached;

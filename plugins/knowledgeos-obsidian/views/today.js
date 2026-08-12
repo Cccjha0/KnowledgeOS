@@ -1,3 +1,5 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createTodayViews(deps) {
   const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
 class TodayView extends ItemView {
@@ -11,6 +13,7 @@ class TodayView extends ItemView {
     this.backgroundStatus = null;
     this.lastSuccessfulAt = null;
     this.partialWarnings = [];
+    this.refreshGate = new LatestRequestGate();
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -20,6 +23,7 @@ class TodayView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(options = {}) {
+    this.refreshGate.request();
     const background = options.background === true;
     if (this.refreshPromise) {
       this.refreshQueued = true;
@@ -29,7 +33,7 @@ class TodayView extends ItemView {
       let nextIsBackground = background;
       do {
         this.refreshQueued = false;
-        await this.performRefresh(nextIsBackground);
+        await this.performRefresh(nextIsBackground, this.refreshGate.current());
         nextIsBackground = true;
       } while (this.refreshQueued);
     })();
@@ -37,13 +41,14 @@ class TodayView extends ItemView {
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(background) {
+  async performRefresh(background, generation = this.refreshGate.current()) {
     const preserveContent = Boolean(this.snapshot && this.contentEl.childElementCount > 0);
     this.state = "loading";
     this.contentEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else this.renderLoading();
     const response = await this.plugin.client.invoke("getTodayItems", { refresh_markdown: !background });
+    if (!this.refreshGate.isCurrent(generation)) return;
     this.state = response.state;
     this.contentEl.removeAttribute("aria-busy");
     if (!response.ok) {

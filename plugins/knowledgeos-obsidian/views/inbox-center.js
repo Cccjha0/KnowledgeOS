@@ -1,3 +1,5 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createInboxCenterViews(deps) {
   const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
 class InboxCenterView extends ItemView {
@@ -16,6 +18,7 @@ class InboxCenterView extends ItemView {
     this.backgroundStatus = null;
     this.partialWarnings = [];
     this.lastSuccessfulAt = null;
+    this.refreshGate = new LatestRequestGate();
   }
   getViewType() { return INBOX_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS Inbox"; }
@@ -23,6 +26,7 @@ class InboxCenterView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(selectedItemId = null) {
+    this.refreshGate.request();
     if (selectedItemId) this.pendingSelectedItemId = selectedItemId;
     if (this.refreshPromise) {
       this.refreshQueued = true;
@@ -33,14 +37,14 @@ class InboxCenterView extends ItemView {
         this.refreshQueued = false;
         const nextSelectedItemId = this.pendingSelectedItemId;
         this.pendingSelectedItemId = null;
-        await this.performRefresh(nextSelectedItemId);
+        await this.performRefresh(nextSelectedItemId, this.refreshGate.current());
       } while (this.refreshQueued);
     })();
     try { await this.refreshPromise; }
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(selectedItemId = null) {
+  async performRefresh(selectedItemId = null, generation = this.refreshGate.current()) {
     const root = this.contentEl;
     root.addClass("knowledgeos-inbox-center");
     const preserveContent = this.listing !== null && root.childElementCount > 0;
@@ -48,6 +52,7 @@ class InboxCenterView extends ItemView {
     else renderLoadingSkeleton(root, "正在加载 Inbox…");
     if (!preserveContent) this.decorateLoadingShell(root);
     const response = await this.plugin.client.invoke("getInboxCenterSnapshot", {});
+    if (!this.refreshGate.isCurrent(generation)) return;
     if (!response.ok) {
       const error = response.error;
       if (preserveContent) this.renderStaleStatus(error);
