@@ -124,10 +124,14 @@ export async function runBenchmark(options) {
     { name: "getModules", method: "getModules", params: {} },
     { name: "getInstances", method: "getInstances", params: {} },
     { name: "getTodayItems", method: "getTodayItems", params: { refresh_markdown: false } },
-    { name: "getInboxCenterSnapshot", method: "getInboxCenterSnapshot", params: { limit: 50 } },
-    { name: "listReviewItems", method: "listReviewItems", params: { statuses: ["pending", "error"], limit: 50 } },
-    ...["overview", "tasks", "quality", "modules", "history"].map((section) => ({ name: `system-${section}`, method: "getSystemCenterSnapshot", params: { section } })),
-    { name: "getRecentRuns", method: "getRecentRuns", params: { limit: 20, include_rollback: false } },
+    { name: "getInboxCenterSnapshot", method: "getInboxCenterSnapshot", params: { page_size: 50 } },
+    { name: "listReviewItems", method: "listReviewItems", params: { statuses: ["pending", "error"], page_size: 50 } },
+    { name: "system-overview", method: "getSystemCenterSnapshot", params: { section: "overview" } },
+    { name: "system-tasks", method: "getSystemCenterSnapshot", params: { section: "tasks", page_size: 50 } },
+    { name: "system-quality", method: "getSystemCenterSnapshot", params: { section: "quality" } },
+    { name: "system-modules", method: "getSystemCenterSnapshot", params: { section: "modules" } },
+    { name: "system-history", method: "getSystemCenterSnapshot", params: { section: "history", page_size: 20 } },
+    { name: "getRecentRuns", method: "getRecentRuns", params: { page_size: 20, include_rollback: false } },
     { name: "taskCycle-idle", method: "runTaskCycle", params: { limit: 0, network_probe_url: "http://127.0.0.1:1", codex_executable: "knowledgeos-benchmark-codex-unavailable" } },
   ];
   try {

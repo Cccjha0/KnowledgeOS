@@ -48,3 +48,13 @@ test("synthetic Vault generator creates exact deterministic small-scale counts a
     assert.equal(await fs.readFile(path.join(unsafe, "user-note.md"), "utf8"), "must remain");
   } finally { await fs.rm(parent, { recursive: true, force: true }); }
 });
+
+test("UX benchmark scenarios exercise bounded first-page APIs", async () => {
+  const source = await fs.readFile(path.resolve("tools/benchmark-ux-performance.mjs"), "utf8");
+  assert.match(source, /getInboxCenterSnapshot"[^\n]*page_size: 50/);
+  assert.match(source, /listReviewItems"[^\n]*page_size: 50/);
+  assert.match(source, /section: "tasks", page_size: 50/);
+  assert.match(source, /section: "history", page_size: 20/);
+  assert.match(source, /getRecentRuns"[^\n]*page_size: 20/);
+  assert.doesNotMatch(source, /getInboxCenterSnapshot"[^\n]*limit:/);
+});
