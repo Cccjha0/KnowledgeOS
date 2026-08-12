@@ -14,6 +14,7 @@ import type {
   TaskRun,
   TaskStatus,
 } from "./domain.js";
+import { incrementPerformanceDiagnostic } from "../core/performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const initializedDatabases = new Set<string>();
@@ -56,6 +57,7 @@ export class RuntimeRepository {
   private call<T extends JsonValue>(command: string, payload: JsonObject = {}): T {
     if (this.closed) throw new PkbError("RUNTIME_DB_CLOSED", "Runtime repository is closed.");
     const bridge = path.join(ENGINE_ROOT, "tools", "runtime_bridge.py");
+    incrementPerformanceDiagnostic("python_subprocesses");
     const result = spawnSync("python", ["-X", "utf8", bridge, command, this.databasePath], {
       encoding: "utf8", input: JSON.stringify(payload), windowsHide: true, maxBuffer: 16 * 1024 * 1024,
     });

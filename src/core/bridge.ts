@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonObject, MarkdownDocument } from "./types.js";
 import { PkbError } from "./errors.js";
+import { incrementPerformanceDiagnostic } from "./performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DOCUMENT_CACHE_LIMIT = 1_000;
@@ -13,7 +14,11 @@ const yamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonOb
 function cached<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string): T | null {
   const stat = statSync(filePath);
   const entry = cache.get(filePath);
-  if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) return null;
+  if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
+    incrementPerformanceDiagnostic("parse_cache_misses");
+    return null;
+  }
+  incrementPerformanceDiagnostic("parse_cache_hits");
   cache.delete(filePath); cache.set(filePath, entry);
   return structuredClone(entry.value);
 }
@@ -21,7 +26,10 @@ function cached<T>(cache: Map<string, { mtimeMs: number; size: number; value: T 
 function remember<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string, value: T): T {
   const stat = statSync(filePath);
   cache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, value: structuredClone(value) });
-  while (cache.size > DOCUMENT_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+  while (cache.size > DOCUMENT_CACHE_LIMIT) {
+    cache.delete(cache.keys().next().value!);
+    incrementPerformanceDiagnostic("parse_cache_evictions");
+  }
   return structuredClone(value);
 }
 
@@ -32,6 +40,7 @@ function runBridge(
   args: string[],
   input?: unknown,
 ): string {
+  incrementPerformanceDiagnostic("python_subprocesses");
   const bridge = path.join(ENGINE_ROOT, "tools", "pkb_bridge.py");
   const result = spawnSync("python", ["-X", "utf8", bridge, ...args], {
     cwd: vaultRoot,
@@ -62,13 +71,16 @@ function runBridge(
 }
 
 export function parseMarkdown(vaultRoot: string, filePath: string): MarkdownDocument {
+  incrementPerformanceDiagnostic("markdown_parse_requests");
   const hit = cached(documentCache, filePath);
   if (hit) return hit;
   const output = runBridge(vaultRoot, ["parse-markdown", filePath]);
+  incrementPerformanceDiagnostic("markdown_files_parsed");
   return remember(documentCache, filePath, JSON.parse(output) as MarkdownDocument);
 }
 
 export function parseMarkdownBatch(vaultRoot: string, filePaths: string[]): Map<string, MarkdownDocument | null> {
+  incrementPerformanceDiagnostic("markdown_parse_requests");
   const result = new Map<string, MarkdownDocument | null>();
   const misses: string[] = [];
   for (const filePath of filePaths) {
@@ -79,6 +91,7 @@ export function parseMarkdownBatch(vaultRoot: string, filePaths: string[]): Map<
     } catch { result.set(filePath, null); }
   }
   if (!misses.length) return result;
+  incrementPerformanceDiagnostic("markdown_files_parsed", misses.length);
   const output = JSON.parse(runBridge(vaultRoot, ["parse-markdown-batch"], misses)) as Array<{
     ok: boolean;
     path: string | null;
@@ -103,6 +116,7 @@ export function writeMarkdown(
 }
 
 export function parseYaml(vaultRoot: string, filePath: string): JsonObject {
+  incrementPerformanceDiagnostic("yaml_parse_requests");
   const hit = cached(yamlCache, filePath);
   if (hit) return hit;
   const output = runBridge(vaultRoot, ["parse-yaml", filePath]);
@@ -114,6 +128,8 @@ export function parseValidateYamlBatch(
   items: Array<{ path: string; schema_id: string }>,
 ): JsonObject[] {
   if (items.length === 0) return [];
+  incrementPerformanceDiagnostic("yaml_parse_requests", items.length);
+  incrementPerformanceDiagnostic("schema_validations", items.length);
   const output = runBridge(ENGINE_ROOT, ["parse-validate-yaml-batch", ENGINE_ROOT], items);
   return JSON.parse(output) as JsonObject[];
 }
@@ -128,5 +144,6 @@ export function validateSchema(
   schemaId: string,
   data: unknown,
 ): void {
+  incrementPerformanceDiagnostic("schema_validations");
   runBridge(vaultRoot, ["validate", ENGINE_ROOT, schemaId], data);
 }

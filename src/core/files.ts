@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { JsonObject, JsonValue } from "./types.js";
+import { incrementPerformanceDiagnostic } from "./performanceDiagnostics.js";
 
 export async function exists(filePath: string): Promise<boolean> {
   try {
@@ -49,6 +50,7 @@ export async function listFilesRecursive(root: string, suffix?: string): Promise
     if (entry.isDirectory()) {
       output.push(...(await listFilesRecursive(absolute, suffix)));
     } else if (!suffix || entry.name.endsWith(suffix)) {
+      incrementPerformanceDiagnostic("files_discovered");
       output.push(absolute);
     }
   }
