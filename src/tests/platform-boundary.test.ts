@@ -92,11 +92,39 @@ test("Core executes an authorized plan and rolls back a failed plan", async () =
     await assert.rejects(() => executeOperationPlan(vault, failing, {
       allowedTypes: ["update-frontmatter", "move-file"],
       allowedTargets: ["record.md"],
+      allowedDestinations: ["occupied.md"],
       requiredReviewId: null,
     }));
     assert.equal(await fs.readFile(target, "utf8"), original);
     const failedJournal = JSON.parse(await fs.readFile(path.join(vault, "90-System", "State", "Transactions", failing.plan_id, "transaction.json"), "utf8")) as { status: string };
     assert.equal(failedJournal.status, "rolled-back");
+  } finally {
+    await fs.rm(vault, { recursive: true, force: true });
+  }
+});
+
+test("Core rejects a move destination that was not explicitly authorized", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-move-boundary-"));
+  try {
+    await fs.mkdir(path.join(vault, "Module-A"), { recursive: true });
+    await fs.writeFile(path.join(vault, "Module-A", "record.md"), "record", "utf8");
+    const plan: OperationPlan = {
+      plan_id: "PLAN-2026-000003",
+      task_id: "TASK-2026-000003",
+      source_module: "demo",
+      instance_id: "instance-a",
+      summary: "Attempt a cross-module move",
+      operations: [{
+        operation_id: "OP-001", type: "move-file", target: "Module-A/record.md", risk: "green", confidence: 1,
+        idempotency_key: "demo:unauthorized-move", payload: { destination: "Module-B/record.md" }, requires_review_id: null,
+      }],
+      review_items: [],
+    };
+    await assert.rejects(() => executeOperationPlan(vault, plan, {
+      allowedTypes: ["move-file"], allowedTargets: ["Module-A/record.md"], allowedDestinations: ["Module-A/Archive/record.md"], requiredReviewId: null,
+    }), (error: unknown) => error instanceof Error && "code" in error && error.code === "DESTINATION_NOT_ALLOWED");
+    assert.equal(await fs.readFile(path.join(vault, "Module-A", "record.md"), "utf8"), "record");
+    await assert.rejects(() => fs.access(path.join(vault, "Module-B", "record.md")));
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }

@@ -31,6 +31,8 @@ type OperationStatus = "pending" | "in-progress" | "completed" | "skipped" | "fa
 export interface ExecutionPolicy {
   allowedTypes?: readonly string[];
   allowedTargets?: readonly string[];
+  /** Explicitly authorized Vault-relative destinations for move-file operations. */
+  allowedDestinations?: readonly string[];
   requiredReviewId?: string | null;
   gitSnapshot?: string | null;
 }
@@ -83,12 +85,20 @@ function resolveVaultPath(vaultRoot: string, vaultPath: string): string {
 function checkPermissions(plan: OperationPlan, policy: ExecutionPolicy): void {
   const allowedTypes = new Set(policy.allowedTypes ?? [...SUPPORTED_TYPES]);
   const allowedTargets = policy.allowedTargets ? new Set(policy.allowedTargets) : null;
+  const allowedDestinations = policy.allowedDestinations ? new Set(policy.allowedDestinations) : null;
   for (const operation of plan.operations) {
     if (!SUPPORTED_TYPES.has(operation.type) || !allowedTypes.has(operation.type)) {
       throw new PkbError("OPERATION_NOT_ALLOWED", `Operation type is not allowed: ${operation.type}`, operation);
     }
     if (!operation.target || (allowedTargets && !allowedTargets.has(operation.target))) {
       throw new PkbError("TARGET_NOT_ALLOWED", "Operation target is outside the authorized set.", operation);
+    }
+    if (operation.type === "move-file") {
+      const destination = typeof operation.payload.destination === "string" ? operation.payload.destination : null;
+      if (!destination) throw new PkbError("INVALID_OPERATION", "move-file requires a Vault-relative destination.", operation);
+      if (!allowedDestinations || !allowedDestinations.has(destination)) {
+        throw new PkbError("DESTINATION_NOT_ALLOWED", "Move destination is outside the authorized set.", operation);
+      }
     }
     if (policy.requiredReviewId !== undefined && operation.requires_review_id !== policy.requiredReviewId) {
       throw new PkbError("REVIEW_AUTHORIZATION_MISMATCH", "Operation review authorization does not match.", operation);

@@ -67,6 +67,11 @@ export class ModuleSdk {
   buildOperationPlan(input: { planId: string; taskId: string; summary: string; operations: Operation[]; reviews?: ReviewItem[] }): OperationPlan {
     for (const operation of input.operations) {
       if (operation.target && !within(normalize(operation.target), this.context.ownedWriteRoots)) throw new PkbError("MODULE_WRITE_DENIED", `Module ${this.context.moduleId} cannot propose a write to ${operation.target}.`);
+      if (operation.type === "move-file") {
+        const destination = typeof operation.payload.destination === "string" ? normalize(operation.payload.destination) : null;
+        if (!destination) throw new PkbError("MODULE_PATH_INVALID", "move-file requires a Vault-relative destination.");
+        if (!within(destination, this.context.ownedWriteRoots)) throw new PkbError("MODULE_WRITE_DENIED", `Module ${this.context.moduleId} cannot propose a move to ${destination}.`);
+      }
       if (operation.type === "delete-file") throw new PkbError("MODULE_RED_OPERATION_DENIED", "Module SDK cannot propose delete operations without a Core-owned confirmation flow.");
     }
     return { plan_id: input.planId, task_id: input.taskId, source_module: this.context.moduleId, instance_id: this.context.instanceId, summary: input.summary, operations: structuredClone(input.operations), review_items: structuredClone(input.reviews ?? []) };
