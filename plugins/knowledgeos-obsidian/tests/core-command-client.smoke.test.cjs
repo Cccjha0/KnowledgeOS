@@ -324,3 +324,12 @@ test("view factories expose the existing view and settings constructors", () => 
   assert.equal(new constructors.ReviewCenterView({}, {}).getViewType(), "knowledgeos-review");
   assert.equal(new constructors.SystemCenterView({}, {}).getViewType(), "knowledgeos-system");
 });
+
+test("Setup Doctor presents every check state and explicit Vault mutation warnings", () => {
+  const source = require("node:fs").readFileSync(require("node:path").resolve(__dirname, "../views/settings-tab.js"), "utf8");
+  assert.match(source, /invoke\("getSetupDoctor", \{\}\)/);
+  assert.match(source, /Ready.*Needs action.*Failed/s);
+  assert.match(source, /执行建议的修复会修改 Vault/);
+  assert.match(source, /打开 Today/);
+  assert.doesNotMatch(source, /invoke\("getModules", \{\}\)/);
+});

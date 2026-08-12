@@ -109,7 +109,16 @@
 .knowledgeos-settings .knowledgeos-settings-connection-state.is-success { border-left-color: var(--text-success); color: var(--text-normal); }
 .knowledgeos-settings .knowledgeos-settings-connection-state.is-error { background: var(--background-modifier-error); border-left-color: var(--text-error); color: var(--text-normal); }
 .knowledgeos-settings .knowledgeos-settings-connection-state.is-stale { border-left-color: var(--text-warning); color: var(--text-normal); }
-.knowledgeos-settings .knowledgeos-settings-state-detail { color: var(--text-muted); margin-top: var(--size-4-1); overflow-wrap: anywhere; }
+  .knowledgeos-settings .knowledgeos-settings-state-detail { color: var(--text-muted); margin-top: var(--size-4-1); overflow-wrap: anywhere; }
+  .knowledgeos-settings .knowledgeos-setup-doctor { display: grid; gap: var(--size-4-2); margin-top: var(--size-4-3); }
+  .knowledgeos-settings .knowledgeos-setup-check { background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-left: 3px solid var(--text-muted); border-radius: var(--radius-s); padding: var(--size-4-3); }
+  .knowledgeos-settings .knowledgeos-setup-check.is-ready { border-left-color: var(--text-success); }
+  .knowledgeos-settings .knowledgeos-setup-check.is-needs-action { border-left-color: var(--text-warning); }
+  .knowledgeos-settings .knowledgeos-setup-check.is-failed { border-left-color: var(--text-error); }
+  .knowledgeos-settings .knowledgeos-setup-check-heading { align-items: baseline; display: flex; justify-content: space-between; gap: var(--size-4-2); }
+  .knowledgeos-settings .knowledgeos-setup-check-status { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: nowrap; }
+  .knowledgeos-settings .knowledgeos-setup-next { background: var(--background-primary-alt); border-radius: var(--radius-s); padding: var(--size-4-3); }
+  .knowledgeos-settings .knowledgeos-settings-actions { display: flex; flex-wrap: wrap; gap: var(--size-4-2); margin-top: var(--size-4-2); }
 .knowledgeos-settings :is(button, input):focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
 @container knowledgeos-settings (max-width: 40rem) {
   .knowledgeos-settings .knowledgeos-settings-section .setting-item { align-items: stretch; flex-direction: column; gap: var(--size-4-2); }

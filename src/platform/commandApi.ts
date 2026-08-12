@@ -44,6 +44,7 @@ import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlu
 import { analyzeGuidedModuleRequirement, type GuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
 import { getModuleBuilderPlatformContract } from "../modules/platformContract.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
+import { getSetupDoctor } from "./setupDoctor.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -502,6 +503,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     if (params.refresh_markdown !== false) await writeTodayMarkdown(vaultRoot, snapshot);
     return snapshot;
   }
+  if (method === "getSetupDoctor") return getSetupDoctor(vaultRoot, ENGINE_ROOT);
   if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
   if (method === "migrateLegacyAccessPolicies") {
     const migration = params as unknown as LegacyAccessPolicyMigrationParams;
