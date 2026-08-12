@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +10,7 @@ import { fromVaultPath, listFilesRecursive, readJson, toVaultPath, writeJsonAtom
 import type { DashboardItem, JsonObject, JsonValue } from "../core/types.js";
 import { resolveWorkflowResourceContract } from "../modules/workflowResources.js";
 import type { RepresentationLevel } from "../core/readLevels.js";
+import { incrementPerformanceDiagnostic } from "../core/performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -74,7 +77,7 @@ export interface InboxListing extends JsonObject {
   counts: JsonObject;
 }
 
-interface InboxRoot {
+export interface InboxRoot {
   path: string;
   scope: InboxItemView["scope"];
   moduleId: string | null;
@@ -183,7 +186,7 @@ function generatedFromEmptySource(data: JsonObject, content: string): boolean {
     && source?.source_type === "unknown";
 }
 
-async function inspectItem(
+export async function inspectInboxItem(
   vaultRoot: string,
   absolute: string,
   root: InboxRoot,
@@ -294,9 +297,18 @@ export async function discoverInboxItems(vaultRoot: string, context?: InboxDisco
   const parsed = parseMarkdownBatch(vaultRoot, markdownFiles);
   for (const candidate of candidates) {
     const document = parsed.has(candidate.absolute) ? parsed.get(candidate.absolute)! : undefined;
-    output.push(await inspectItem(vaultRoot, candidate.absolute, candidate.root, discovered.modules, discovered.instances, document));
+    output.push(await inspectInboxItem(vaultRoot, candidate.absolute, candidate.root, discovered.modules, discovered.instances, document));
   }
   return output.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.path.localeCompare(b.path));
+}
+
+export function inboxRootForPath(vaultRoot: string, context: InboxDiscoveryContext, absolute: string): InboxRoot | null {
+  const resolved = path.resolve(absolute);
+  const matches = context.roots.filter((root) => {
+    const rootPath = path.resolve(fromVaultPath(vaultRoot, root.path));
+    return resolved === rootPath || resolved.startsWith(`${rootPath}${path.sep}`);
+  }).sort((left, right) => right.path.length - left.path.length);
+  return matches[0] ?? null;
 }
 
 export async function listInbox(vaultRoot: string, params: JsonObject = {}, context?: InboxDiscoveryContext): Promise<InboxListing> {
@@ -324,6 +336,87 @@ export async function listInbox(vaultRoot: string, params: JsonObject = {}, cont
       high_confidence: items.filter((item) => item.confidence >= item.auto_route_threshold && !item.requires_ai).length,
     },
   };
+}
+
+function inboxIndexLocations(vaultRoot: string): { database: string; state: string; stateRoot: string } {
+  const cache = path.join(vaultRoot, "90-System", "Cache");
+  return {
+    database: path.join(cache, "inbox-summary-index.sqlite"), state: path.join(cache, "inbox-summary-index.state.json"),
+    stateRoot: path.join(vaultRoot, "90-System", "State", "Inbox"),
+  };
+}
+
+async function inboxIndexRevision(vaultRoot: string, context: InboxDiscoveryContext): Promise<string> {
+  const hash = createHash("sha256");
+  const files = new Set<string>();
+  for (const root of context.roots) for (const file of await listFilesRecursive(fromVaultPath(vaultRoot, root.path))) files.add(file);
+  for (const file of await listFilesRecursive(inboxIndexLocations(vaultRoot).stateRoot, ".json")) files.add(file);
+  for (const file of [...files].sort()) {
+    const stat = await fs.stat(file);
+    hash.update(`${toVaultPath(vaultRoot, file)}\0${stat.size}\0${stat.mtimeMs}\n`);
+  }
+  for (const module of context.modules) hash.update(`module:${module.path}:${JSON.stringify(module.data)}\n`);
+  for (const instance of context.instances) hash.update(`instance:${instance.path}:${JSON.stringify(instance.data)}\n`);
+  return hash.digest("hex");
+}
+
+function callInboxIndex<T>(vaultRoot: string, command: string, payload: unknown): T {
+  incrementPerformanceDiagnostic("python_subprocesses");
+  const result = spawnSync("python", ["-X", "utf8", path.join(ENGINE_ROOT, "tools", "inbox_summary_index.py"), command, inboxIndexLocations(vaultRoot).database], {
+    encoding: "utf8", input: JSON.stringify(payload), windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+  });
+  if (result.error || result.status !== 0) throw result.error ?? new Error(result.stderr || result.stdout);
+  return (JSON.parse(result.stdout) as { data: T }).data;
+}
+
+async function ensureInboxIndex(vaultRoot: string, context: InboxDiscoveryContext): Promise<void> {
+  const locations = inboxIndexLocations(vaultRoot);
+  const revision = await inboxIndexRevision(vaultRoot, context);
+  let recorded: string | null = null;
+  try { recorded = (JSON.parse(await fs.readFile(locations.state, "utf8")) as { revision?: string }).revision ?? null; } catch { recorded = null; }
+  if (existsSync(locations.database) && recorded === revision) return;
+  const items = await discoverInboxItems(vaultRoot, context);
+  callInboxIndex(vaultRoot, "replace", items.map((item) => ({
+    ...item, closed: ["ignored", "unmanaged", "processed"].includes(item.state) ? 1 : 0, record_json: JSON.stringify(item),
+  })));
+  await fs.writeFile(locations.state, `${JSON.stringify({ schema_version: 1, revision })}\n`, "utf8");
+}
+
+function listingFromItems(items: InboxItemView[], page: JsonObject): InboxListing {
+  const groups = new Map<string, JsonObject>();
+  for (const item of items) {
+    const key = item.state === "failed" ? "failed" : item.suggested_instance_id ? `instance:${item.suggested_instance_id}` : item.suggested_module_id ? `module:${item.suggested_module_id}` : "needs-routing";
+    const group = groups.get(key) ?? { group_id: key, label: key === "needs-routing" ? "Needs routing" : key === "failed" ? "Failed" : key.split(":")[1]!, count: 0, items: [] };
+    group.count = Number(group.count) + 1; (group.items as JsonValue[]).push(item); groups.set(key, group);
+  }
+  return {
+    generated_at: new Date().toISOString(), items, groups: [...groups.values()],
+    counts: {
+      total: (page.counts as JsonObject | undefined)?.total ?? page.total ?? items.length,
+      needs_routing: (page.counts as JsonObject | undefined)?.needs_routing ?? items.filter((item) => !item.suggested_module_id).length,
+      waiting_for_ai: (page.counts as JsonObject | undefined)?.waiting_for_ai ?? items.filter((item) => item.state === "waiting-for-ai").length,
+      failed: (page.counts as JsonObject | undefined)?.failed ?? items.filter((item) => item.state === "failed").length,
+      high_confidence: items.filter((item) => item.confidence >= item.auto_route_threshold && !item.requires_ai).length,
+    },
+    page: { has_more: page.has_more === true, next_cursor: page.next_cursor ?? null, total: page.total ?? items.length },
+  };
+}
+
+export async function listInboxPage(vaultRoot: string, params: JsonObject = {}, context?: InboxDiscoveryContext): Promise<InboxListing> {
+  const discovered = context ?? await discoverInboxContext(vaultRoot);
+  await ensureInboxIndex(vaultRoot, discovered);
+  const page = callInboxIndex<JsonObject>(vaultRoot, "page", params);
+  const summaries = Array.isArray(page.items) ? page.items as InboxItemView[] : [];
+  const markdownFiles = summaries.map((item) => fromVaultPath(vaultRoot, item.path)).filter((file) => path.extname(file).toLowerCase() === ".md");
+  const parsed = parseMarkdownBatch(vaultRoot, markdownFiles);
+  const current: InboxItemView[] = [];
+  for (const summary of summaries) {
+    const absolute = fromVaultPath(vaultRoot, summary.path);
+    const root = inboxRootForPath(vaultRoot, discovered, absolute);
+    if (!root || !existsSync(absolute)) continue;
+    current.push(await inspectInboxItem(vaultRoot, absolute, root, discovered.modules, discovered.instances, parsed.get(absolute)));
+  }
+  return listingFromItems(current, page);
 }
 
 export function inboxDashboardItem(item: InboxItemView): DashboardItem {

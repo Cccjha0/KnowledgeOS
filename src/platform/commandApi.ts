@@ -17,7 +17,7 @@ import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { listReviewSummaryPage } from "../core/reviewSummaryIndex.js";
-import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
+import { discoverInboxContext, listInbox, listInboxPage } from "./inboxDiscovery.js";
 import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem, reviewPartialInboxExtraction } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViewPage, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
@@ -547,11 +547,12 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     finally { repository.close(); }
   }
   if (method === "listInboxItems") {
-    return listInbox(vaultRoot, params);
+    return params.page_size !== undefined || params.cursor !== undefined ? listInboxPage(vaultRoot, params) : listInbox(vaultRoot, params);
   }
   if (method === "getInboxCenterSnapshot") {
     const context = await discoverInboxContext(vaultRoot);
-    const inbox = await listInbox(vaultRoot, params, context);
+    const inbox = params.page_size !== undefined || params.cursor !== undefined
+      ? await listInboxPage(vaultRoot, params, context) : await listInbox(vaultRoot, params, context);
     return {
       inbox,
       modules: context.modules.map((module) => ({

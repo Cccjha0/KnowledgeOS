@@ -10,7 +10,6 @@ class InboxCenterView extends ItemView {
     this.expandedItems = new Set();
     this.pendingItemIds = new Set();
     this.itemActionErrors = new Map();
-    this.visibleLimit = LIST_PAGE_SIZE;
     this.listing = null;
     this.refreshPromise = null;
     this.refreshQueued = false;
@@ -51,7 +50,7 @@ class InboxCenterView extends ItemView {
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else renderLoadingSkeleton(root, "正在加载 Inbox…");
     if (!preserveContent) this.decorateLoadingShell(root);
-    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", {});
+    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", { page_size: LIST_PAGE_SIZE });
     if (!this.refreshGate.isCurrent(generation)) return;
     if (!response.ok) {
       const error = response.error;
@@ -177,9 +176,8 @@ class InboxCenterView extends ItemView {
     ];
     let rendered = 0;
     for (const [id, label, matches] of sections) {
-      if (rendered >= this.visibleLimit) break;
       const items = this.listing.items.filter(matches);
-      const visibleItems = items.slice(0, this.visibleLimit - rendered);
+      const visibleItems = items;
       if (!visibleItems.length) continue;
       let section;
       if (id === "deferred") {
@@ -194,11 +192,31 @@ class InboxCenterView extends ItemView {
       for (const item of visibleItems) this.renderItem(section, item, item.item_id === selectedItemId);
       rendered += visibleItems.length;
     }
-    if (this.listing.items.length > rendered) {
+    if (this.listing.page?.has_more && this.listing.page?.next_cursor) {
+      const remaining = typeof this.listing.page.total === "number" ? Math.max(0, this.listing.page.total - this.listing.items.length) : null;
       const more = root.createEl("button", { cls: "knowledgeos-inbox-load-more", text: `加载更多（还有 ${this.listing.items.length - rendered} 项）` });
-      more.onclick = () => { this.visibleLimit += LIST_PAGE_SIZE; this.render(selectedItemId); };
+      more.setText(remaining === null ? "加载更多" : `加载更多（还有 ${remaining} 项）`);
+      more.onclick = () => this.loadMoreInbox(more, selectedItemId);
     }
     root.scrollTop = scrollTop;
+  }
+
+  async loadMoreInbox(button, selectedItemId = null) {
+    const cursor = this.listing?.page?.next_cursor;
+    if (!cursor) return;
+    const generation = this.refreshGate.request();
+    button.disabled = true; button.setText("正在加载…");
+    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", { page_size: LIST_PAGE_SIZE, cursor });
+    if (!this.refreshGate.isCurrent(generation)) return;
+    if (!response.ok || !response.data?.inbox) {
+      button.disabled = false; button.setText("重试加载更多");
+      this.plugin.notify(response.error?.message || "无法加载下一页 Inbox", { error: true });
+      return;
+    }
+    const next = response.data.inbox;
+    next.items = [...new Map([...this.listing.items, ...(next.items || [])].map((item) => [item.item_id, item])).values()];
+    this.listing = next;
+    this.render(selectedItemId);
   }
 
   selectedRoute(item) {
