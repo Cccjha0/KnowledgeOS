@@ -13,9 +13,11 @@ const { createTodayViews } = require("./views/today");
 const { createSettingsViews } = require("./views/settings-tab");
 const { createModuleBuilderViews } = require("./views/module-builder-modal");
 const { createRollbackModalSupport } = require("./components/rollback-modal");
+const { createPresentationClock } = require("./services/presentation-clock");
 
 const moduleUiMetadata = new ModuleUiMetadataStore();
 const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
+const presentationClock = createPresentationClock();
 
 const LIST_PAGE_SIZE = 50;
 const FALLBACK_CODEX_MODELS = [
@@ -117,33 +119,11 @@ function friendlyAction(value, moduleId = null) {
 }
 
 function calendarDayDifference(value, now = new Date()) {
-  const date = new Date(value);
-  const reference = new Date(now);
-  if (Number.isNaN(date.getTime()) || Number.isNaN(reference.getTime())) return null;
-  const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
-  const currentDay = Date.parse(`${dateKey.format(reference)}T00:00:00Z`);
-  const targetDay = Date.parse(`${dateKey.format(date)}T00:00:00Z`);
-  return Math.round((targetDay - currentDay) / 86_400_000);
+  return presentationClock.calendarDayDifference(value, now);
 }
 
 function formatTime(value, options = {}) {
-  if (!value) return "时间未设置";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const now = options.now ? new Date(options.now) : new Date();
-  const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
-  const current = dateKey.format(now);
-  const target = dateKey.format(date);
-  const currentDay = Date.parse(`${current}T00:00:00Z`);
-  const targetDay = Date.parse(`${target}T00:00:00Z`);
-  const days = Math.round((targetDay - currentDay) / 86_400_000);
-  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-  if (days === 0) return `今天 ${time}`;
-  if (days === 1) return `明天 ${time}`;
-  if (days === -1) return `昨天 ${time}`;
-  if (days > 1 && days < 7) return `${days} 天后`;
-  if (days < -1 && days > -7) return `${Math.abs(days)} 天前`;
-  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  return presentationClock.formatTime(value, options);
 }
 
 function formatVerificationSchedule(value) {
@@ -263,6 +243,10 @@ function createViewDependencies() {
     settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS,
     markLiveRegion, taskCycleChanged, missingBuiltCliFailure,
     labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime,
+    formatTodayHeading: (value) => presentationClock.formatTodayHeading(value),
+    localDateTimeAfterDays: (now, days) => presentationClock.localDateTimeAfterDays(now, days),
+    zonedLocalToIso: (value) => presentationClock.zonedLocalToIso(value),
+    presentationTimeZone: () => presentationClock.timeZone,
     friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError,
     displayJson,
   };
@@ -561,6 +545,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       await this.saveData(this.settings);
     }
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
+    await this.loadPresentationPreferences();
     const clientOptions = {
       onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure,
       onOperationSettled: (event) => this.handleOperationSettled(event),
@@ -607,6 +592,15 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     await this.saveData(this.settings);
     this.client.settings = this.settings;
     this.taskClient.settings = this.settings;
+  }
+
+  async loadPresentationPreferences() {
+    let timeZone = null;
+    try {
+      const raw = await this.app.vault.adapter.read("90-System/State/vault-config.json");
+      timeZone = JSON.parse(raw)?.timezone || null;
+    } catch { /* Old or not-yet-initialized Vaults use the system timezone. */ }
+    presentationClock.configure({ timeZone });
   }
 
   handleVaultPathsChanged(paths) {

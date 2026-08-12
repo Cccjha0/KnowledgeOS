@@ -16,6 +16,7 @@ interface VaultConfig {
     workspace_root: "20-Workspace";
     system_root: "90-System";
   };
+  timezone?: string;
 }
 
 export interface VaultInitResult {
@@ -207,6 +208,7 @@ export async function initializeVault(
         workspace_root: "20-Workspace",
         system_root: "90-System",
       },
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
     };
     await writeJsonAtomic(configPath, config);
     createdFiles.push(relative(vaultRoot, configPath));
