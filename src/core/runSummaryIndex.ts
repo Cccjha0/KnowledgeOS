@@ -123,3 +123,24 @@ export async function listRecentRunSummaries(
     return callIndex(vaultRoot, "list", { limit: options.limit ?? 20, status: options.status ?? null });
   }
 }
+
+export async function listRecentRunSummaryPage(
+  vaultRoot: string,
+  options: { pageSize?: number; status?: string | null; cursor?: JsonObject | null } = {},
+): Promise<{ items: RunSummaryIndexEntry[]; has_more: boolean; next_cursor: JsonObject | null }> {
+  const { database, dirty } = locations(vaultRoot);
+  if (!existsSync(database) || existsSync(dirty) || !indexStateIsCurrent(vaultRoot)) await rebuild(vaultRoot);
+  const payload = { page_size: options.pageSize ?? 20, status: options.status ?? null, cursor: options.cursor ?? null };
+  const read = () => callIndex<{ items: RunSummaryIndexEntry[]; has_more: boolean; next_cursor: JsonObject | null }>(vaultRoot, "page", payload);
+  try {
+    const page = read();
+    if (page.items.some((entry) => !existsSync(path.join(vaultRoot, ...entry.vault_path.split("/"))))) {
+      await rebuild(vaultRoot);
+      return read();
+    }
+    return page;
+  } catch {
+    await rebuild(vaultRoot);
+    return read();
+  }
+}

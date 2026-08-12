@@ -104,6 +104,7 @@ test("System Center snapshot consolidates all read models into one API response"
     const tasks = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-TASKS", method: "getSystemCenterSnapshot", params: { section: "tasks" } });
     assert.equal(tasks.ok, true);
     assert.equal("modules" in (tasks.data as JsonObject), false);
+    assert.equal(typeof (((tasks.data as JsonObject).runtime as JsonObject).counts as JsonObject).completed, "number");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
@@ -130,6 +131,15 @@ test("Recent Runs uses a rebuildable bounded index after the first safe fallback
     assert.equal(performanceDiagnosticsSnapshot().files_discovered, 0);
     assert.equal(performanceDiagnosticsSnapshot().markdown_files_parsed, 0);
     assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 1);
+    const firstPage = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-PAGE-1", method: "getRecentRuns", params: { page_size: 17, include_rollback: false } });
+    const firstPageData = firstPage.data as JsonObject;
+    assert.equal((firstPageData.items as JsonObject[]).length, 17);
+    assert.equal(firstPageData.has_more, true);
+    const secondPage = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-PAGE-2", method: "getRecentRuns", params: { page_size: 17, cursor: firstPageData.next_cursor ?? null, include_rollback: false } });
+    const secondPageData = secondPage.data as JsonObject;
+    assert.equal((secondPageData.items as JsonObject[]).length, 17);
+    assert.equal((secondPageData.items as JsonObject[])[0]?.run_id, "RUN-2026-000183");
+    assert.equal(new Set([...(firstPageData.items as JsonObject[]), ...(secondPageData.items as JsonObject[])].map((item) => item.run_id)).size, 34);
     await fs.rm(path.join(vault, "90-System", "Cache", "run-summary-index.sqlite"), { force: true });
     resetPerformanceDiagnostics();
     assert.equal(((await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-INDEX-3", method: "getRecentRuns", params: { limit: 5, include_rollback: false } })).data as JsonObject[]).length, 5);

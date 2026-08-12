@@ -522,6 +522,39 @@ def dispatch(command, connection, payload):
         retries = connection.execute("SELECT COALESCE(SUM(CASE WHEN attempt_count>1 THEN attempt_count-1 ELSE 0 END),0) FROM tasks").fetchone()[0]
         return {"counts": counts, "queue_length": counts.get("queued", 0), "recent_24h_runs": recent,
                 "oldest_waiting": dict(oldest) if oldest else None, "retry_count": retries, "metrics": metrics}
+    if command == "task-center-page":
+        page_size = max(1, min(100, int(payload.get("page_size", 50))))
+        statuses = payload.get("statuses") or []
+        clauses = []
+        values = []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            values.extend(statuses)
+        cursor = payload.get("cursor")
+        if cursor:
+            clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
+            values.extend([cursor["created_at"], cursor["created_at"], cursor["task_id"]])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(page_size + 1)
+        rows = list(connection.execute(
+            f"SELECT * FROM tasks{where} ORDER BY created_at DESC,task_id DESC LIMIT ?", values
+        ))
+        has_more = len(rows) > page_size
+        items = rows[:page_size]
+        last = items[-1] if items else None
+        return {
+            "items": [task_dict(row) for row in items],
+            "has_more": has_more,
+            "next_cursor": ({"created_at": last["created_at"], "task_id": last["task_id"]} if has_more and last else None),
+            "runtime": {
+                "integrity": dispatch("integrity-check", connection, {}),
+                "schema_version": dispatch("schema-version", connection, {}),
+                "resources": dispatch("get-resource-statuses", connection, {}),
+                "jobs": dispatch("list-jobs", connection, {}),
+                "checkpoints": dispatch("get-checkpoints", connection, {}),
+                "runtime_stats": dispatch("runtime-stats", connection, {}),
+            },
+        }
     if command == "next-wake":
         now = payload.get("now") or now_iso()
         dependency_ready = """

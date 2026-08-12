@@ -56,6 +56,30 @@ def main():
             values.append(max(1, min(100, int(payload.get("limit", 20)))))
             rows = connection.execute(f"SELECT * FROM run_summaries{where} ORDER BY completed_at DESC,run_id DESC LIMIT ?", values)
             result = [dict(row) for row in rows]
+        elif command == "page":
+            clauses = []
+            values = []
+            if payload.get("status"):
+                clauses.append("status=?")
+                values.append(payload["status"])
+            cursor = payload.get("cursor")
+            if cursor:
+                clauses.append("(completed_at < ? OR (completed_at = ? AND run_id < ?))")
+                values.extend([cursor["completed_at"], cursor["completed_at"], cursor["run_id"]])
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            page_size = max(1, min(100, int(payload.get("page_size", 20))))
+            values.append(page_size + 1)
+            rows = list(connection.execute(
+                f"SELECT * FROM run_summaries{where} ORDER BY completed_at DESC,run_id DESC LIMIT ?", values
+            ))
+            has_more = len(rows) > page_size
+            items = rows[:page_size]
+            last = items[-1] if items else None
+            result = {
+                "items": [dict(row) for row in items],
+                "has_more": has_more,
+                "next_cursor": ({"completed_at": last["completed_at"], "run_id": last["run_id"]} if has_more and last else None),
+            }
         else:
             raise ValueError(f"unknown command: {command}")
         print(json.dumps({"ok": True, "data": result}, ensure_ascii=False))

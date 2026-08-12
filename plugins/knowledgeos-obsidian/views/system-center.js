@@ -594,7 +594,9 @@ class SystemCenterView extends ItemView {
     this.contentEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else this.renderLoading();
-    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", { section });
+    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", {
+      section, ...(["tasks", "history"].includes(section) ? { page_size: section === "tasks" ? LIST_PAGE_SIZE : 20 } : {}),
+    });
     if (!this.refreshGate.isCurrent(generation)) return;
     this.contentEl.removeAttribute("aria-busy");
     if (!response.ok) {
@@ -630,6 +632,35 @@ class SystemCenterView extends ItemView {
     }
     this.data = null;
     await this.refresh({ background: true, preserveCache: true });
+  }
+
+  async loadNextPage(button) {
+    const section = this.activeSection;
+    const cursor = this.data?.page?.next_cursor;
+    if (!cursor || !["tasks", "history"].includes(section)) return;
+    const generation = this.refreshGate.request();
+    button.disabled = true;
+    button.setText("正在加载…");
+    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", {
+      section, page_size: section === "tasks" ? LIST_PAGE_SIZE : 20, cursor,
+    });
+    if (!this.refreshGate.isCurrent(generation) || this.activeSection !== section) return;
+    if (!response.ok) {
+      button.disabled = false;
+      button.setText("重试加载更多");
+      this.plugin.notify(response.error?.message || "无法加载下一页", { error: true });
+      return;
+    }
+    const next = this.normalizeSectionData(section, response.data);
+    if (!next) { button.disabled = false; button.setText("重试加载更多"); return; }
+    const key = section === "tasks" ? "tasks" : "runs";
+    const id = section === "tasks" ? "task_id" : "run_id";
+    const merged = new Map([...(this.data[key] || []), ...(next[key] || [])].map((item) => [item[id], item]));
+    next[key] = [...merged.values()];
+    this.data = next;
+    this.sectionData.set(section, next);
+    this.sectionFetchedAt.set(section, new Date().toISOString());
+    this.render();
   }
 
   renderBackgroundStatus(text, failed = false, retry = false) {
@@ -692,6 +723,7 @@ class SystemCenterView extends ItemView {
     if (section === "tasks") {
       if (!requireArray("tasks") || !requireObject("runtime")) return null;
       normalizeRuntime();
+      if (!requireObject("page")) normalized.page = { has_more: false, next_cursor: null };
     }
     if (section === "quality") {
       if (!requireObject("quality") || !normalized.quality?.overview) return null;
@@ -706,7 +738,10 @@ class SystemCenterView extends ItemView {
       for (const key of ["reviews", "runs"]) if (!requireArray(key)) { normalized[key] = []; warnings.push(key); }
       normalizeInbox();
     }
-    if (section === "history" && !requireArray("runs")) return null;
+    if (section === "history") {
+      if (!requireArray("runs")) return null;
+      if (!requireObject("page")) normalized.page = { has_more: false, next_cursor: null };
+    }
     this.sectionWarnings.set(section, [...new Set(warnings)]);
     return normalized;
   }
@@ -904,7 +939,7 @@ class SystemCenterView extends ItemView {
     summary.setText(`运行中 ${taskCounts.running || 0} · 已排队 ${taskCounts.queued || 0} · 等待条件 ${(taskCounts["waiting-for-network"] || 0) + (taskCounts["waiting-for-ai"] || 0) + (taskCounts["waiting-for-user"] || 0) + (taskCounts.deferred || 0)} · 失败 ${taskCounts.failed || 0}`);
     let shown = 0;
     for (const [label, statuses] of groups) {
-      const tasks = this.data.tasks.filter((task) => statuses.includes(task.status)).slice(0, 50);
+      const tasks = this.data.tasks.filter((task) => statuses.includes(task.status));
       if (!tasks.length) continue;
       shown += tasks.length;
       const section = root.createEl("section", { cls: "knowledgeos-system-section", attr: { "aria-label": label } });
@@ -913,6 +948,10 @@ class SystemCenterView extends ItemView {
       for (const task of tasks) this.renderTask(list, task);
     }
     if (!shown) this.renderEmptyState(root, "circle-check", "当前没有运行中或等待处理的任务", "新的手动任务和自动任务会显示在这里。", true);
+    if (this.data.page?.has_more && this.data.page?.next_cursor) {
+      const more = root.createEl("button", { cls: "knowledgeos-system-load-more", text: "加载更多任务" });
+      more.onclick = () => this.loadNextPage(more);
+    }
     const jobs = (this.data.runtime.jobs || []).filter((job) => job.enabled && job.trigger?.type !== "startup");
     if (jobs.length) {
       const details = root.createEl("details", { cls: "knowledgeos-system-disclosure knowledgeos-scheduled-jobs" });
@@ -1012,9 +1051,12 @@ class SystemCenterView extends ItemView {
       this.renderEmptyState(root, "history", "尚无运行记录", "任务完成或失败后，运行记录会显示在这里。");
       return;
     }
-    const limit = this.plugin.settings.developerMode ? this.data.runs.length : 20;
     const list = root.createDiv({ cls: "knowledgeos-system-list knowledgeos-system-history-list" });
-    for (const run of this.data.runs.slice(0, limit)) this.renderRun(list, run);
+    for (const run of this.data.runs) this.renderRun(list, run);
+    if (this.data.page?.has_more && this.data.page?.next_cursor) {
+      const more = root.createEl("button", { cls: "knowledgeos-system-load-more", text: "加载更多运行记录" });
+      more.onclick = () => this.loadNextPage(more);
+    }
   }
 
   renderQuality(root) {

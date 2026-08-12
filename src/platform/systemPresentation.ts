@@ -4,7 +4,7 @@ import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaul
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
 import { QualityRepository } from "../quality/repository.js";
 import { RuntimeRepository } from "../runtime/repository.js";
-import { listRecentRunSummaries, type RunSummaryIndexEntry } from "../core/runSummaryIndex.js";
+import { listRecentRunSummaries, listRecentRunSummaryPage, type RunSummaryIndexEntry } from "../core/runSummaryIndex.js";
 
 interface TransactionSnapshot extends JsonObject {
   vault_path: string;
@@ -195,6 +195,17 @@ export async function listRunViews(vaultRoot: string, params: JsonObject): Promi
   const includeRollback = params.include_rollback !== false;
   const runs = await listRecentRunSummaries(vaultRoot, { limit, status: requestedStatus });
   return await Promise.all(runs.map((run) => indexedRunSummary(vaultRoot, run, includeRollback))) as unknown as JsonValue;
+}
+
+export async function listRunViewPage(vaultRoot: string, params: JsonObject): Promise<JsonObject> {
+  const pageSize = typeof params.page_size === "number" ? Math.max(1, Math.min(100, Math.floor(params.page_size))) : 20;
+  const requestedStatus = typeof params.status === "string" ? params.status : null;
+  const cursor = params.cursor && typeof params.cursor === "object" && !Array.isArray(params.cursor) ? params.cursor as JsonObject : null;
+  const page = await listRecentRunSummaryPage(vaultRoot, { pageSize, status: requestedStatus, cursor });
+  return {
+    items: await Promise.all(page.items.map((run) => indexedRunSummary(vaultRoot, run, params.include_rollback !== false))),
+    has_more: page.has_more, next_cursor: page.next_cursor,
+  };
 }
 
 export async function getRunView(vaultRoot: string, runId: string, developerMode = false): Promise<JsonObject | null> {

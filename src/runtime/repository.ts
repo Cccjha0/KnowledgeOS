@@ -93,6 +93,11 @@ export class RuntimeRepository {
   }
   getTask(taskId: string): RuntimeTask | null { return this.call("get-task", { task_id: taskId }) as RuntimeTask | null; }
   listTasks(statuses?: TaskStatus[]): RuntimeTask[] { return this.call("list-tasks", { statuses: statuses ?? [] }); }
+  taskPage(options: { statuses?: TaskStatus[]; pageSize?: number; cursor?: JsonObject | null } = {}): JsonObject {
+    return this.call<JsonObject>("task-center-page", {
+      statuses: options.statuses ?? [], page_size: options.pageSize ?? 50, cursor: options.cursor ?? null,
+    });
+  }
   transitionTask(taskId: string, to: TaskStatus, patch: { error?: RuntimeError | null; deferUntil?: string | null; nextRetryAt?: string | null; completionReason?: string | null } = {}): RuntimeTask {
     return this.call("transition-task", {
       task_id: taskId, to, error: patch.error ?? null, error_supplied: patch.error !== undefined,

@@ -22,6 +22,20 @@ test("Task Center API lists, explains, retries, defers, cancels, and runs Tasks"
     const list = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-LIST", method: "listTasks", params: {} });
     assert.equal(list.ok, true);
     assert.equal((list.data as JsonObject[])[0]?.task_id, task.task_id);
+    repository = await RuntimeRepository.open(vault);
+    for (let index = 0; index < 4; index += 1) repository.createTask({
+      job_id: "core.center", module: "core", task_type: "core-operation", workflow: "core:scan-inbox", resources: local,
+      trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: `center:page:${index}`,
+    });
+    repository.close();
+    const firstPage = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-PAGE-1", method: "listTasks", params: { page_size: 2 } });
+    const firstPageData = firstPage.data as JsonObject;
+    assert.equal((firstPageData.items as JsonObject[]).length, 2);
+    assert.equal(firstPageData.has_more, true);
+    const secondPage = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-PAGE-2", method: "listTasks", params: { page_size: 2, cursor: firstPageData.next_cursor ?? null } });
+    const secondPageData = secondPage.data as JsonObject;
+    assert.equal((secondPageData.items as JsonObject[]).length, 2);
+    assert.equal(new Set([...(firstPageData.items as JsonObject[]), ...(secondPageData.items as JsonObject[])].map((item) => item.task_id)).size, 4);
     const detail = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-DETAIL", method: "getTaskDetails", params: { task_id: task.task_id } });
     assert.equal(((detail.data as JsonObject).runs as JsonObject[]).length, 0);
     const cycle = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-CYCLE", method: "runTaskCycle", params: { limit: 2 } });

@@ -18,7 +18,7 @@ import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } f
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
 import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
 import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem, reviewPartialInboxExtraction } from "./inboxWorkflow.js";
-import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
+import { assessRunRollback, findRun, getRunView, listRunViewPage, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import type { TaskStatus } from "../runtime/domain.js";
@@ -279,10 +279,15 @@ async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Prom
 
 function runtimeView(runtimeData: JsonObject): JsonObject {
   const tasks = (runtimeData.tasks as JsonValue[] | undefined) ?? [];
-  const counts: JsonObject = {};
-  for (const task of tasks) {
-    if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
-    counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+  const runtimeStats = runtimeData.runtime_stats && typeof runtimeData.runtime_stats === "object" && !Array.isArray(runtimeData.runtime_stats)
+    ? runtimeData.runtime_stats as JsonObject : {};
+  const hasRuntimeCounts = runtimeStats.counts && typeof runtimeStats.counts === "object" && !Array.isArray(runtimeStats.counts);
+  const counts: JsonObject = hasRuntimeCounts ? { ...runtimeStats.counts as JsonObject } : {};
+  if (!hasRuntimeCounts) {
+    for (const task of tasks) {
+      if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
+      counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+    }
   }
   return {
     integrity: runtimeData.integrity ?? "unknown",
@@ -291,7 +296,7 @@ function runtimeView(runtimeData: JsonObject): JsonObject {
     resources: runtimeData.resources ?? [],
     jobs: runtimeData.jobs ?? [],
     checkpoints: runtimeData.checkpoints ?? [],
-    observability: runtimeData.runtime_stats ?? {},
+    observability: runtimeStats,
   };
 }
 
@@ -397,12 +402,29 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       throw new PkbError("INVALID_REQUEST", `Unknown System Center section: ${section}`);
     }
     if (section === "history") {
-      return { section, runs: await listRunViews(vaultRoot, { limit: 20, include_rollback: false }) } as unknown as JsonValue;
+      const page = await listRunViewPage(vaultRoot, {
+        page_size: typeof params.page_size === "number" ? params.page_size : 20,
+        cursor: params.cursor ?? null, include_rollback: false,
+      });
+      return { section, runs: page.items, page } as unknown as JsonValue;
     }
-    const runtimeData = ["full", "overview", "tasks", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
+    if (section === "tasks") {
+      const repository = await RuntimeRepository.open(vaultRoot);
+      try {
+        const page = repository.taskPage({
+          pageSize: typeof params.page_size === "number" ? params.page_size : 50,
+          cursor: params.cursor && typeof params.cursor === "object" && !Array.isArray(params.cursor) ? params.cursor as JsonObject : null,
+        });
+        const runtimeData = page.runtime as JsonObject;
+        return {
+          section, tasks: page.items, page: { has_more: page.has_more, next_cursor: page.next_cursor },
+          runtime: runtimeView(runtimeData),
+        } as unknown as JsonValue;
+      } finally { repository.close(); }
+    }
+    const runtimeData = ["full", "overview", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
     const runtime = runtimeView(runtimeData);
     const tasks = ((runtimeData.tasks as JsonValue[] | undefined) ?? []).slice(0, 200);
-    if (section === "tasks") return { section, tasks, runtime } as unknown as JsonValue;
     if (section === "quality") {
       return { section, quality: await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData) } as unknown as JsonValue;
     }
@@ -546,6 +568,12 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     try {
       if (method === "listTasks") {
         const statuses = Array.isArray(params.statuses) ? params.statuses.filter((item): item is TaskStatus => typeof item === "string") : undefined;
+        if (params.page_size !== undefined || params.cursor !== undefined) {
+          return repository.taskPage({
+            statuses, pageSize: typeof params.page_size === "number" ? params.page_size : 50,
+            cursor: params.cursor && typeof params.cursor === "object" && !Array.isArray(params.cursor) ? params.cursor as JsonObject : null,
+          });
+        }
         return repository.listTasks(statuses).slice(0, typeof params.limit === "number" ? params.limit : 200);
       }
       if (method === "getTaskDetails") {
@@ -624,7 +652,9 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   if (method === "getInstances") {
     return instanceViews(await discoverInstances(vaultRoot), params);
   }
-  if (method === "getRecentRuns") return listRunViews(vaultRoot, params);
+  if (method === "getRecentRuns") {
+    return params.page_size !== undefined || params.cursor !== undefined ? listRunViewPage(vaultRoot, params) : listRunViews(vaultRoot, params);
+  }
   if (method === "getRunDetails") {
     const runId = stringParam(params, "run_id");
     const view = await getRunView(vaultRoot, runId, params.developer_mode === true);
