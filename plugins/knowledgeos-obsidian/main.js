@@ -561,7 +561,10 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       await this.saveData(this.settings);
     }
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
-    const clientOptions = { onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure };
+    const clientOptions = {
+      onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure,
+      onOperationSettled: (event) => this.handleOperationSettled(event),
+    };
     this.client = new SharedCoreCommandClient(this.settings, clientOptions);
     this.taskClient = new SharedCoreCommandClient(this.settings, clientOptions);
     registerKnowledgeViews(this, {
@@ -632,6 +635,27 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
 
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);
+  }
+
+  async handleOperationSettled({ method, response }) {
+    const affected = new Set(({
+      createCapture: ["today", "inbox", "system"],
+      processInboxItem: ["today", "inbox", "system"], processInboxBatch: ["today", "inbox", "system"],
+      classifyInboxAttachment: ["today", "inbox", "system"], reviewPartialInboxExtraction: ["today", "inbox", "system"],
+      resolveReview: ["today", "reviews", "system"], manageTask: ["today", "system"], enqueueTask: ["today", "system"],
+      runTaskCycle: ["today", "system"], manageQualityIssue: ["today", "system"], runQualityAudit: ["today", "system"],
+      manageModule: ["today", "inbox", "reviews", "system"], manageInstance: ["today", "inbox", "reviews", "system"],
+      createInstance: ["today", "inbox", "reviews", "system"],
+    })[method] || ["system"]);
+    const refreshes = [];
+    if (affected.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) refreshes.push(leaf.view.refresh({ background: true }));
+    if (affected.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) refreshes.push(leaf.view.loadReviews());
+    if (affected.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) refreshes.push(leaf.view.refresh());
+    if (affected.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) refreshes.push(leaf.view.refresh({ background: true }));
+    await Promise.allSettled(refreshes);
+    if (method === "runTaskCycle") return;
+    if (response?.ok) this.notify("后台操作已完成。", { force: true });
+    else this.notify(`后台操作失败：${response?.error?.message || "Core 未返回成功结果。"}`, { error: true, force: true });
   }
 
   openModuleBuilder() { new this.viewConstructors.ModuleBuilderModal(this.app, this).open(); }

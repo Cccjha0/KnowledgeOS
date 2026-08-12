@@ -132,9 +132,11 @@ test("CoreCommandClient times out stalled requests and removes them from pending
 
 test("CoreCommandClient does not resubmit a mutating request after its UI wait expires", async () => {
   let requestCount = 0;
+  const settled = [];
   let bridge;
   const client = new CoreCommandClient(clientSettings, {
     requestTimeoutMs: 1,
+    onOperationSettled: (event) => settled.push(event),
     spawn: () => (bridge = createMockBridge((child, request) => {
       requestCount += 1;
       setTimeout(() => child.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, data: { saved: true } })}\n`), 20);
@@ -146,9 +148,36 @@ test("CoreCommandClient does not resubmit a mutating request after its UI wait e
   assert.equal(duplicate.state, "running");
   assert.equal(requestCount, 1);
   await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].method, "createCapture");
+  assert.equal(settled[0].response.data.saved, true);
   const completed = await client.invoke("createCapture", { content: "one" });
   assert.equal(completed.ok, true);
   assert.equal(requestCount, 1);
+  client.close();
+});
+
+test("CoreCommandClient does not emit background completion for operations resolved in the UI", async () => {
+  const settled = [];
+  const client = new CoreCommandClient(clientSettings, {
+    onOperationSettled: (event) => settled.push(event), spawn: () => createMockBridge(),
+  });
+  assert.equal((await client.invoke("manageTask", { task_id: "TASK-1", action: "retry" })).ok, true);
+  assert.deepEqual(settled, []);
+  client.close();
+});
+
+test("CoreCommandClient reports a bridge failure after a mutation outlives its UI wait", async () => {
+  const settled = [];
+  let bridge;
+  const client = new CoreCommandClient(clientSettings, {
+    requestTimeoutMs: 1, onOperationSettled: (event) => settled.push(event),
+    spawn: () => (bridge = createMockBridge(() => {})),
+  });
+  assert.equal((await client.invoke("manageTask", { task_id: "TASK-2", action: "retry" }, null, { timeoutMs: 5 })).state, "running");
+  bridge.emit("exit", 1);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].response.ok, false);
   client.close();
 });
 

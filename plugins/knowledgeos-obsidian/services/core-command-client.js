@@ -19,6 +19,7 @@ class CoreCommandClient {
   constructor(settings, options = {}) {
     this.settings = settings;
     this.onModulesLoaded = options.onModulesLoaded || (() => {});
+    this.onOperationSettled = options.onOperationSettled || (() => {});
     this.missingBuiltCliFailure = options.missingBuiltCliFailure || (() => null);
     this.execFile = options.execFile || execFile;
     this.spawn = options.spawn || spawn;
@@ -150,13 +151,20 @@ class CoreCommandClient {
     clearTimeout(pending.timeout);
     if (pending.operationKey) this.operations.set(pending.operationKey, { requestId, response, expiresAt: Date.now() + 60_000 });
     if (!pending.uiResolved) pending.resolve(response);
+    else {
+      try { this.onOperationSettled({ requestId, method: pending.method, response }); } catch { /* UI callbacks must not break bridge bookkeeping. */ }
+    }
     return true;
   }
 
-  resolveAllPending(response) {
-    for (const { resolve, timeout } of this.pending.values()) {
+  resolveAllPending(response, reportSettled = false) {
+    for (const [requestId, pending] of this.pending.entries()) {
+      const { resolve, timeout } = pending;
       clearTimeout(timeout);
-      resolve(response);
+      if (!pending.uiResolved) resolve(response);
+      else if (reportSettled) {
+        try { this.onOperationSettled({ requestId, method: pending.method, response }); } catch { /* UI callbacks must not break bridge bookkeeping. */ }
+      }
     }
     this.pending.clear();
   }
@@ -165,7 +173,7 @@ class CoreCommandClient {
     if (this.server !== server) return;
     this.server = null;
     this.serverKey = null;
-    this.resolveAllPending(this.failure(error.message));
+    this.resolveAllPending(this.failure(error.message), true);
   }
 
   failure(message) {
