@@ -562,7 +562,6 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       inbox: INBOX_VIEW_TYPE,
       system: SYSTEM_VIEW_TYPE,
     }, this.viewConstructors);
-    void this.refreshModuleUiMetadata();
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
     this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
@@ -591,6 +590,7 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     }));
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.openTodayOnStartup) await this.activateToday();
+      void this.refreshModuleUiMetadata();
       void this.runTaskCycle(true);
     });
     this.registerInterval(setInterval(() => this.runTaskCycle(false), 60_000));

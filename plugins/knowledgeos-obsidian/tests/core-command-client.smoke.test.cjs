@@ -112,6 +112,28 @@ test("CoreCommandClient times out stalled requests and removes them from pending
   client.close();
 });
 
+test("CoreCommandClient does not resubmit a mutating request after its UI wait expires", async () => {
+  let requestCount = 0;
+  let bridge;
+  const client = new CoreCommandClient(clientSettings, {
+    requestTimeoutMs: 1,
+    spawn: () => (bridge = createMockBridge((child, request) => {
+      requestCount += 1;
+      setTimeout(() => child.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, data: { saved: true } })}\n`), 20);
+    })),
+  });
+  const first = await client.invoke("createCapture", { content: "one" }, null, { timeoutMs: 5 });
+  assert.equal(first.state, "running");
+  const duplicate = await client.invoke("createCapture", { content: "one" }, null, { timeoutMs: 5 });
+  assert.equal(duplicate.state, "running");
+  assert.equal(requestCount, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const completed = await client.invoke("createCapture", { content: "one" });
+  assert.equal(completed.ok, true);
+  assert.equal(requestCount, 1);
+  client.close();
+});
+
 test("CoreCommandClient matches concurrent requests to their own responses", async () => {
   const client = new CoreCommandClient(clientSettings, {
     spawn: () => createMockBridge((bridge, request) => {

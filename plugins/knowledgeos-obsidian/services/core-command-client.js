@@ -1,5 +1,12 @@
 const { execFile, spawn } = require("node:child_process");
 
+const MUTATING_METHODS = new Set([
+  "createCapture", "processInboxItem", "processInboxBatch", "resolveReview", "rollbackRun", "manageModule", "createInstance",
+  "manageInstance", "manageTask", "enqueueTask", "runTaskCycle", "manageQualityIssue", "runQualityAudit", "updateAssetAccessPolicy",
+  "classifyInboxAttachment", "reviewPartialInboxExtraction", "migrateLegacyAccessPolicies", "backfillQualityMetadata",
+  "saveModuleBuilderGapReport", "saveExtensionDesignDraft", "createModuleFromBlueprint", "runModuleReadinessAction",
+]);
+
 class CoreCommandClient {
   constructor(settings, options = {}) {
     this.settings = settings;
@@ -15,21 +22,35 @@ class CoreCommandClient {
     this.stdoutBuffer = "";
     this.stderrBuffer = "";
     this.pending = new Map();
+    this.operations = new Map();
   }
 
   invoke(method, params = {}, requestId = null, options = {}) {
     if (!this.settings.coreCliPath || !this.settings.vaultPath) {
       return Promise.resolve({ ok: false, state: "failed", error: { message: "尚未配置 Core CLI 或 Vault 路径。", impact: "Today 暂时无法刷新，已有 Markdown 数据不受影响。", recovery_actions: ["打开 KnowledgeOS 设置并填写路径"] } });
     }
+    const serverReady = this.ensureServer();
+    const mutation = MUTATING_METHODS.has(method);
+    const operationKey = mutation ? JSON.stringify([method, params]) : null;
+    const existing = operationKey ? this.operations.get(operationKey) : null;
+    if (existing && existing.expiresAt > Date.now()) {
+      if (existing.response) return Promise.resolve(existing.response);
+      return Promise.resolve(this.running(existing.requestId, method));
+    }
     requestId = requestId || `PLUGIN-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    if (this.ensureServer()) {
+    if (operationKey) this.operations.set(operationKey, { requestId, response: null, expiresAt: Date.now() + 5 * 60_000 });
+    if (serverReady) {
       return new Promise((resolve) => {
+        const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : mutation ? Math.max(this.requestTimeoutMs, 120_000) : this.requestTimeoutMs;
         const timeout = setTimeout(() => {
-          this.resolvePending(requestId, this.failure("Core API request timed out."));
-        }, Number.isFinite(options.timeoutMs) ? Math.max(1, options.timeoutMs) : this.requestTimeoutMs);
-        this.pending.set(requestId, { resolve, timeout });
+          if (mutation) {
+            const pending = this.pending.get(requestId);
+            if (pending) { pending.uiResolved = true; resolve(this.running(requestId, method)); }
+          } else this.resolvePending(requestId, this.failure("Core API request timed out."));
+        }, timeoutMs);
+        this.pending.set(requestId, { resolve, timeout, method, operationKey, uiResolved: false });
         try {
-          this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params })}\n`, (error) => {
+          this.server.stdin.write(`${JSON.stringify({ request_id: requestId, method, params, deadline_at: new Date(Date.now() + timeoutMs).toISOString() })}\n`, (error) => {
             if (!error) return;
             this.resolvePending(requestId, this.failure(error.message));
           });
@@ -104,7 +125,8 @@ class CoreCommandClient {
     if (!pending) return false;
     this.pending.delete(requestId);
     clearTimeout(pending.timeout);
-    pending.resolve(response);
+    if (pending.operationKey) this.operations.set(pending.operationKey, { requestId, response, expiresAt: Date.now() + 60_000 });
+    if (!pending.uiResolved) pending.resolve(response);
     return true;
   }
 
@@ -129,11 +151,20 @@ class CoreCommandClient {
     return { ok: false, state: "failed", error: { message, impact: "本次界面操作没有得到 Core 确认。", recovery_actions: ["检查 Core CLI 路径", "在设置页测试连接"] } };
   }
 
+  running(requestId, method) {
+    return { request_id: requestId, method, ok: false, state: "running", error: {
+      code: "CORE_REQUEST_STILL_RUNNING", message: "Core is still processing this operation.",
+      impact: "The operation was not submitted again. Refresh the related view to see its final state.",
+      recovery_actions: ["Wait for Core to finish", "Refresh the related view"], retryable: false,
+    } };
+  }
+
   close() {
     const server = this.server;
     this.server = null;
     this.serverKey = null;
     this.resolveAllPending(this.failure("Core API server is restarting."));
+    this.operations.clear();
     if (server && !server.killed) server.stdin.end();
   }
 }

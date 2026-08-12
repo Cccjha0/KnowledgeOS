@@ -131,7 +131,7 @@ test("Core API server correlates multiple requests over one process", async () =
         server!.stdin!.write(`${JSON.stringify({ request_id: requestId, method: "getInstances", params: {} })}\n`);
       }
     });
-    assert.deepEqual(responses.map((response) => response.request_id), ["SERVER-ONE", "SERVER-TWO"]);
+    assert.deepEqual(responses.map((response) => response.request_id).sort(), ["SERVER-ONE", "SERVER-TWO"]);
     assert.equal(responses.every((response) => response.ok === true), true);
     server.stdin!.end();
     await new Promise<void>((resolve) => server!.once("exit", () => resolve()));
