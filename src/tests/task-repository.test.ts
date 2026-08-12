@@ -86,6 +86,25 @@ test("runtime database backup can restore durable queue state", async () => {
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
+test("runtime restore rejects a corrupt backup without replacing the active database", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-invalid-backup-"));
+  try {
+    const repository = await RuntimeRepository.open(vault);
+    const task = repository.createTask({
+      job_id: "core.scan", module: "core", task_type: "core-operation", workflow: "core:scan-inbox",
+      resources: localResources, trigger: { type: "manual" }, catch_up_policy: "none", idempotency_key: "scan:survives-invalid-restore",
+    }).task;
+    repository.close();
+    const invalidBackup = path.join(vault, "90-System", "Backups", "invalid-runtime.db");
+    await fs.mkdir(path.dirname(invalidBackup), { recursive: true });
+    await fs.writeFile(invalidBackup, "not a sqlite database", "utf8");
+    await assert.rejects(restoreRuntimeDatabase(vault, invalidBackup), /file is not a database|malformed/i);
+    const active = await RuntimeRepository.open(vault);
+    assert.equal(active.getTask(task.task_id)?.idempotency_key, "scan:survives-invalid-restore");
+    active.close();
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("replace and merge concurrency policies have deterministic queue semantics", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-runtime-concurrency-"));
   try {

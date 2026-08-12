@@ -6,6 +6,11 @@ import os
 import sqlite3
 import sys
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 SCHEMA_VERSION = 5
 
 TRANSITIONS = {
@@ -42,6 +47,73 @@ def connect(database_path):
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+class RuntimeFileLock:
+    def __init__(self, database_path, exclusive=False):
+        self.path = database_path.with_name(f"{database_path.name}.maintenance.lock")
+        self.exclusive = exclusive
+        self.handle = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+b")
+        self.handle.seek(0, os.SEEK_END)
+        if self.handle.tell() == 0:
+            self.handle.write(b"0")
+            self.handle.flush()
+        self.handle.seek(0)
+        if os.name == "nt":
+            mode = msvcrt.LK_LOCK if self.exclusive else msvcrt.LK_RLCK
+            msvcrt.locking(self.handle.fileno(), mode, 1)
+        else:
+            mode = fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH
+            fcntl.flock(self.handle.fileno(), mode)
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        if self.handle is None:
+            return
+        self.handle.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+
+
+def restore_database(database_path, backup_path):
+    if not backup_path.is_file():
+        fail("RUNTIME_BACKUP_NOT_FOUND", f"Runtime backup does not exist: {backup_path}")
+    source = sqlite3.connect(f"file:{backup_path.as_posix()}?mode=ro", uri=True)
+    try:
+        integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            fail("RUNTIME_BACKUP_INVALID", f"Runtime backup failed integrity check: {integrity}")
+        temporary = database_path.with_name(f"{database_path.name}.restore-{os.getpid()}.tmp")
+        if temporary.exists():
+            temporary.unlink()
+        destination = sqlite3.connect(temporary)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+        damaged = database_path.with_name(f"{database_path.name}.damaged-{int(datetime.now(timezone.utc).timestamp() * 1000)}")
+        if database_path.exists():
+            database_path.replace(damaged)
+        for suffix in ("-wal", "-shm"):
+            companion = database_path.with_name(f"{database_path.name}{suffix}")
+            if companion.exists():
+                companion.replace(damaged.with_name(f"{damaged.name}{suffix}"))
+        try:
+            temporary.replace(database_path)
+        except Exception:
+            if damaged.exists():
+                damaged.replace(database_path)
+            raise
+        return {"restored": str(backup_path), "damaged_copy": str(damaged) if damaged.exists() else None}
+    finally:
+        source.close()
 
 
 def migrate(connection):
@@ -728,8 +800,12 @@ def main():
     payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     connection = None
     try:
-        connection = connect(database_path)
-        emit(dispatch(command, connection, payload))
+        with RuntimeFileLock(database_path, exclusive=command == "restore"):
+            if command == "restore":
+                emit(restore_database(database_path, Path(payload["backup_path"])))
+                return
+            connection = connect(database_path)
+            emit(dispatch(command, connection, payload))
     except sqlite3.OperationalError as error:
         code = "RUNTIME_DB_LOCKED" if "locked" in str(error).lower() else "RUNTIME_DB_UNAVAILABLE"
         fail(code, str(error))

@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PkbError } from "../core/errors.js";
@@ -46,6 +45,12 @@ export class RuntimeRepository {
       initializedDatabases.add(databasePath);
     }
     return repository;
+  }
+
+  static restore(databasePath: string, backupPath: string): void {
+    const repository = new RuntimeRepository(databasePath);
+    repository.call("restore", { backup_path: path.resolve(backupPath) });
+    repository.close();
   }
 
   private call<T extends JsonValue>(command: string, payload: JsonObject = {}): T {
@@ -167,12 +172,6 @@ export async function restoreRuntimeDatabase(vaultRoot: string, backupPath: stri
   if (!(await exists(backupPath))) throw new PkbError("RUNTIME_BACKUP_NOT_FOUND", `Runtime backup does not exist: ${backupPath}`);
   const target = runtimePath(vaultRoot);
   await ensureDir(path.dirname(target));
-  const damaged = `${target}.damaged-${Date.now()}`;
-  if (await exists(target)) await fs.rename(target, damaged);
-  try { await fs.copyFile(backupPath, target); }
-  catch (error) {
-    if (await exists(damaged)) await fs.rename(damaged, target);
-    throw error;
-  }
+  RuntimeRepository.restore(target, backupPath);
   initializedDatabases.delete(target);
 }
