@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown, parseMarkdownBatch, writeMarkdown, writeYaml } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch, validateSchemaBatch, writeMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -16,6 +16,7 @@ import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
 import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
+import { listReviewSummaryPage } from "../core/reviewSummaryIndex.js";
 import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
 import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem, reviewPartialInboxExtraction } from "./inboxWorkflow.js";
 import { assessRunRollback, findRun, getRunView, listRunViewPage, listRunViews } from "./systemPresentation.js";
@@ -201,6 +202,28 @@ async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonV
     (priorityWeight[a.priority] ?? 9) - (priorityWeight[b.priority] ?? 9) ||
     Date.parse(a.created_at) - Date.parse(b.created_at),
   );
+}
+
+async function listReviewPage(vaultRoot: string, params: JsonObject): Promise<JsonObject> {
+  const requested = Array.isArray(params.statuses)
+    ? params.statuses.filter((value): value is string => typeof value === "string")
+    : ["pending", "error"];
+  const directories = [...new Set(requested.map((status) => status === "pending" ? "Pending" : status === "error" ? "Error" : status === "deferred" ? "Deferred" : "Closed"))];
+  if (directories.includes("Deferred")) await requeueDueReviews(vaultRoot);
+  const page = await listReviewSummaryPage(vaultRoot, { ...params, statuses: requested });
+  const entries = Array.isArray(page.items) ? page.items as JsonObject[] : [];
+  const files = entries.map((entry) => fromVaultPath(vaultRoot, String(entry.vault_path)));
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  const available = files.map((file) => ({ file, document: parsed.get(file) })).filter((entry) => Boolean(entry.document));
+  const validation = validateSchemaBatch(vaultRoot, available.map((entry) => ({
+    schemaId: "https://pkb.local/schemas/core/review-item.schema.json", data: entry.document!.data,
+  })));
+  const views: JsonObject[] = [];
+  for (const [index, entry] of available.entries()) {
+    if (!validation[index]?.ok) continue;
+    views.push(await buildReviewView(vaultRoot, entry.document!.data as unknown as ReviewItem, toVaultPath(vaultRoot, entry.file)));
+  }
+  return { ...page, items: views, omitted_invalid: available.length - views.length + files.length - available.length };
 }
 
 async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
@@ -544,7 +567,9 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       })),
     } as unknown as JsonValue;
   }
-  if (method === "listReviewItems") return listReviews(vaultRoot, params);
+  if (method === "listReviewItems") {
+    return params.page_size !== undefined || params.cursor !== undefined ? listReviewPage(vaultRoot, params) : listReviews(vaultRoot, params);
+  }
   if (method === "resolveReview") {
     const before = await locateReviewItem(vaultRoot, stringParam(params, "review_id"));
     const result = await resolveReviewCommand(vaultRoot, params);

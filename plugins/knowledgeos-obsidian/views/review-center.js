@@ -173,8 +173,8 @@ class ReviewCenterView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
-    this.visibleLimit = LIST_PAGE_SIZE;
     this.reviews = null;
+    this.page = null;
     this.loadPromise = null;
     this.loadQueued = false;
     this.pendingReviewId = null;
@@ -332,7 +332,7 @@ class ReviewCenterView extends ItemView {
     this.listEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderReviewBackgroundStatus("更新中…");
     else renderLoadingSkeleton(this.listEl, "正在加载审核事项…");
-    const params = {};
+    const params = { page_size: LIST_PAGE_SIZE };
     const status = this.statusFilter.value;
     if (status !== "active") params.statuses = status === "all"
       ? ["pending", "approved", "approved-with-modification", "rejected", "deferred", "resolved-by-user-edit", "error"]
@@ -360,7 +360,8 @@ class ReviewCenterView extends ItemView {
     }
     this.listEl.empty();
     this.backgroundStatus = null;
-    this.reviews = response.data;
+    this.reviews = response.data?.items || [];
+    this.page = response.data || { has_more: false, next_cursor: null, total: this.reviews.length };
     this.lastSuccessfulAt = new Date().toISOString();
     this.updateReviewSummary();
     let actionOptionsChanged = false;
@@ -427,7 +428,7 @@ class ReviewCenterView extends ItemView {
     this.contentEl.removeClass("is-review-detail");
     this.listEl.empty();
     const section = this.listEl.createEl("section", { cls: "knowledgeos-review-results", attr: { "aria-label": "审核事项" } });
-    for (const review of this.reviews.slice(0, this.visibleLimit)) {
+    for (const review of this.reviews) {
       const card = section.createEl("article", { cls: `knowledgeos-review-item priority-${review.priority} status-${review.status}` });
       const pendingDecision = this.pendingReviewActions.get(review.review_id);
       const actionError = this.reviewActionErrors.get(review.review_id);
@@ -451,10 +452,43 @@ class ReviewCenterView extends ItemView {
       else if (review.target_state === "unavailable") card.createDiv({ cls: "knowledgeos-review-row-warning is-error", text: "当前无法读取目标字段。" });
       addCardArrow(heading);
     }
-    if (this.reviews.length > this.visibleLimit) {
-      const more = this.listEl.createEl("button", { cls: "knowledgeos-review-load-more", text: `加载更多（剩余 ${this.reviews.length - this.visibleLimit}）` });
-      more.onclick = () => { this.visibleLimit += LIST_PAGE_SIZE; this.renderReviewList(); };
+    if (this.page?.has_more && this.page?.next_cursor) {
+      const remaining = typeof this.page.total === "number" ? Math.max(0, this.page.total - this.reviews.length) : null;
+      const more = this.listEl.createEl("button", { cls: "knowledgeos-review-load-more", text: remaining === null ? "加载更多" : `加载更多（还有 ${remaining} 项）` });
+      more.onclick = () => this.loadMoreReviews(more);
     }
+  }
+
+  async loadMoreReviews(button) {
+    const cursor = this.page?.next_cursor;
+    if (!cursor) return;
+    const params = { page_size: LIST_PAGE_SIZE, cursor };
+    const status = this.statusFilter.value;
+    if (status !== "active") params.statuses = status === "all"
+      ? ["pending", "approved", "approved-with-modification", "rejected", "deferred", "resolved-by-user-edit", "error"]
+      : [status];
+    if (this.priorityFilter.value) params.priority = this.priorityFilter.value;
+    if (this.moduleFilter.value) params.module_id = this.moduleFilter.value;
+    if (this.instanceFilter.value) params.instance_id = this.instanceFilter.value;
+    if (this.actionFilter.value) params.action = this.actionFilter.value;
+    if (this.createdFilter.value) {
+      params.created_from = new Date(`${this.createdFilter.value}T00:00:00`).toISOString();
+      params.created_to = new Date(`${this.createdFilter.value}T23:59:59.999`).toISOString();
+    }
+    if (this.deferredFilter.value) {
+      params.review_after_from = new Date(`${this.deferredFilter.value}T00:00:00`).toISOString();
+      params.review_after_to = new Date(`${this.deferredFilter.value}T23:59:59.999`).toISOString();
+    }
+    const generation = this.loadGate.request();
+    button.disabled = true; button.setText("正在加载…");
+    const response = await this.plugin.client.invoke("listReviewItems", params);
+    if (!this.loadGate.isCurrent(generation)) return;
+    if (!response.ok) { button.disabled = false; button.setText("重试加载更多"); this.plugin.notify(response.error?.message || "无法加载下一页审核事项", { error: true }); return; }
+    const items = response.data?.items || [];
+    this.reviews = [...new Map([...this.reviews, ...items].map((review) => [review.review_id, review])).values()];
+    this.page = response.data;
+    this.updateReviewSummary();
+    this.renderReviewList();
   }
 
   showCachedReviewList() {

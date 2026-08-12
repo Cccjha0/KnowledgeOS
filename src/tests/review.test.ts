@@ -259,6 +259,33 @@ test("Review Center API exposes current value, suggestion, impact, and active ac
   }
 });
 
+test("Review Center pages indexed candidates while validating only the requested Markdown page", async () => {
+  const vault = await fixture(reviewItem("REV-2026-000020", "application_open", false, true));
+  try {
+    for (let index = 21; index <= 25; index += 1) {
+      await writeReviewItems(vault, [{
+        ...reviewItem(`REV-2026-${String(index).padStart(6, "0")}`, "application_open", false, true),
+        target: `20-Workspace/Applications/test/Records/Missing-${index}.md`,
+      }]);
+    }
+    const first = await invokeCommandApi({
+      vaultRoot: vault, requestId: "REVIEW-PAGE-001", method: "listReviewItems", params: { page_size: 2 },
+    });
+    assert.equal(first.ok, true);
+    const firstPage = first.data as JsonObject;
+    assert.equal((firstPage.items as JsonObject[]).length, 2);
+    assert.equal(firstPage.total, 6);
+    assert.equal(firstPage.has_more, true);
+    const second = await invokeCommandApi({
+      vaultRoot: vault, requestId: "REVIEW-PAGE-002", method: "listReviewItems",
+      params: { page_size: 2, cursor: firstPage.next_cursor ?? null },
+    });
+    const secondPage = second.data as JsonObject;
+    assert.equal((secondPage.items as JsonObject[]).length, 2);
+    assert.equal(new Set([...(firstPage.items as JsonObject[]), ...(secondPage.items as JsonObject[])].map((item) => item.review_id)).size, 4);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
 test("Codex discussion uses minimal versioned context and rejects stale conclusions", async () => {
   const id = "REV-2026-000008";
   const vault = await fixture(reviewItem(id, "application_open", false, true));
