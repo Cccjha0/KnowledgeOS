@@ -17,6 +17,7 @@ import type {
 } from "./domain.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const initializedDatabases = new Set<string>();
 
 function runtimePath(vaultRoot: string): string {
   return path.join(vaultRoot, "90-System", "State", "runtime.db");
@@ -40,7 +41,10 @@ export class RuntimeRepository {
     const databasePath = runtimePath(vaultRoot);
     await ensureDir(path.dirname(databasePath));
     const repository = new RuntimeRepository(databasePath);
-    repository.call("init");
+    if (!initializedDatabases.has(databasePath) || !(await exists(databasePath))) {
+      repository.call("init");
+      initializedDatabases.add(databasePath);
+    }
     return repository;
   }
 
@@ -155,10 +159,7 @@ export class RuntimeRepository {
   cleanupHistory(retainDays = 90): JsonObject { return this.call("cleanup-history", { retain_days: retainDays }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));
-    this.call("checkpoint");
-    const temporary = `${destination}.tmp-${process.pid}`;
-    await fs.copyFile(this.databasePath, temporary);
-    await fs.rename(temporary, destination);
+    this.call("backup", { destination });
   }
 }
 
@@ -173,4 +174,5 @@ export async function restoreRuntimeDatabase(vaultRoot: string, backupPath: stri
     if (await exists(damaged)) await fs.rename(damaged, target);
     throw error;
   }
+  initializedDatabases.delete(target);
 }

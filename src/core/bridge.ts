@@ -1,10 +1,31 @@
 import { spawnSync } from "node:child_process";
+import { statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JsonObject, MarkdownDocument } from "./types.js";
 import { PkbError } from "./errors.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DOCUMENT_CACHE_LIMIT = 1_000;
+const documentCache = new Map<string, { mtimeMs: number; size: number; value: MarkdownDocument }>();
+const yamlCache = new Map<string, { mtimeMs: number; size: number; value: JsonObject }>();
+
+function cached<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string): T | null {
+  const stat = statSync(filePath);
+  const entry = cache.get(filePath);
+  if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) return null;
+  cache.delete(filePath); cache.set(filePath, entry);
+  return structuredClone(entry.value);
+}
+
+function remember<T>(cache: Map<string, { mtimeMs: number; size: number; value: T }>, filePath: string, value: T): T {
+  const stat = statSync(filePath);
+  cache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, value: structuredClone(value) });
+  while (cache.size > DOCUMENT_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+  return structuredClone(value);
+}
+
+function invalidate(filePath: string): void { documentCache.delete(filePath); yamlCache.delete(filePath); }
 
 function runBridge(
   vaultRoot: string,
@@ -41,8 +62,10 @@ function runBridge(
 }
 
 export function parseMarkdown(vaultRoot: string, filePath: string): MarkdownDocument {
+  const hit = cached(documentCache, filePath);
+  if (hit) return hit;
   const output = runBridge(vaultRoot, ["parse-markdown", filePath]);
-  return JSON.parse(output) as MarkdownDocument;
+  return remember(documentCache, filePath, JSON.parse(output) as MarkdownDocument);
 }
 
 export function writeMarkdown(
@@ -51,11 +74,14 @@ export function writeMarkdown(
   document: MarkdownDocument,
 ): void {
   runBridge(vaultRoot, ["write-markdown", filePath], document);
+  invalidate(filePath);
 }
 
 export function parseYaml(vaultRoot: string, filePath: string): JsonObject {
+  const hit = cached(yamlCache, filePath);
+  if (hit) return hit;
   const output = runBridge(vaultRoot, ["parse-yaml", filePath]);
-  return JSON.parse(output) as JsonObject;
+  return remember(yamlCache, filePath, JSON.parse(output) as JsonObject);
 }
 
 export function parseValidateYamlBatch(
@@ -69,6 +95,7 @@ export function parseValidateYamlBatch(
 
 export function writeYaml(vaultRoot: string, filePath: string, data: JsonObject): void {
   runBridge(vaultRoot, ["write-yaml", filePath], data);
+  invalidate(filePath);
 }
 
 export function validateSchema(

@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
+import os
 import sqlite3
 import sys
 
@@ -705,6 +706,17 @@ def dispatch(command, connection, payload):
         connection.commit(); return {"deleted_runs": deleted_runs, "deleted_metric_events": metric_cursor.rowcount, "deleted_audits": audit_cursor.rowcount, "retain_days": days}
     if command == "checkpoint":
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
+    if command == "backup":
+        destination = Path(payload["destination"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f"{destination.name}.tmp-{os.getpid()}")
+        backup_connection = sqlite3.connect(temporary)
+        try:
+            connection.backup(backup_connection)
+        finally:
+            backup_connection.close()
+        temporary.replace(destination)
+        return {"destination": str(destination), "backed_up": True}
     fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")
 
 
