@@ -4,6 +4,7 @@ import { exists, fromVaultPath, listFilesRecursive, readJson, sha256File, toVaul
 import type { JsonObject, JsonValue, OperationPlan, RunLog } from "../core/types.js";
 import { QualityRepository } from "../quality/repository.js";
 import { RuntimeRepository } from "../runtime/repository.js";
+import { listRecentRunSummaries, type RunSummaryIndexEntry } from "../core/runSummaryIndex.js";
 
 interface TransactionSnapshot extends JsonObject {
   vault_path: string;
@@ -171,15 +172,29 @@ async function runSummary(vaultRoot: string, located: LocatedRun, includeRollbac
   };
 }
 
+async function indexedRunSummary(vaultRoot: string, entry: RunSummaryIndexEntry, includeRollback: boolean): Promise<JsonObject> {
+  const log = normalizeRun(entry);
+  const transaction = await loadTransaction(vaultRoot, log.plan_id);
+  const plan = await loadPlan(vaultRoot, log.plan_id);
+  return {
+    run_id: log.run_id, completed_at: log.completed_at, started_at: log.started_at,
+    duration_ms: Math.max(0, Date.parse(log.completed_at) - Date.parse(log.started_at)),
+    source_module: log.source_module, instance_id: log.instance_id, status: log.status,
+    source_action: plan?.summary ?? entry.summary_line ?? log.task_id ?? "Core operation",
+    modified_file_count: transaction?.snapshots.length ?? 0,
+    operation_count: transaction?.operations.length ?? plan?.operations.length ?? 0,
+    completed_operation_count: transaction?.operations.filter((operation) => operation.status === "completed").length ?? 0,
+    review_count: plan?.review_items.length ?? (log.review_id ? 1 : 0), vault_path: entry.vault_path,
+    rollback: includeRollback ? await assessRunRollback(vaultRoot, log) : null,
+  };
+}
+
 export async function listRunViews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
   const limit = typeof params.limit === "number" ? Math.max(1, Math.min(100, Math.floor(params.limit))) : 20;
   const requestedStatus = typeof params.status === "string" ? params.status : null;
   const includeRollback = params.include_rollback !== false;
-  const runs = (await allRuns(vaultRoot))
-    .filter((located) => !requestedStatus || located.log.status === requestedStatus)
-    .sort((a, b) => Date.parse(b.log.completed_at) - Date.parse(a.log.completed_at))
-    .slice(0, limit);
-  return await Promise.all(runs.map((run) => runSummary(vaultRoot, run, includeRollback))) as unknown as JsonValue;
+  const runs = await listRecentRunSummaries(vaultRoot, { limit, status: requestedStatus });
+  return await Promise.all(runs.map((run) => indexedRunSummary(vaultRoot, run, includeRollback))) as unknown as JsonValue;
 }
 
 export async function getRunView(vaultRoot: string, runId: string, developerMode = false): Promise<JsonObject | null> {
