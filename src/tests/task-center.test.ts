@@ -32,6 +32,7 @@ test("Task Center API lists, explains, retries, defers, cancels, and runs Tasks"
     const firstPageData = firstPage.data as JsonObject;
     assert.equal((firstPageData.items as JsonObject[]).length, 2);
     assert.equal(firstPageData.has_more, true);
+    assert.equal((((firstPageData.runtime as JsonObject).runtime_stats as JsonObject).counts as JsonObject).queued, 5);
     const secondPage = await invokeCommandApi({ vaultRoot: vault, requestId: "TASK-PAGE-2", method: "listTasks", params: { page_size: 2, cursor: firstPageData.next_cursor ?? null } });
     const secondPageData = secondPage.data as JsonObject;
     assert.equal((secondPageData.items as JsonObject[]).length, 2);

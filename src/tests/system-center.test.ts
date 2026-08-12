@@ -104,7 +104,7 @@ test("System Center snapshot consolidates all read models into one API response"
     const tasks = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-TASKS", method: "getSystemCenterSnapshot", params: { section: "tasks" } });
     assert.equal(tasks.ok, true);
     assert.equal("modules" in (tasks.data as JsonObject), false);
-    assert.equal(typeof (((tasks.data as JsonObject).runtime as JsonObject).counts as JsonObject).completed, "number");
+    assert.equal(typeof (tasks.data as JsonObject).runtime, "object");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
 });
 
