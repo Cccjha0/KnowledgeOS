@@ -1,14 +1,16 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { DashboardItem, RecentRunSummary, TodayInboxGroup, TodaySnapshot } from "./types.js";
-import { parseMarkdown, validateSchema } from "./bridge.js";
+import { parseMarkdownBatch, validateSchemaBatch } from "./bridge.js";
 import { exists, listFilesRecursive, toVaultPath } from "./files.js";
 import { requeueDueReviews } from "./reviews.js";
+import { listRecentRunSummaries } from "./runSummaryIndex.js";
 
 const DASHBOARD_SCHEMA = "https://pkb.local/schemas/core/dashboard-item.schema.json";
 const PRIORITY_WEIGHT: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const USER_START = "<!-- knowledgeos:user:start -->";
 const USER_END = "<!-- knowledgeos:user:end -->";
+const TODAY_SECTION_LIMIT = 50;
 
 function wikiLink(vaultPath: string): string {
   return `[[${vaultPath.replace(/\.md$/i, "")}]]`;
@@ -55,8 +57,13 @@ function sortItems(items: DashboardItem[], now = Date.now()): DashboardItem[] {
 async function collectReviewDashboardItems(vaultRoot: string): Promise<DashboardItem[]> {
   const items: DashboardItem[] = [];
   const pendingRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
-  for (const file of await listFilesRecursive(pendingRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
+  const pendingFiles = await listFilesRecursive(pendingRoot, ".md");
+  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
+  const errorFiles = await listFilesRecursive(errorRoot, ".md");
+  const parsed = parseMarkdownBatch(vaultRoot, [...pendingFiles, ...errorFiles]);
+  for (const file of pendingFiles) {
+    const document = parsed.get(file);
+    if (!document) continue;
     if (document.data.status !== "pending") continue;
     const observation = document.data.target_observation;
     const warning = Boolean(
@@ -84,9 +91,9 @@ async function collectReviewDashboardItems(vaultRoot: string): Promise<Dashboard
     });
   }
 
-  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
-  for (const file of await listFilesRecursive(errorRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
+  for (const file of errorFiles) {
+    const document = parsed.get(file);
+    if (!document) continue;
     items.push({
       item_id: `DSH-ERROR-${String(document.data.review_id)}`,
       source_module: String(document.data.source_module),
@@ -107,29 +114,16 @@ async function collectReviewDashboardItems(vaultRoot: string): Promise<Dashboard
 }
 
 async function collectRecentRuns(vaultRoot: string): Promise<RecentRunSummary[]> {
-  const output: RecentRunSummary[] = [];
-  const logRoot = path.join(vaultRoot, "90-System", "Logs");
-  for (const file of await listFilesRecursive(logRoot, ".md")) {
-    const document = parseMarkdown(vaultRoot, file);
-    if (typeof document.data.run_id !== "string" || typeof document.data.completed_at !== "string") continue;
-    const status = document.data.status === "failed" ? "failed" : "completed";
-    output.push({
-      run_id: document.data.run_id,
-      source_module: String(document.data.source_module ?? "core"),
-      instance_id: typeof document.data.instance_id === "string" ? document.data.instance_id : null,
-      status,
-      completed_at: document.data.completed_at,
-      plan_id: typeof document.data.plan_id === "string" ? document.data.plan_id : null,
-      review_id: typeof document.data.review_id === "string" ? document.data.review_id : null,
-      target: toVaultPath(vaultRoot, file),
-      can_rollback: status === "completed" && typeof document.data.plan_id === "string",
-    });
-  }
-  return output.sort((a, b) => Date.parse(b.completed_at) - Date.parse(a.completed_at)).slice(0, 10);
+  return (await listRecentRunSummaries(vaultRoot, { limit: 10 })).map((entry) => ({
+    run_id: entry.run_id, source_module: entry.source_module, instance_id: entry.instance_id, status: entry.status,
+    completed_at: entry.completed_at, plan_id: entry.plan_id, review_id: entry.review_id,
+    target: entry.vault_path, can_rollback: entry.status === "completed" && entry.plan_id !== null,
+  }));
 }
 
 function groupInbox(items: DashboardItem[]): TodayInboxGroup[] {
   const groups = new Map<string, TodayInboxGroup>();
+  let displayed = 0;
   for (const item of items) {
     const scope = item.instance_id ? "instance" : item.source_module === "core" ? "global" : "module";
     const groupId = item.instance_id ?? (scope === "module" ? item.source_module : "global");
@@ -146,7 +140,7 @@ function groupInbox(items: DashboardItem[]): TodayInboxGroup[] {
       failed_count: 0,
       items: [],
     };
-    current.items.push(item);
+    if (displayed < TODAY_SECTION_LIMIT) { current.items.push(item); displayed += 1; }
     current.count += 1;
     if (item.created_at && (!current.oldest_created_at || item.created_at < current.oldest_created_at)) {
       current.oldest_created_at = item.created_at;
@@ -169,8 +163,18 @@ export async function buildTodaySnapshot(
     ...reviewItems.filter((item) => !enabledModules || enabledModules.has(item.source_module)),
     ...moduleItems,
   ]);
-  for (const item of all) validateSchema(vaultRoot, DASHBOARD_SCHEMA, item);
-  const sorted = sortItems(all);
+  const validation = validateSchemaBatch(vaultRoot, all.map((item) => ({ schemaId: DASHBOARD_SCHEMA, data: item })));
+  const invalid = validation.filter((entry) => !entry.ok);
+  const valid = all.filter((_item, index) => validation[index]?.ok === true);
+  if (invalid.length) {
+    valid.push({
+      item_id: "DSH-CORE-DASHBOARD-VALIDATION", source_module: "core", instance_id: null,
+      category: "system", priority: "high", title: "Dashboard data needs attention",
+      description: `${invalid.length} item(s) failed runtime schema validation. Open System Center for details.`,
+      target: null, due_at: null, actions: ["open"], created_at: null, blocks_count: invalid.length, active_context: true,
+    });
+  }
+  const sorted = sortItems(valid);
   const reviews = sorted.filter((item) => item.category === "review");
   const inboxItems = sorted.filter((item) => item.category !== "system" && isInboxTarget(item.target));
   const failures = sorted.filter((item) => item.category === "system");
@@ -187,13 +191,13 @@ export async function buildTodaySnapshot(
     schema_version: 1,
     generated_at: new Date().toISOString(),
     focus: focusPool.slice(0, 5),
-    reviews,
+    reviews: reviews.slice(0, TODAY_SECTION_LIMIT),
     inbox: groupInbox(inboxItems),
-    due,
-    waiting_external: waitingExternal,
-    failures,
+    due: due.slice(0, TODAY_SECTION_LIMIT),
+    waiting_external: waitingExternal.slice(0, TODAY_SECTION_LIMIT),
+    failures: failures.slice(0, TODAY_SECTION_LIMIT),
     recent_completed: recentCompleted,
-    module_summaries: moduleSummaries,
+    module_summaries: moduleSummaries.slice(0, TODAY_SECTION_LIMIT),
     counts: {
       focus: Math.min(focusPool.length, 5),
       reviews: reviews.length,

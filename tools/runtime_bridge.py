@@ -2,10 +2,16 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
+import os
 import sqlite3
 import sys
 
-SCHEMA_VERSION = 5
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+SCHEMA_VERSION = 6
 
 TRANSITIONS = {
     "queued": {"running", "waiting-for-network", "waiting-for-ai", "waiting-for-user", "deferred", "cancelled"},
@@ -41,6 +47,73 @@ def connect(database_path):
     connection.execute("PRAGMA foreign_keys=ON")
     connection.execute("PRAGMA busy_timeout=5000")
     return connection
+
+
+class RuntimeFileLock:
+    def __init__(self, database_path, exclusive=False):
+        self.path = database_path.with_name(f"{database_path.name}.maintenance.lock")
+        self.exclusive = exclusive
+        self.handle = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("a+b")
+        self.handle.seek(0, os.SEEK_END)
+        if self.handle.tell() == 0:
+            self.handle.write(b"0")
+            self.handle.flush()
+        self.handle.seek(0)
+        if os.name == "nt":
+            mode = msvcrt.LK_LOCK if self.exclusive else msvcrt.LK_RLCK
+            msvcrt.locking(self.handle.fileno(), mode, 1)
+        else:
+            mode = fcntl.LOCK_EX if self.exclusive else fcntl.LOCK_SH
+            fcntl.flock(self.handle.fileno(), mode)
+        return self
+
+    def __exit__(self, _type, _value, _traceback):
+        if self.handle is None:
+            return
+        self.handle.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+        self.handle.close()
+
+
+def restore_database(database_path, backup_path):
+    if not backup_path.is_file():
+        fail("RUNTIME_BACKUP_NOT_FOUND", f"Runtime backup does not exist: {backup_path}")
+    source = sqlite3.connect(f"file:{backup_path.as_posix()}?mode=ro", uri=True)
+    try:
+        integrity = source.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            fail("RUNTIME_BACKUP_INVALID", f"Runtime backup failed integrity check: {integrity}")
+        temporary = database_path.with_name(f"{database_path.name}.restore-{os.getpid()}.tmp")
+        if temporary.exists():
+            temporary.unlink()
+        destination = sqlite3.connect(temporary)
+        try:
+            source.backup(destination)
+        finally:
+            destination.close()
+        damaged = database_path.with_name(f"{database_path.name}.damaged-{int(datetime.now(timezone.utc).timestamp() * 1000)}")
+        if database_path.exists():
+            database_path.replace(damaged)
+        for suffix in ("-wal", "-shm"):
+            companion = database_path.with_name(f"{database_path.name}{suffix}")
+            if companion.exists():
+                companion.replace(damaged.with_name(f"{damaged.name}{suffix}"))
+        try:
+            temporary.replace(database_path)
+        except Exception:
+            if damaged.exists():
+                damaged.replace(database_path)
+            raise
+        return {"restored": str(backup_path), "damaged_copy": str(damaged) if damaged.exists() else None}
+    finally:
+        source.close()
 
 
 def migrate(connection):
@@ -230,6 +303,25 @@ def migrate(connection):
           COMMIT;
         """)
         current = 5
+    if current < 6:
+        if original_version >= 5:
+            database_file = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+            backup_dir = database_file.parent.parent / "Backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_file = backup_dir / f"runtime-schema-v{current}-{stamp}.db"
+            backup_connection = sqlite3.connect(backup_file)
+            try:
+                connection.backup(backup_connection)
+            finally:
+                backup_connection.close()
+        connection.executescript("""
+          BEGIN IMMEDIATE;
+          CREATE INDEX IF NOT EXISTS idx_tasks_today ON tasks(status, priority, scheduled_for, updated_at);
+          UPDATE runtime_metadata SET value='6' WHERE key='schema_version';
+          COMMIT;
+        """)
+        current = 6
 
 
 def decode_json(value, fallback):
@@ -430,6 +522,87 @@ def dispatch(command, connection, payload):
         retries = connection.execute("SELECT COALESCE(SUM(CASE WHEN attempt_count>1 THEN attempt_count-1 ELSE 0 END),0) FROM tasks").fetchone()[0]
         return {"counts": counts, "queue_length": counts.get("queued", 0), "recent_24h_runs": recent,
                 "oldest_waiting": dict(oldest) if oldest else None, "retry_count": retries, "metrics": metrics}
+    if command == "task-center-page":
+        page_size = max(1, min(100, int(payload.get("page_size", 50))))
+        statuses = payload.get("statuses") or []
+        clauses = []
+        values = []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            values.extend(statuses)
+        cursor = payload.get("cursor")
+        if cursor:
+            clauses.append("(created_at < ? OR (created_at = ? AND task_id < ?))")
+            values.extend([cursor["created_at"], cursor["created_at"], cursor["task_id"]])
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        values.append(page_size + 1)
+        rows = list(connection.execute(
+            f"SELECT * FROM tasks{where} ORDER BY created_at DESC,task_id DESC LIMIT ?", values
+        ))
+        has_more = len(rows) > page_size
+        items = rows[:page_size]
+        last = items[-1] if items else None
+        return {
+            "items": [task_dict(row) for row in items],
+            "has_more": has_more,
+            "next_cursor": ({"created_at": last["created_at"], "task_id": last["task_id"]} if has_more and last else None),
+            "runtime": {
+                "integrity": dispatch("integrity-check", connection, {}),
+                "schema_version": dispatch("schema-version", connection, {}),
+                "resources": dispatch("get-resource-statuses", connection, {}),
+                "jobs": dispatch("list-jobs", connection, {}),
+                "checkpoints": dispatch("get-checkpoints", connection, {}),
+                "runtime_stats": dispatch("runtime-stats", connection, {}),
+            },
+        }
+    if command == "next-wake":
+        now = payload.get("now") or now_iso()
+        dependency_ready = """
+          json_array_length(t.dependency_task_ids_json) = 0
+          OR (t.dependency_policy = 'all-success' AND NOT EXISTS (
+            SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+            LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+            WHERE dependency.task_id IS NULL OR dependency.status <> 'completed'
+          ))
+          OR (t.dependency_policy = 'all-finished' AND NOT EXISTS (
+            SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+            LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+            WHERE dependency.task_id IS NULL OR dependency.status NOT IN ('completed','failed','cancelled')
+          ))
+          OR (t.dependency_policy = 'any-success'
+            AND NOT EXISTS (
+              SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+              LEFT JOIN tasks dependency ON dependency.task_id = wanted.value
+              WHERE dependency.task_id IS NULL
+            )
+            AND EXISTS (
+              SELECT 1 FROM json_each(t.dependency_task_ids_json) wanted
+              JOIN tasks dependency ON dependency.task_id = wanted.value
+              WHERE dependency.status = 'completed'
+            ))
+        """
+        task_row = connection.execute(f"""
+          SELECT MIN(CASE
+            WHEN next_retry_at IS NOT NULL AND next_retry_at > available_after THEN next_retry_at
+            ELSE available_after END) AS wake_at
+          FROM tasks t
+          WHERE status = 'queued' AND ({dependency_ready})
+        """).fetchone()
+        deferred_row = connection.execute(
+            "SELECT MIN(defer_until) AS wake_at FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL"
+        ).fetchone()
+        checkpoint_row = connection.execute(
+            "SELECT MIN(next_evaluation_at) AS wake_at FROM scheduler_checkpoints WHERE next_evaluation_at IS NOT NULL"
+        ).fetchone()
+        candidates = [row["wake_at"] for row in (task_row, deferred_row, checkpoint_row) if row and row["wake_at"]]
+        next_wake_at = min(candidates) if candidates else None
+        waiting_resources = connection.execute("""SELECT COUNT(*) FROM tasks
+          WHERE status IN ('waiting-for-network','waiting-for-ai')""").fetchone()[0]
+        return {
+            "has_work": bool(next_wake_at and next_wake_at <= now),
+            "next_wake_at": next_wake_at,
+            "waiting_for_resources": int(waiting_resources),
+        }
     if command == "system-center-data":
         return {
             "tasks": dispatch("list-tasks", connection, {"statuses": []}),
@@ -447,6 +620,23 @@ def dispatch(command, connection, payload):
             }),
             "metrics": dispatch("aggregate-metrics", connection, {"since": payload.get("since")}),
             "audits": dispatch("list-audits", connection, {"limit": 50}),
+        }
+    if command == "today-data":
+        tasks = [task_dict(row) for row in connection.execute("""
+          SELECT * FROM tasks
+          WHERE status IN ('failed', 'waiting-for-user', 'interrupted')
+             OR (status IN ('waiting-for-network', 'waiting-for-ai')
+                 AND (priority <> 'low' OR updated_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day')))
+             OR (status = 'queued' AND priority IN ('critical', 'high')
+                 AND scheduled_for <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day'))
+          ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                   scheduled_for, created_at, task_id
+        """)]
+        return {
+            "tasks": tasks,
+            "quality_active": dispatch("list-quality-issues", connection, {
+                "statuses": ["open", "acknowledged", "scheduled"], "limit": 500,
+            }),
         }
     if command == "register-job":
         connection.execute("""INSERT INTO job_definitions(job_id,source,module,scope,enabled,definition_json,updated_at) VALUES(?,?,?,?,?,?,?)
@@ -695,6 +885,15 @@ def dispatch(command, connection, payload):
         due = [row["task_id"] for row in connection.execute("SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"],))]
         connection.execute("UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (payload["now"], payload["now"]))
         connection.commit(); return {"interrupted": interrupted, "deferred_requeued": due}
+    if command == "wake-due-tasks":
+        now = payload.get("now") or now_iso()
+        due = [row["task_id"] for row in connection.execute(
+            "SELECT task_id FROM tasks WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?", (now,)
+        )]
+        connection.execute("""UPDATE tasks SET status='queued',updated_at=?,defer_until=NULL
+          WHERE status='deferred' AND defer_until IS NOT NULL AND defer_until <= ?""", (now, now))
+        connection.commit()
+        return {"requeued": due}
     if command == "cleanup-history":
         days = max(30, int(payload.get("retain_days", 90)))
         cursor = connection.execute("""DELETE FROM task_runs WHERE status IN ('completed','cancelled')
@@ -705,6 +904,17 @@ def dispatch(command, connection, payload):
         connection.commit(); return {"deleted_runs": deleted_runs, "deleted_metric_events": metric_cursor.rowcount, "deleted_audits": audit_cursor.rowcount, "retain_days": days}
     if command == "checkpoint":
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)"); return {"checkpointed": True}
+    if command == "backup":
+        destination = Path(payload["destination"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f"{destination.name}.tmp-{os.getpid()}")
+        backup_connection = sqlite3.connect(temporary)
+        try:
+            connection.backup(backup_connection)
+        finally:
+            backup_connection.close()
+        temporary.replace(destination)
+        return {"destination": str(destination), "backed_up": True}
     fail("RUNTIME_COMMAND_UNKNOWN", f"Unknown runtime command: {command}")
 
 
@@ -716,8 +926,12 @@ def main():
     payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     connection = None
     try:
-        connection = connect(database_path)
-        emit(dispatch(command, connection, payload))
+        with RuntimeFileLock(database_path, exclusive=command == "restore"):
+            if command == "restore":
+                emit(restore_database(database_path, Path(payload["backup_path"])))
+                return
+            connection = connect(database_path)
+            emit(dispatch(command, connection, payload))
     except sqlite3.OperationalError as error:
         code = "RUNTIME_DB_LOCKED" if "locked" in str(error).lower() else "RUNTIME_DB_UNAVAILABLE"
         fail(code, str(error))

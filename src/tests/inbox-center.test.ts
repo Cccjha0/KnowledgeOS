@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { parseMarkdown } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch } from "../core/bridge.js";
 import { exists, listFilesRecursive, readJson } from "../core/files.js";
 import type { JsonObject } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
@@ -11,12 +11,26 @@ import { invokeCommandApi } from "../platform/commandApi.js";
 import { materializeInboxAiTasks } from "../platform/inboxWorkflow.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import { readPluginSource } from "./plugin-source.js";
+import { enablePerformanceDiagnostics, performanceDiagnosticsSnapshot, resetPerformanceDiagnostics } from "../core/performanceDiagnostics.js";
 
 async function writeCapture(vault: string, filename: string, frontmatter: string[], body = "Inbox test"): Promise<string> {
   const target = path.join(vault, "00-Inbox", filename);
   await fs.writeFile(target, ["---", ...frontmatter, "---", "", body, ""].join("\n"), "utf8");
   return target;
 }
+
+test("Markdown batch parsing isolates invalid files and returns valid documents", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-markdown-batch-"));
+  try {
+    const valid = path.join(vault, "valid.md");
+    const missing = path.join(vault, "missing.md");
+    await fs.writeFile(valid, "---\ntitle: Valid\n---\n\nBody\n", "utf8");
+    const parsed = parseMarkdownBatch(vault, [valid, missing]);
+    assert.equal(parsed.get(valid)?.data.title, "Valid");
+    assert.equal(parsed.get(valid)?.content.trim(), "Body");
+    assert.equal(parsed.get(missing), null);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
 
 test("Inbox Center discovers only managed inboxes and explains routing without writing", async () => {
   const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-list-"));
@@ -55,6 +69,29 @@ test("Inbox Center discovers only managed inboxes and explains routing without w
   } finally {
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("Inbox Center pages indexed summaries and rechecks only the requested file page", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-inbox-page-"));
+  try {
+    await initializeVault(vault, "disabled");
+    for (let index = 1; index <= 6; index += 1) await writeCapture(vault, `page-${index}.md`, ["type: note", `title: Page ${index}`]);
+    enablePerformanceDiagnostics(); resetPerformanceDiagnostics();
+    const first = await invokeCommandApi({ vaultRoot: vault, requestId: "INBOX-PAGE-1", method: "listInboxItems", params: { page_size: 2 } });
+    const firstPage = first.data as JsonObject;
+    assert.equal((firstPage.items as JsonObject[]).length, 2);
+    assert.equal((firstPage.counts as JsonObject).total, 6);
+    assert.equal(((firstPage.page as JsonObject).has_more), true);
+    resetPerformanceDiagnostics();
+    const second = await invokeCommandApi({
+      vaultRoot: vault, requestId: "INBOX-PAGE-2", method: "listInboxItems",
+      params: { page_size: 2, cursor: (firstPage.page as JsonObject).next_cursor ?? null },
+    });
+    const secondPage = second.data as JsonObject;
+    assert.equal((secondPage.items as JsonObject[]).length, 2);
+    assert.equal(new Set([...(firstPage.items as JsonObject[]), ...(secondPage.items as JsonObject[])].map((item) => item.item_id)).size, 4);
+    assert.equal(performanceDiagnosticsSnapshot().markdown_files_parsed <= 2, true);
+  } finally { enablePerformanceDiagnostics(false); await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("Inbox processor descriptors provide structured-module previews without application branches in Core", async () => {

@@ -4,9 +4,10 @@ This desktop-only MVP renders Today, provides Quick Capture, and completes Revie
 Core Command API. It does not read or write KnowledgeOS business files, Review Queue files, transaction
 state, or Git data directly.
 
-For local installation, first build the source repository: run `npm ci` and `npm run build` from
-`knowledgeos-engine/`. `dist/` is intentionally not committed to Git. Then copy this directory to
-`.obsidian/plugins/knowledgeos/`, enable the plugin, and set the absolute paths to
+For local installation, first build the source repository: run `npm ci`, `npm run build`, and
+`npm run build:plugin` from `knowledgeos-engine/`. `dist/` is intentionally not committed to Git.
+Copy `plugins/knowledgeos-obsidian/dist/main.js`, `plugins/knowledgeos-obsidian/manifest.json`, and
+`plugins/knowledgeos-obsidian/styles.css` to `.obsidian/plugins/knowledgeos/`, enable the plugin, and set the absolute paths to
 `knowledgeos-engine/dist/cli.js` and the data Vault. The Settings “测试连接” action reports a missing
 compiled CLI with the exact recovery steps.
 

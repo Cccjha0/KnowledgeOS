@@ -1,5 +1,7 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createTodayViews(deps) {
-  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
+  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, formatTodayHeading, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
 class TodayView extends ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -11,6 +13,7 @@ class TodayView extends ItemView {
     this.backgroundStatus = null;
     this.lastSuccessfulAt = null;
     this.partialWarnings = [];
+    this.refreshGate = new LatestRequestGate();
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -20,6 +23,7 @@ class TodayView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(options = {}) {
+    this.refreshGate.request();
     const background = options.background === true;
     if (this.refreshPromise) {
       this.refreshQueued = true;
@@ -29,7 +33,7 @@ class TodayView extends ItemView {
       let nextIsBackground = background;
       do {
         this.refreshQueued = false;
-        await this.performRefresh(nextIsBackground);
+        await this.performRefresh(nextIsBackground, this.refreshGate.current());
         nextIsBackground = true;
       } while (this.refreshQueued);
     })();
@@ -37,13 +41,14 @@ class TodayView extends ItemView {
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(background) {
+  async performRefresh(background, generation = this.refreshGate.current()) {
     const preserveContent = Boolean(this.snapshot && this.contentEl.childElementCount > 0);
     this.state = "loading";
     this.contentEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else this.renderLoading();
     const response = await this.plugin.client.invoke("getTodayItems", { refresh_markdown: !background });
+    if (!this.refreshGate.isCurrent(generation)) return;
     this.state = response.state;
     this.contentEl.removeAttribute("aria-busy");
     if (!response.ok) {
@@ -88,7 +93,7 @@ class TodayView extends ItemView {
     const titleIcon = titleRow.createSpan({ cls: "knowledgeos-title-icon", attr: { "aria-hidden": "true" } });
     setIcon(titleIcon, "calendar-check");
     titleRow.createEl("h2", { text: "今天" });
-    heading.createDiv({ cls: "knowledgeos-page-subtitle", text: new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "long", day: "numeric", weekday: "long" }).format(new Date()) });
+    heading.createDiv({ cls: "knowledgeos-page-subtitle", text: formatTodayHeading(new Date()) });
     if (generatedAt) createTime(heading.createDiv({ cls: "knowledgeos-today-updated" }), generatedAt, "更新于 ");
     const actions = header.createDiv({ cls: "knowledgeos-header-actions" });
     const refresh = createToolbarButton(actions, "refresh-cw", "刷新", { iconOnly: true });

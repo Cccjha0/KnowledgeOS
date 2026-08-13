@@ -4,6 +4,7 @@ const { registerKnowledgeViews } = require("./views/register");
 const settingsDefaults = require("./settings/defaults");
 const { ModuleUiMetadataStore } = require("./services/module-ui-metadata");
 const { CoreCommandClient: SharedCoreCommandClient } = require("./services/core-command-client");
+const { affectedKnowledgeViewsForPaths } = require("./services/view-refresh-policy");
 const { createPresentationFormatters } = require("./formatters/presentation");
 const { createReviewCenterViews } = require("./views/review-center");
 const { createInboxCenterViews } = require("./views/inbox-center");
@@ -11,9 +12,12 @@ const { createSystemCenterViews } = require("./views/system-center");
 const { createTodayViews } = require("./views/today");
 const { createSettingsViews } = require("./views/settings-tab");
 const { createModuleBuilderViews } = require("./views/module-builder-modal");
+const { createRollbackModalSupport } = require("./components/rollback-modal");
+const { createPresentationClock } = require("./services/presentation-clock");
 
 const moduleUiMetadata = new ModuleUiMetadataStore();
 const manifestFormatters = createPresentationFormatters(moduleUiMetadata);
+const presentationClock = createPresentationClock();
 
 const LIST_PAGE_SIZE = 50;
 const FALLBACK_CODEX_MODELS = [
@@ -46,10 +50,14 @@ function taskCycleChanged(data) {
     || Array.isArray(data?.dispatch?.tasks) && data.dispatch.tasks.length > 0;
 }
 
-function shouldAutoRefreshPath(filePath) {
-  const normalized = String(filePath || "").replaceAll("\\", "/");
-  if (!normalized || normalized === "Today.md" || normalized.startsWith(".obsidian/")) return false;
-  return !["90-System/Logs/", "90-System/Cache/", "90-System/Backups/"].some((prefix) => normalized.startsWith(prefix));
+const TASK_WAKE_MIN_MS = 1_000;
+const TASK_WAKE_MAX_MS = 5 * 60_000;
+
+function taskWakeDelay(data, now = Date.now()) {
+  if (data?.has_work === true) return TASK_WAKE_MIN_MS;
+  const next = typeof data?.next_wake_at === "string" ? Date.parse(data.next_wake_at) : Number.NaN;
+  if (!Number.isFinite(next)) return TASK_WAKE_MAX_MS;
+  return Math.min(TASK_WAKE_MAX_MS, Math.max(TASK_WAKE_MIN_MS, next - now));
 }
 
 function missingBuiltCliFailure(message, cliPath) {
@@ -111,33 +119,11 @@ function friendlyAction(value, moduleId = null) {
 }
 
 function calendarDayDifference(value, now = new Date()) {
-  const date = new Date(value);
-  const reference = new Date(now);
-  if (Number.isNaN(date.getTime()) || Number.isNaN(reference.getTime())) return null;
-  const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
-  const currentDay = Date.parse(`${dateKey.format(reference)}T00:00:00Z`);
-  const targetDay = Date.parse(`${dateKey.format(date)}T00:00:00Z`);
-  return Math.round((targetDay - currentDay) / 86_400_000);
+  return presentationClock.calendarDayDifference(value, now);
 }
 
 function formatTime(value, options = {}) {
-  if (!value) return "时间未设置";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const now = options.now ? new Date(options.now) : new Date();
-  const dateKey = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
-  const current = dateKey.format(now);
-  const target = dateKey.format(date);
-  const currentDay = Date.parse(`${current}T00:00:00Z`);
-  const targetDay = Date.parse(`${target}T00:00:00Z`);
-  const days = Math.round((targetDay - currentDay) / 86_400_000);
-  const time = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
-  if (days === 0) return `今天 ${time}`;
-  if (days === 1) return `明天 ${time}`;
-  if (days === -1) return `昨天 ${time}`;
-  if (days > 1 && days < 7) return `${days} 天后`;
-  if (days < -1 && days > -7) return `${Math.abs(days)} 天前`;
-  return new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }).format(date);
+  return presentationClock.formatTime(value, options);
 }
 
 function formatVerificationSchedule(value) {
@@ -255,9 +241,14 @@ function createViewDependencies() {
     ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon,
     VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE,
     settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS,
-    markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure,
+    markLiveRegion, taskCycleChanged, missingBuiltCliFailure,
     labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime,
+    formatTodayHeading: (value) => presentationClock.formatTodayHeading(value),
+    localDateTimeAfterDays: (now, days) => presentationClock.localDateTimeAfterDays(now, days),
+    zonedLocalToIso: (value) => presentationClock.zonedLocalToIso(value),
+    presentationTimeZone: () => presentationClock.timeZone,
     friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError,
+    displayJson,
   };
 }
 class QuickCaptureModal extends Modal {
@@ -537,6 +528,7 @@ function displayJson(value) {
 module.exports = class KnowledgeOSPlugin extends Plugin {
   async onload() {
     const viewDependencies = createViewDependencies();
+    Object.assign(viewDependencies, createRollbackModalSupport(viewDependencies));
     this.viewConstructors = {
       ...createReviewCenterViews(viewDependencies),
       ...createInboxCenterViews(viewDependencies),
@@ -553,7 +545,11 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       await this.saveData(this.settings);
     }
     if (!this.settings.vaultPath && this.app.vault.adapter.basePath) this.settings.vaultPath = this.app.vault.adapter.basePath;
-    const clientOptions = { onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure };
+    await this.loadPresentationPreferences();
+    const clientOptions = {
+      onModulesLoaded: (modules) => moduleUiMetadata.update(modules), missingBuiltCliFailure,
+      onOperationSettled: (event) => this.handleOperationSettled(event),
+    };
     this.client = new SharedCoreCommandClient(this.settings, clientOptions);
     this.taskClient = new SharedCoreCommandClient(this.settings, clientOptions);
     registerKnowledgeViews(this, {
@@ -562,7 +558,6 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       inbox: INBOX_VIEW_TYPE,
       system: SYSTEM_VIEW_TYPE,
     }, this.viewConstructors);
-    void this.refreshModuleUiMetadata();
     this.addRibbonIcon("calendar-check", "打开 KnowledgeOS Today", () => this.activateToday());
     this.addRibbonIcon("plus-circle", "Quick Capture", () => this.openCapture());
     this.addRibbonIcon("clipboard-check", "打开 Review Center", () => this.activateReviews());
@@ -579,21 +574,16 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
         .onClick(() => this.openCapture(file.path)));
     }));
     this.addSettingTab(new this.viewConstructors.KnowledgeOSSettingTab(this.app, this));
-    this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (!this.settings.autoRefresh) return;
-      if (!shouldAutoRefreshPath(file.path)) return;
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = setTimeout(() => {
-        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
-        for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
-        for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
-      }, 1500);
-    }));
+    this.registerEvent(this.app.vault.on("modify", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("create", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("delete", (file) => this.handleVaultPathsChanged([file.path])));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.handleVaultPathsChanged([oldPath, file.path])));
     this.app.workspace.onLayoutReady(async () => {
       if (this.settings.openTodayOnStartup) await this.activateToday();
+      void this.refreshModuleUiMetadata();
       void this.runTaskCycle(true);
     });
-    this.registerInterval(setInterval(() => this.runTaskCycle(false), 60_000));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.wakeTaskCycle()));
   }
 
   async saveSettings() {
@@ -604,7 +594,34 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
     this.taskClient.settings = this.settings;
   }
 
-  onunload() { this.client?.close(); this.taskClient?.close(); }
+  async loadPresentationPreferences() {
+    let timeZone = null;
+    try {
+      const raw = await this.app.vault.adapter.read("90-System/State/vault-config.json");
+      timeZone = JSON.parse(raw)?.timezone || null;
+    } catch { /* Old or not-yet-initialized Vaults use the system timezone. */ }
+    presentationClock.configure({ timeZone });
+  }
+
+  handleVaultPathsChanged(paths) {
+    this.wakeTaskCycle();
+    if (!this.settings.autoRefresh) return;
+    const affectedViews = affectedKnowledgeViewsForPaths(paths);
+    if (!affectedViews.length) return;
+    this.pendingRefreshViews ??= new Set();
+    for (const view of affectedViews) this.pendingRefreshViews.add(view);
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      const views = new Set(this.pendingRefreshViews);
+      this.pendingRefreshViews.clear();
+      if (views.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) leaf.view.refresh({ background: true });
+      if (views.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) leaf.view.loadReviews();
+      if (views.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) leaf.view.refresh();
+      if (views.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) leaf.view.refresh({ background: true });
+    }, 1500);
+  }
+
+  onunload() { clearTimeout(this.refreshTimer); clearTimeout(this.taskWakeTimer); this.client?.close(); this.taskClient?.close(); }
 
   async refreshModuleUiMetadata() {
     if (this.moduleUiMetadataPromise) return this.moduleUiMetadataPromise;
@@ -614,6 +631,27 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
 
   notify(message, options = {}) {
     if (options.error || options.force || this.settings.notifyOnCompletion) new Notice(message);
+  }
+
+  async handleOperationSettled({ method, response }) {
+    const affected = new Set(({
+      createCapture: ["today", "inbox", "system"],
+      processInboxItem: ["today", "inbox", "system"], processInboxBatch: ["today", "inbox", "system"],
+      classifyInboxAttachment: ["today", "inbox", "system"], reviewPartialInboxExtraction: ["today", "inbox", "system"],
+      resolveReview: ["today", "reviews", "system"], manageTask: ["today", "system"], enqueueTask: ["today", "system"],
+      runTaskCycle: ["today", "system"], manageQualityIssue: ["today", "system"], runQualityAudit: ["today", "system"],
+      manageModule: ["today", "inbox", "reviews", "system"], manageInstance: ["today", "inbox", "reviews", "system"],
+      createInstance: ["today", "inbox", "reviews", "system"],
+    })[method] || ["system"]);
+    const refreshes = [];
+    if (affected.has("today")) for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) refreshes.push(leaf.view.refresh({ background: true }));
+    if (affected.has("reviews")) for (const leaf of this.app.workspace.getLeavesOfType(REVIEW_VIEW_TYPE)) refreshes.push(leaf.view.loadReviews());
+    if (affected.has("inbox")) for (const leaf of this.app.workspace.getLeavesOfType(INBOX_VIEW_TYPE)) refreshes.push(leaf.view.refresh());
+    if (affected.has("system")) for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) refreshes.push(leaf.view.refresh({ background: true }));
+    await Promise.allSettled(refreshes);
+    if (method === "runTaskCycle") return;
+    if (response?.ok) this.notify("后台操作已完成。", { force: true });
+    else this.notify(`后台操作失败：${response?.error?.message || "Core 未返回成功结果。"}`, { error: true, force: true });
   }
 
   openModuleBuilder() { new this.viewConstructors.ModuleBuilderModal(this.app, this).open(); }
@@ -631,22 +669,45 @@ module.exports = class KnowledgeOSPlugin extends Plugin {
       .filter((filePath) => typeof filePath === "string" && filePath.endsWith(".md")))].sort();
   }
 
+  scheduleTaskCycle(data = null, delayOverride = null) {
+    clearTimeout(this.taskWakeTimer);
+    const delay = delayOverride ?? taskWakeDelay(data);
+    this.taskWakeTimer = setTimeout(() => {
+      this.taskWakeTimer = null;
+      void this.runTaskCycle(false);
+    }, delay);
+  }
+
+  wakeTaskCycle() {
+    if (this.taskCycleRunning) { this.taskCycleWakePending = true; return; }
+    this.scheduleTaskCycle(null, TASK_WAKE_MIN_MS);
+  }
+
   async runTaskCycle(startup = false) {
-    if (this.taskCycleRunning) return;
+    if (this.taskCycleRunning) { this.taskCycleWakePending = true; return; }
     this.taskCycleRunning = true;
+    let wakeData = null;
     try {
       const response = await this.taskClient.invoke("runTaskCycle", {
         startup, limit: 2,
+        cycle_requested_at: new Date().toISOString(),
         network_probe_url: this.settings.networkProbeUrl || undefined,
         codex_model: this.settings.codexModel,
         codex_reasoning_effort: this.settings.codexReasoningEffort,
         obsidian_open_paths: this.getOpenMarkdownPaths(),
       });
       if (!response.ok) return;
+      wakeData = response.data;
       if (!taskCycleChanged(response.data)) return;
       for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) await leaf.view.refresh({ background: true });
       for (const leaf of this.app.workspace.getLeavesOfType(SYSTEM_VIEW_TYPE)) await leaf.view.refresh({ background: true });
-    } finally { this.taskCycleRunning = false; }
+    } finally {
+      this.taskCycleRunning = false;
+      if (this.taskCycleWakePending) {
+        this.taskCycleWakePending = false;
+        this.scheduleTaskCycle(null, TASK_WAKE_MIN_MS);
+      } else this.scheduleTaskCycle(wakeData);
+    }
   }
 
   async activateToday() {

@@ -17,6 +17,32 @@ permissions:
   contents: read
 
 jobs:
+  clean-install:
+    name: clean install / Ubuntu / Node 22 / Python 3.13
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verify dependency installation without shared caches
+        env:
+          npm_config_cache: ${{ runner.temp }}/npm-clean-cache
+          PIP_CACHE_DIR: ${{ runner.temp }}/pip-clean-cache
+        run: |
+          npm ci --registry=https://registry.npmjs.org
+          python -m venv "${{ runner.temp }}/knowledgeos-clean-venv"
+          "${{ runner.temp }}/knowledgeos-clean-venv/bin/python" -m pip install --no-cache-dir -r requirements.txt
+
   verify:
     name: ${{ matrix.os }} / Node ${{ matrix.node }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
@@ -56,8 +82,16 @@ jobs:
       - name: Enforce Core boundaries
         run: npm run check:boundaries
 
+      - name: Lint and type-check sources
+        run: npm run lint
+
       - name: Build TypeScript
         run: npm run build
+
+      - name: Build and verify Obsidian plugin bundle
+        run: |
+          npm run build:plugin
+          node --check plugins/knowledgeos-obsidian/dist/main.js
 
       - name: Validate Python schemas and versioned fixtures
         run: python tools/validate.py
@@ -83,13 +117,18 @@ jobs:
   required:
     name: required
     if: always()
-    needs: verify
+    needs: [clean-install, verify]
     runs-on: ubuntu-latest
     steps:
       - name: Require every matrix job to pass
         env:
+          CLEAN_INSTALL_RESULT: ${{ needs.clean-install.result }}
           VERIFY_RESULT: ${{ needs.verify.result }}
         run: |
+          if [ "$CLEAN_INSTALL_RESULT" != "success" ]; then
+            echo "The clean-install job failed: $CLEAN_INSTALL_RESULT"
+            exit 1
+          fi
           if [ "$VERIFY_RESULT" != "success" ]; then
             echo "At least one CI matrix job failed: $VERIFY_RESULT"
             exit 1

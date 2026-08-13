@@ -1,14 +1,18 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseMarkdown, parseYaml, validateSchema } from "../core/bridge.js";
+import { parseMarkdownBatch, parseYaml } from "../core/bridge.js";
 import { listFilesRecursive, toVaultPath } from "../core/files.js";
 import type { DashboardItem, JsonObject, JsonValue, Priority } from "../core/types.js";
 import { discoverInstances, discoverModulesForVault, type DiscoveredDocument } from "../core/discovery.js";
 
-const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const DASHBOARD_PROVIDER_SCHEMA = "https://pkb.local/schemas/core/dashboard-provider.schema.json";
-
 type ProviderKind = "entity" | "due" | "recent" | "review-summary";
+
+const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const DASHBOARD_SNAPSHOT_VAULT_LIMIT = 4;
+const DASHBOARD_SNAPSHOT_ITEM_LIMIT = 20_000;
+const dashboardSnapshots = new Map<string, { revision: string; expiresAt: number; items: DashboardItem[] }>();
 
 interface ProviderItem {
   id: string;
@@ -34,6 +38,11 @@ interface ProviderItem {
 interface LocatedDocument {
   path: string;
   data: JsonObject;
+}
+
+export interface DashboardDiscoveryContext {
+  modules: DiscoveredDocument[];
+  instances: DiscoveredDocument[];
 }
 
 function object(value: unknown): JsonObject | null {
@@ -97,15 +106,16 @@ function isEntityDocument(data: JsonObject, moduleId: string, entity: string): b
   return data.schema_id === entity || data.type === `${moduleId}-${entity}` || data.type === entity;
 }
 
-async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocument): Promise<LocatedDocument[]> {
+async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocument, selectedFiles?: string[]): Promise<LocatedDocument[]> {
   const root = typeof instance.data.content_root === "string" ? path.join(vaultRoot, ...instance.data.content_root.split("/")) : null;
   if (!root) return [];
   const documents: LocatedDocument[] = [];
-  for (const file of await listFilesRecursive(root, ".md")) {
-    const relative = toVaultPath(vaultRoot, file);
-    if (/(?:^|\/)Inbox(?:\/|$)/.test(relative)) continue;
+  const files = (selectedFiles ?? await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file)));
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  for (const file of files) {
     try {
-      const document = parseMarkdown(vaultRoot, file);
+      const document = parsed.get(file);
+      if (!document) continue;
       if (document.data.instance_id !== instance.data.instance_id) continue;
       documents.push({ path: file, data: document.data });
     } catch {
@@ -115,8 +125,56 @@ async function documentsForInstance(vaultRoot: string, instance: DiscoveredDocum
   return documents.filter((document) => typeof document.data.type === "string" || typeof document.data.schema_id === "string");
 }
 
+async function snapshotInputs(vaultRoot: string, modules: DiscoveredDocument[], instances: DiscoveredDocument[]): Promise<{ revision: string; filesByInstance: Map<string, string[]>; pendingReviewFiles: string[] }> {
+  const hash = createHash("sha256");
+  hash.update(JSON.stringify(modules.map((module) => module.data)));
+  hash.update(JSON.stringify(instances.map((instance) => instance.data)));
+  const filesByInstance = new Map<string, string[]>();
+  for (const instance of instances) {
+    const root = typeof instance.data.content_root === "string" ? path.join(vaultRoot, ...instance.data.content_root.split("/")) : null;
+    const files = root ? (await listFilesRecursive(root, ".md")).filter((file) => !/(?:^|\/)Inbox(?:\/|$)/.test(toVaultPath(vaultRoot, file))) : [];
+    filesByInstance.set(String(instance.data.instance_id), files);
+    for (const file of files) { const stat = await fs.stat(file); hash.update(`${toVaultPath(vaultRoot, file)}\0${stat.size}\0${stat.mtimeMs}\n`); }
+  }
+  const pendingReviewFiles = await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md");
+  for (const file of pendingReviewFiles) { const stat = await fs.stat(file); hash.update(`${toVaultPath(vaultRoot, file)}\0${stat.size}\0${stat.mtimeMs}\n`); }
+  return { revision: hash.digest("hex"), filesByInstance, pendingReviewFiles };
+}
+
 function providerItems(provider: JsonObject): ProviderItem[] {
   return (Array.isArray(provider.items) ? provider.items : []).map((entry) => entry as unknown as ProviderItem);
+}
+
+/**
+ * Dashboard providers are fully schema-validated when a module is installed or
+ * tested. Today is a hot path, so it deliberately uses this small structural
+ * gate instead of spawning the Python JSON-Schema bridge once per provider.
+ *
+ * Keep this gate fail-closed: an old or malformed provider becomes a visible
+ * configuration warning rather than silently contributing incorrect items.
+ */
+function runtimeProviderContractError(provider: JsonObject): string | null {
+  if (typeof provider.provider_id !== "string" || !provider.provider_id.trim()) return "Provider requires a non-empty provider_id.";
+  if (typeof provider.version !== "string" && typeof provider.version !== "number") return "Provider requires a version.";
+  if (!Array.isArray(provider.items) || !provider.items.length) return "Provider declares no Dashboard items.";
+  for (const [index, value] of provider.items.entries()) {
+    const item = object(value);
+    if (!item) return `Provider item ${index + 1} must be an object.`;
+    if (typeof item.id !== "string" || !item.id.trim()) return `Provider item ${index + 1} requires a non-empty id.`;
+    if (item.kind !== "entity" && item.kind !== "due" && item.kind !== "recent" && item.kind !== "review-summary") {
+      return `Provider item ${index + 1} declares an unsupported kind.`;
+    }
+    if (item.kind !== "review-summary" && (typeof item.entity !== "string" || !item.entity.trim())) {
+      return `Provider item ${index + 1} requires an entity.`;
+    }
+    if (item.kind === "due" && (typeof item.due_field !== "string" || !item.due_field.trim())) {
+      return `Provider item ${index + 1} requires a due_field.`;
+    }
+    if (item.kind === "recent" && (typeof item.date_field !== "string" || !item.date_field.trim())) {
+      return `Provider item ${index + 1} requires a date_field.`;
+    }
+  }
+  return null;
 }
 
 function providerDiagnostic(moduleId: string, providerPath: string, reason: string): DashboardItem {
@@ -182,16 +240,12 @@ function hasSuppressingDocument(moduleId: string, definition: ProviderItem, docu
 }
 
 async function reviewSummary(
-  vaultRoot: string,
   moduleId: string,
   instanceId: string,
   definition: ProviderItem,
+  reviewCounts: ReadonlyMap<string, number>,
 ): Promise<DashboardItem | null> {
-  let count = 0;
-  for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", "Pending"), ".md")) {
-    const review = parseMarkdown(vaultRoot, file).data;
-    if (review.source_module === moduleId && review.instance_id === instanceId && review.status === "pending") count += 1;
-  }
+  const count = reviewCounts.get(`${moduleId}\0${instanceId}`) ?? 0;
   if (!count) return null;
   return {
     item_id: `DSH-MODULE-${moduleId}-${instanceId}-${definition.id}`,
@@ -209,10 +263,34 @@ async function reviewSummary(
  * Providers are intentionally deterministic: they query only their active
  * instance content roots and normalize each result into a DashboardItem.
  */
-export async function collectModuleDashboardItems(vaultRoot: string, now = Date.now()): Promise<DashboardItem[]> {
-  const modules = (await discoverModulesForVault(ENGINE_ROOT, vaultRoot)).filter((module) => module.data.status === "enabled");
-  const instances = (await discoverInstances(vaultRoot)).filter((instance) => instance.data.status === "active");
+export async function collectModuleDashboardItems(
+  vaultRoot: string,
+  now = Date.now(),
+  discovery?: DashboardDiscoveryContext,
+): Promise<DashboardItem[]> {
+  // Today already discovers these documents for Inbox routing. Reuse that
+  // trusted snapshot when supplied so a single view refresh does not repeat
+  // expensive module/instance schema discovery.
+  const modules = (discovery?.modules ?? await discoverModulesForVault(ENGINE_ROOT, vaultRoot))
+    .filter((module) => module.data.status === "enabled");
+  const instances = (discovery?.instances ?? await discoverInstances(vaultRoot))
+    .filter((instance) => instance.data.status === "active");
+  const inputs = await snapshotInputs(vaultRoot, modules, instances);
+  const cached = dashboardSnapshots.get(vaultRoot);
+  if (cached?.revision === inputs.revision && cached.expiresAt > Date.now()) {
+    dashboardSnapshots.delete(vaultRoot); dashboardSnapshots.set(vaultRoot, cached);
+    return structuredClone(cached.items);
+  }
   const result: DashboardItem[] = [];
+  const pendingReviewFiles = inputs.pendingReviewFiles;
+  const pendingReviews = parseMarkdownBatch(vaultRoot, pendingReviewFiles);
+  const reviewCounts = new Map<string, number>();
+  for (const file of pendingReviewFiles) {
+    const review = pendingReviews.get(file)?.data;
+    if (!review || review.status !== "pending" || typeof review.source_module !== "string" || typeof review.instance_id !== "string") continue;
+    const key = `${review.source_module}\0${review.instance_id}`;
+    reviewCounts.set(key, (reviewCounts.get(key) ?? 0) + 1);
+  }
   for (const module of modules) {
     const moduleId = String(module.data.id);
     const dashboard = object(module.data.dashboard);
@@ -221,7 +299,8 @@ export async function collectModuleDashboardItems(vaultRoot: string, now = Date.
     let provider: JsonObject;
     try {
       provider = parseYaml(vaultRoot, providerFile);
-      validateSchema(ENGINE_ROOT, DASHBOARD_PROVIDER_SCHEMA, provider);
+      const contractError = runtimeProviderContractError(provider);
+      if (contractError) throw new Error(contractError);
     } catch (error) {
       result.push(providerDiagnostic(moduleId, toVaultPath(vaultRoot, providerFile), `Provider could not be loaded safely: ${error instanceof Error ? error.message : String(error)}`));
       continue;
@@ -232,10 +311,10 @@ export async function collectModuleDashboardItems(vaultRoot: string, now = Date.
       continue;
     }
     for (const instance of instances.filter((candidate) => candidate.data.module_id === moduleId)) {
-      const documents = await documentsForInstance(vaultRoot, instance);
+      const documents = await documentsForInstance(vaultRoot, instance, inputs.filesByInstance.get(String(instance.data.instance_id)));
       for (const definition of definitions) {
         if (definition.kind === "review-summary") {
-          const summary = await reviewSummary(vaultRoot, moduleId, String(instance.data.instance_id), definition);
+          const summary = await reviewSummary(moduleId, String(instance.data.instance_id), definition, reviewCounts);
           if (summary) result.push(summary);
           continue;
         }
@@ -251,6 +330,10 @@ export async function collectModuleDashboardItems(vaultRoot: string, now = Date.
         }
       }
     }
+  }
+  if (result.length <= DASHBOARD_SNAPSHOT_ITEM_LIMIT) {
+    dashboardSnapshots.set(vaultRoot, { revision: inputs.revision, expiresAt: Date.now() + 10_000, items: structuredClone(result) });
+    while (dashboardSnapshots.size > DASHBOARD_SNAPSHOT_VAULT_LIMIT) dashboardSnapshots.delete(dashboardSnapshots.keys().next().value!);
   }
   return result;
 }

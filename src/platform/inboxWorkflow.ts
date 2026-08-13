@@ -532,7 +532,7 @@ async function executeRoute(vaultRoot: string, item: InboxItemView, moduleId: st
   await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
   const startedAt = new Date().toISOString();
   const snapshot = await createGitSnapshot(vaultRoot, runId);
-  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["move-file"], allowedTargets: [item.path], requiredReviewId: null, gitSnapshot: snapshot });
+  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["move-file"], allowedTargets: [item.path], allowedDestinations: [destination], requiredReviewId: null, gitSnapshot: snapshot });
   const run: RunLog = {
     run_id: runId, task_id: taskId, plan_id: planId, source_module: moduleId, instance_id: instanceId,
     review_id: null, status: "completed", git_snapshot: snapshot, started_at: startedAt, completed_at: new Date().toISOString(), schema_version: 1,
@@ -562,7 +562,7 @@ async function quarantineEmptyItem(vaultRoot: string, item: InboxItemView): Prom
   await writeJsonAtomic(path.join(vaultRoot, "90-System", "State", "Plans", `${planId}.json`), plan);
   const startedAt = new Date().toISOString();
   const snapshot = await createGitSnapshot(vaultRoot, runId);
-  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["move-file"], allowedTargets: [target], requiredReviewId: null, gitSnapshot: snapshot });
+  await executeOperationPlan(vaultRoot, plan, { allowedTypes: ["move-file"], allowedTargets: [target], allowedDestinations: [destination], requiredReviewId: null, gitSnapshot: snapshot });
   const run: RunLog = {
     run_id: runId, task_id: taskId, plan_id: planId, source_module: item.suggested_module_id ?? "core", instance_id: item.suggested_instance_id,
     review_id: null, status: "completed", git_snapshot: snapshot, started_at: startedAt, completed_at: new Date().toISOString(), schema_version: 1,

@@ -2,7 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { COMMAND_API_VERSION, type ClassifyInboxAttachmentParams, type CommandApiMethod, type CommandApiResponse, type CreateCaptureParams, type CreateInstanceParams, type LegacyAccessPolicyMigrationParams, type ManageInstanceParams, type ManageModuleParams, type ProcessInboxBatchParams, type ProcessInboxItemParams, type ResolveReviewParams, type ReviewPartialInboxExtractionParams, type UserFacingError } from "../api/types.js";
-import { parseMarkdown, writeMarkdown, writeYaml } from "../core/bridge.js";
+import { parseMarkdown, parseMarkdownBatch, validateSchemaBatch, writeMarkdown, writeYaml } from "../core/bridge.js";
 import { writeTodayMarkdown } from "../core/dashboard.js";
 import { discoverInstances, discoverModulesForVault, discoverRoutingContext, type DiscoveredDocument } from "../core/discovery.js";
 import { PkbError } from "../core/errors.js";
@@ -16,9 +16,10 @@ import { getTodaySnapshot, rebuildTodayDashboard } from "./dashboard.js";
 import { createCapture } from "./captureWorkflow.js";
 import { buildDiscussionContext, buildReviewView, discussionContextIsCurrent } from "./reviewPresentation.js";
 import { locateReviewItem, requeueDueReviews } from "../core/reviews.js";
-import { discoverInboxContext, listInbox } from "./inboxDiscovery.js";
+import { listReviewSummaryPage } from "../core/reviewSummaryIndex.js";
+import { discoverInboxContext, listInbox, listInboxPage } from "./inboxDiscovery.js";
 import { classifyInboxAttachment, materializeInboxAiTasks, processInboxBatch, processInboxItem, reviewPartialInboxExtraction } from "./inboxWorkflow.js";
-import { assessRunRollback, findRun, getRunView, listRunViews } from "./systemPresentation.js";
+import { assessRunRollback, findRun, getRunView, listRunViewPage, listRunViews } from "./systemPresentation.js";
 import { createInstance, manageInstance, manageModule } from "./lifecycleWorkflow.js";
 import { dispatchOnce } from "../runtime/dispatcher.js";
 import type { TaskStatus } from "../runtime/domain.js";
@@ -43,6 +44,7 @@ import { deriveBlueprintApproval, scaffoldModuleFromBlueprint, validateModuleBlu
 import { analyzeGuidedModuleRequirement, type GuidedBuilderAnalysis } from "../modules/guidedBuilder.js";
 import { getModuleBuilderPlatformContract } from "../modules/platformContract.js";
 import { getModuleReadiness, runModuleReadinessAction, type ModuleReadinessAction } from "../modules/readiness.js";
+import { getSetupDoctor } from "./setupDoctor.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const REVIEW_DIRECTORIES = ["Pending", "Deferred", "Closed", "Error"] as const;
@@ -163,7 +165,6 @@ function instanceViews(
 }
 
 async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
-  await requeueDueReviews(vaultRoot);
   const requested = Array.isArray(params.statuses)
     ? new Set(params.statuses.filter((value): value is string => typeof value === "string"))
     : new Set(["pending", "error"]);
@@ -176,9 +177,14 @@ async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonV
   const reviewAfterFrom = typeof params.review_after_from === "string" ? Date.parse(params.review_after_from) : null;
   const reviewAfterTo = typeof params.review_after_to === "string" ? Date.parse(params.review_after_to) : null;
   const result: Array<Awaited<ReturnType<typeof buildReviewView>>> = [];
-  for (const directory of REVIEW_DIRECTORIES) {
-    for (const file of await listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", directory), ".md")) {
-      const item = parseMarkdown(vaultRoot, file).data as unknown as ReviewItem;
+  const directories = [...new Set([...requested].map((status) => status === "pending" ? "Pending" : status === "error" ? "Error" : status === "deferred" ? "Deferred" : "Closed"))];
+  if (directories.includes("Deferred")) await requeueDueReviews(vaultRoot);
+  const files = (await Promise.all(directories.map((directory) => listFilesRecursive(path.join(vaultRoot, "90-System", "Review Queue", directory), ".md")))).flat();
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  for (const file of files) {
+      const document = parsed.get(file);
+      if (!document) continue;
+      const item = document.data as unknown as ReviewItem;
       if (!requested.has(item.status)) continue;
       if (moduleId && item.source_module !== moduleId) continue;
       if (instanceId && item.instance_id !== instanceId) continue;
@@ -191,13 +197,34 @@ async function listReviews(vaultRoot: string, params: JsonObject): Promise<JsonV
       if (reviewAfterFrom !== null && (reviewAfter === null || reviewAfter < reviewAfterFrom)) continue;
       if (reviewAfterTo !== null && (reviewAfter === null || reviewAfter > reviewAfterTo)) continue;
       result.push(await buildReviewView(vaultRoot, item, toVaultPath(vaultRoot, file)));
-    }
   }
   const priorityWeight: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
   return result.sort((a, b) =>
     (priorityWeight[a.priority] ?? 9) - (priorityWeight[b.priority] ?? 9) ||
     Date.parse(a.created_at) - Date.parse(b.created_at),
   );
+}
+
+async function listReviewPage(vaultRoot: string, params: JsonObject): Promise<JsonObject> {
+  const requested = Array.isArray(params.statuses)
+    ? params.statuses.filter((value): value is string => typeof value === "string")
+    : ["pending", "error"];
+  const directories = [...new Set(requested.map((status) => status === "pending" ? "Pending" : status === "error" ? "Error" : status === "deferred" ? "Deferred" : "Closed"))];
+  if (directories.includes("Deferred")) await requeueDueReviews(vaultRoot);
+  const page = await listReviewSummaryPage(vaultRoot, { ...params, statuses: requested });
+  const entries = Array.isArray(page.items) ? page.items as JsonObject[] : [];
+  const files = entries.map((entry) => fromVaultPath(vaultRoot, String(entry.vault_path)));
+  const parsed = parseMarkdownBatch(vaultRoot, files);
+  const available = files.map((file) => ({ file, document: parsed.get(file) })).filter((entry) => Boolean(entry.document));
+  const validation = validateSchemaBatch(vaultRoot, available.map((entry) => ({
+    schemaId: "https://pkb.local/schemas/core/review-item.schema.json", data: entry.document!.data,
+  })));
+  const views: JsonObject[] = [];
+  for (const [index, entry] of available.entries()) {
+    if (!validation[index]?.ok) continue;
+    views.push(await buildReviewView(vaultRoot, entry.document!.data as unknown as ReviewItem, toVaultPath(vaultRoot, entry.file)));
+  }
+  return { ...page, items: views, omitted_invalid: available.length - views.length + files.length - available.length };
 }
 
 async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Promise<JsonValue> {
@@ -276,11 +303,20 @@ async function resolveReviewCommand(vaultRoot: string, params: JsonObject): Prom
 
 function runtimeView(runtimeData: JsonObject): JsonObject {
   const tasks = (runtimeData.tasks as JsonValue[] | undefined) ?? [];
-  const counts: JsonObject = {};
-  for (const task of tasks) {
-    if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
-    counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+  const runtimeStats = runtimeData.runtime_stats && typeof runtimeData.runtime_stats === "object" && !Array.isArray(runtimeData.runtime_stats)
+    ? runtimeData.runtime_stats as JsonObject : {};
+  const hasRuntimeCounts = runtimeStats.counts && typeof runtimeStats.counts === "object" && !Array.isArray(runtimeStats.counts);
+  const counts: JsonObject = hasRuntimeCounts ? { ...runtimeStats.counts as JsonObject } : {};
+  if (!hasRuntimeCounts) {
+    for (const task of tasks) {
+      if (!task || typeof task !== "object" || Array.isArray(task) || typeof task.status !== "string") continue;
+      counts[task.status] = Number(counts[task.status] ?? 0) + 1;
+    }
   }
+  for (const status of [
+    "queued", "running", "waiting-for-network", "waiting-for-ai", "waiting-for-user",
+    "deferred", "completed", "failed", "cancelled", "interrupted",
+  ]) counts[status] = Number(counts[status] ?? 0);
   return {
     integrity: runtimeData.integrity ?? "unknown",
     schema_version: runtimeData.schema_version ?? null,
@@ -288,7 +324,7 @@ function runtimeView(runtimeData: JsonObject): JsonObject {
     resources: runtimeData.resources ?? [],
     jobs: runtimeData.jobs ?? [],
     checkpoints: runtimeData.checkpoints ?? [],
-    observability: runtimeData.runtime_stats ?? {},
+    observability: runtimeStats,
   };
 }
 
@@ -394,12 +430,29 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       throw new PkbError("INVALID_REQUEST", `Unknown System Center section: ${section}`);
     }
     if (section === "history") {
-      return { section, runs: await listRunViews(vaultRoot, { limit: 20, include_rollback: false }) } as unknown as JsonValue;
+      const page = await listRunViewPage(vaultRoot, {
+        page_size: typeof params.page_size === "number" ? params.page_size : 20,
+        cursor: params.cursor ?? null, include_rollback: false,
+      });
+      return { section, runs: page.items, page } as unknown as JsonValue;
     }
-    const runtimeData = ["full", "overview", "tasks", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
+    if (section === "tasks") {
+      const repository = await RuntimeRepository.open(vaultRoot);
+      try {
+        const page = repository.taskPage({
+          pageSize: typeof params.page_size === "number" ? params.page_size : 50,
+          cursor: params.cursor && typeof params.cursor === "object" && !Array.isArray(params.cursor) ? params.cursor as JsonObject : null,
+        });
+        const runtimeData = page.runtime as JsonObject;
+        return {
+          section, tasks: page.items, page: { has_more: page.has_more, next_cursor: page.next_cursor },
+          runtime: runtimeView(runtimeData),
+        } as unknown as JsonValue;
+      } finally { repository.close(); }
+    }
+    const runtimeData = ["full", "overview", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
     const runtime = runtimeView(runtimeData);
     const tasks = ((runtimeData.tasks as JsonValue[] | undefined) ?? []).slice(0, 200);
-    if (section === "tasks") return { section, tasks, runtime } as unknown as JsonValue;
     if (section === "quality") {
       return { section, quality: await getQualityDashboardFromRuntimeSnapshot(vaultRoot, runtimeData) } as unknown as JsonValue;
     }
@@ -450,6 +503,7 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     if (params.refresh_markdown !== false) await writeTodayMarkdown(vaultRoot, snapshot);
     return snapshot;
   }
+  if (method === "getSetupDoctor") return getSetupDoctor(vaultRoot, ENGINE_ROOT);
   if (method === "getQualityDashboard") return getQualityDashboard(vaultRoot);
   if (method === "migrateLegacyAccessPolicies") {
     const migration = params as unknown as LegacyAccessPolicyMigrationParams;
@@ -499,11 +553,12 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     finally { repository.close(); }
   }
   if (method === "listInboxItems") {
-    return listInbox(vaultRoot, params);
+    return params.page_size !== undefined || params.cursor !== undefined ? listInboxPage(vaultRoot, params) : listInbox(vaultRoot, params);
   }
   if (method === "getInboxCenterSnapshot") {
     const context = await discoverInboxContext(vaultRoot);
-    const inbox = await listInbox(vaultRoot, params, context);
+    const inbox = params.page_size !== undefined || params.cursor !== undefined
+      ? await listInboxPage(vaultRoot, params, context) : await listInbox(vaultRoot, params, context);
     return {
       inbox,
       modules: context.modules.map((module) => ({
@@ -519,7 +574,9 @@ async function execute(context: CommandContext): Promise<JsonValue> {
       })),
     } as unknown as JsonValue;
   }
-  if (method === "listReviewItems") return listReviews(vaultRoot, params);
+  if (method === "listReviewItems") {
+    return params.page_size !== undefined || params.cursor !== undefined ? listReviewPage(vaultRoot, params) : listReviews(vaultRoot, params);
+  }
   if (method === "resolveReview") {
     const before = await locateReviewItem(vaultRoot, stringParam(params, "review_id"));
     const result = await resolveReviewCommand(vaultRoot, params);
@@ -543,6 +600,12 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     try {
       if (method === "listTasks") {
         const statuses = Array.isArray(params.statuses) ? params.statuses.filter((item): item is TaskStatus => typeof item === "string") : undefined;
+        if (params.page_size !== undefined || params.cursor !== undefined) {
+          return repository.taskPage({
+            statuses, pageSize: typeof params.page_size === "number" ? params.page_size : 50,
+            cursor: params.cursor && typeof params.cursor === "object" && !Array.isArray(params.cursor) ? params.cursor as JsonObject : null,
+          });
+        }
         return repository.listTasks(statuses).slice(0, typeof params.limit === "number" ? params.limit : 200);
       }
       if (method === "getTaskDetails") {
@@ -595,8 +658,20 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const startupTask = params.startup === true ? await materializeStartupJobs(vaultRoot) : null;
     const fields = await materializeFieldDueJobs(vaultRoot);
     const startup = params.startup === true ? await reconcileStartup(vaultRoot) : { scheduler: await evaluateScheduler(vaultRoot) };
+    const dueRepository = await RuntimeRepository.open(vaultRoot);
+    let deferred_due: JsonObject;
+    try { deferred_due = dueRepository.wakeDueTasks(); }
+    finally { dueRepository.close(); }
     const dispatch = await dispatchOnce({ vaultRoot, limit: typeof params.limit === "number" ? params.limit : 2 });
-    return { jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup, resumed_after_file_close, dispatch } as unknown as JsonValue;
+    const wakeRepository = await RuntimeRepository.open(vaultRoot);
+    let wake: JsonObject;
+    try { wake = wakeRepository.nextWake(); }
+    finally { wakeRepository.close(); }
+    return {
+      jobs_registered: jobs.length, inbox, resources, startup_task: startupTask, field_due: fields, startup,
+      resumed_after_file_close, deferred_due, dispatch,
+      has_work: wake.has_work, next_wake_at: wake.next_wake_at, waiting_for_resources: wake.waiting_for_resources,
+    } as unknown as JsonValue;
   }
   if (method === "listCodexModels") {
     const models = await listCodexModels(typeof params.codex_executable === "string" ? params.codex_executable : undefined);
@@ -609,7 +684,9 @@ async function execute(context: CommandContext): Promise<JsonValue> {
   if (method === "getInstances") {
     return instanceViews(await discoverInstances(vaultRoot), params);
   }
-  if (method === "getRecentRuns") return listRunViews(vaultRoot, params);
+  if (method === "getRecentRuns") {
+    return params.page_size !== undefined || params.cursor !== undefined ? listRunViewPage(vaultRoot, params) : listRunViews(vaultRoot, params);
+  }
   if (method === "getRunDetails") {
     const runId = stringParam(params, "run_id");
     const view = await getRunView(vaultRoot, runId, params.developer_mode === true);

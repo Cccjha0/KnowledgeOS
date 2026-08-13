@@ -1,5 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PkbError } from "../core/errors.js";
@@ -15,8 +14,10 @@ import type {
   TaskRun,
   TaskStatus,
 } from "./domain.js";
+import { incrementPerformanceDiagnostic } from "../core/performanceDiagnostics.js";
 
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const initializedDatabases = new Set<string>();
 
 function runtimePath(vaultRoot: string): string {
   return path.join(vaultRoot, "90-System", "State", "runtime.db");
@@ -40,13 +41,23 @@ export class RuntimeRepository {
     const databasePath = runtimePath(vaultRoot);
     await ensureDir(path.dirname(databasePath));
     const repository = new RuntimeRepository(databasePath);
-    repository.call("init");
+    if (!initializedDatabases.has(databasePath) || !(await exists(databasePath))) {
+      repository.call("init");
+      initializedDatabases.add(databasePath);
+    }
     return repository;
+  }
+
+  static restore(databasePath: string, backupPath: string): void {
+    const repository = new RuntimeRepository(databasePath);
+    repository.call("restore", { backup_path: path.resolve(backupPath) });
+    repository.close();
   }
 
   private call<T extends JsonValue>(command: string, payload: JsonObject = {}): T {
     if (this.closed) throw new PkbError("RUNTIME_DB_CLOSED", "Runtime repository is closed.");
     const bridge = path.join(ENGINE_ROOT, "tools", "runtime_bridge.py");
+    incrementPerformanceDiagnostic("python_subprocesses");
     const result = spawnSync("python", ["-X", "utf8", bridge, command, this.databasePath], {
       encoding: "utf8", input: JSON.stringify(payload), windowsHide: true, maxBuffer: 16 * 1024 * 1024,
     });
@@ -63,7 +74,9 @@ export class RuntimeRepository {
   integrityCheck(): string { return this.call<string>("integrity-check"); }
   schemaVersion(): number { return this.call<number>("schema-version"); }
   runtimeStats(): JsonObject { return this.call<JsonObject>("runtime-stats"); }
+  nextWake(now = new Date().toISOString()): JsonObject { return this.call<JsonObject>("next-wake", { now }); }
   systemCenterData(since: string): JsonObject { return this.call<JsonObject>("system-center-data", { since }); }
+  todayData(): JsonObject { return this.call<JsonObject>("today-data"); }
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
   listJobs(): JobDefinition[] { return this.call<JobDefinition[]>("list-jobs"); }
   createTask(input: CreateTaskInput): { task: RuntimeTask; deduplicated: boolean } {
@@ -80,6 +93,11 @@ export class RuntimeRepository {
   }
   getTask(taskId: string): RuntimeTask | null { return this.call("get-task", { task_id: taskId }) as RuntimeTask | null; }
   listTasks(statuses?: TaskStatus[]): RuntimeTask[] { return this.call("list-tasks", { statuses: statuses ?? [] }); }
+  taskPage(options: { statuses?: TaskStatus[]; pageSize?: number; cursor?: JsonObject | null } = {}): JsonObject {
+    return this.call<JsonObject>("task-center-page", {
+      statuses: options.statuses ?? [], page_size: options.pageSize ?? 50, cursor: options.cursor ?? null,
+    });
+  }
   transitionTask(taskId: string, to: TaskStatus, patch: { error?: RuntimeError | null; deferUntil?: string | null; nextRetryAt?: string | null; completionReason?: string | null } = {}): RuntimeTask {
     return this.call("transition-task", {
       task_id: taskId, to, error: patch.error ?? null, error_supplied: patch.error !== undefined,
@@ -120,6 +138,7 @@ export class RuntimeRepository {
   setCheckpoint(checkpoint: SchedulerCheckpoint): void { this.call("set-checkpoint", checkpoint); }
   getCheckpoints(): SchedulerCheckpoint[] { return this.call("get-checkpoints"); }
   reconcile(now: string, heartbeatCutoff: string): JsonObject { return this.call("reconcile", { now, heartbeat_cutoff: heartbeatCutoff }); }
+  wakeDueTasks(now = new Date().toISOString()): JsonObject { return this.call<JsonObject>("wake-due-tasks", { now }); }
   retryTask(taskId: string): RuntimeTask { return this.call("retry-task", { task_id: taskId }); }
   refreshWaitingTask(taskId: string, resources: RuntimeTask["resources"], payload: JsonObject): RuntimeTask {
     return this.call("refresh-waiting-task", { task_id: taskId, resources, payload });
@@ -155,10 +174,7 @@ export class RuntimeRepository {
   cleanupHistory(retainDays = 90): JsonObject { return this.call("cleanup-history", { retain_days: retainDays }); }
   async backup(destination: string): Promise<void> {
     await ensureDir(path.dirname(destination));
-    this.call("checkpoint");
-    const temporary = `${destination}.tmp-${process.pid}`;
-    await fs.copyFile(this.databasePath, temporary);
-    await fs.rename(temporary, destination);
+    this.call("backup", { destination });
   }
 }
 
@@ -166,11 +182,6 @@ export async function restoreRuntimeDatabase(vaultRoot: string, backupPath: stri
   if (!(await exists(backupPath))) throw new PkbError("RUNTIME_BACKUP_NOT_FOUND", `Runtime backup does not exist: ${backupPath}`);
   const target = runtimePath(vaultRoot);
   await ensureDir(path.dirname(target));
-  const damaged = `${target}.damaged-${Date.now()}`;
-  if (await exists(target)) await fs.rename(target, damaged);
-  try { await fs.copyFile(backupPath, target); }
-  catch (error) {
-    if (await exists(damaged)) await fs.rename(damaged, target);
-    throw error;
-  }
+  RuntimeRepository.restore(target, backupPath);
+  initializedDatabases.delete(target);
 }

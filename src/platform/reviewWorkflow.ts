@@ -370,6 +370,7 @@ async function decideModuleOperationReview(
     await executeOperationPlan(vaultRoot, plan, {
       allowedTypes: [...new Set(plan.operations.map((operation) => operation.type))],
       allowedTargets: plan.operations.map((operation) => operation.target).filter((target): target is string => Boolean(target)),
+      allowedDestinations: plan.operations.flatMap((operation) => operation.type === "move-file" && typeof operation.payload.destination === "string" ? [operation.payload.destination] : []),
       requiredReviewId: located.item.review_id, gitSnapshot: snapshot,
     });
     const status: ReviewStatus = decision.decision === "approve" ? "approved" : "approved-with-modification";

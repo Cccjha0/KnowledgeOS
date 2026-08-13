@@ -4,6 +4,7 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin); this.plugin = plugin;
     this.connectionState = { tone: "idle", message: "尚未测试 Core 连接。" };
+    this.setupDoctorReport = null;
     this.modelDiscoveryState = null;
     this.modelDiscoveryRunning = false;
   }
@@ -30,10 +31,12 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
       .addText((text) => text.setValue(this.plugin.settings.nodePath).onChange(async (value) => {
         await this.persistSetting("nodePath", value.trim() || "node", true);
       }));
-    const connectionTest = new Setting(connection).setName("测试连接").setDesc("确认 Core CLI 可以启动、Vault 可以访问且 Command API 能够响应");
-    connectionTest.addButton((button) => button.setButtonText("测试连接").onClick(async () => this.testConnection(button)));
+    const connectionTest = new Setting(connection).setName("Setup Doctor").setDesc("只读检查 Node、Python、Core CLI、Command API、Vault、配置、Runtime DB 与已启用模块；不会自动修复或覆盖笔记");
+    connectionTest.addButton((button) => button.setButtonText("运行检查").onClick(async () => this.testConnection(button)));
     this.connectionStatusEl = markLiveRegion(connection.createDiv({ cls: "knowledgeos-settings-connection-state" }));
     this.renderConnectionState();
+    this.setupDoctorEl = connection.createDiv({ cls: "knowledgeos-setup-doctor" });
+    this.renderSetupDoctor();
 
     const daily = this.createSection(containerEl, "日常使用", "控制启动、刷新、通知和 Inbox 批量操作。");
     new Setting(daily).setName("启动时打开 Today").setDesc("Obsidian 工作区加载完成后打开 Knowledge Today")
@@ -214,18 +217,56 @@ class KnowledgeOSSettingTab extends PluginSettingTab {
     if (this.connectionState.actions?.length) this.connectionStatusEl.createDiv({ cls: "knowledgeos-settings-state-detail", text: `建议：${this.connectionState.actions.join("；")}` });
   }
 
+  renderSetupDoctor() {
+    if (!this.setupDoctorEl) return;
+    this.setupDoctorEl.empty();
+    const report = this.setupDoctorReport;
+    if (!report || !Array.isArray(report.checks)) return;
+    const statusLabels = { ready: "Ready", "needs-action": "Needs action", failed: "Failed" };
+    for (const check of report.checks) {
+      const card = this.setupDoctorEl.createDiv({ cls: `knowledgeos-setup-check is-${check.status}` });
+      const heading = card.createDiv({ cls: "knowledgeos-setup-check-heading" });
+      heading.createEl("strong", { text: check.label || check.id });
+      heading.createSpan({ cls: "knowledgeos-setup-check-status", text: statusLabels[check.status] || check.status });
+      card.createDiv({ text: check.message });
+      if (check.impact) card.createDiv({ cls: "knowledgeos-settings-state-detail", text: `影响：${check.impact}` });
+      if (Array.isArray(check.recovery_actions) && check.recovery_actions.length) {
+        card.createDiv({ cls: "knowledgeos-settings-state-detail", text: `修复：${check.recovery_actions.join("；")}` });
+      }
+      card.createDiv({ cls: "knowledgeos-settings-state-detail", text: check.will_modify_vault ? "执行建议的修复会修改 Vault；请先备份并明确确认。" : "本项检查和建议不会自动修改 Vault。" });
+    }
+    if (Array.isArray(report.next_steps) && report.next_steps.length) {
+      const next = this.setupDoctorEl.createDiv({ cls: "knowledgeos-setup-next" });
+      next.createEl("strong", { text: "可以开始使用" });
+      const actions = next.createDiv({ cls: "knowledgeos-settings-actions" });
+      const today = actions.createEl("button", { text: "打开 Today" });
+      today.onclick = () => this.plugin.activateToday();
+      const capture = actions.createEl("button", { text: "Quick Capture" });
+      capture.onclick = () => this.plugin.openCapture();
+      const inbox = actions.createEl("button", { text: "查看 Inbox" });
+      inbox.onclick = () => this.plugin.activateInbox();
+    }
+  }
+
   async testConnection(button) {
     button.setDisabled(true);
     this.connectionState = { tone: "loading", message: "正在连接 KnowledgeOS Core…" };
     this.renderConnectionState();
-    const result = await this.plugin.client.invoke("getModules", {});
+    const result = await this.plugin.client.invoke("getSetupDoctor", {});
     button.setDisabled(false);
     if (result.ok) {
-      this.connectionState = { tone: "success", message: "Core 连接正常。网络、Codex 和模块健康状态未在此测试。" };
+      this.setupDoctorReport = result.data;
+      const summary = result.data?.summary || {};
+      const healthy = result.data?.status === "ready";
+      this.connectionState = {
+        tone: healthy ? "success" : result.data?.status === "failed" ? "error" : "stale",
+        message: healthy ? "Setup Doctor 全部通过。" : `Setup Doctor：${summary.ready || 0} Ready，${summary.needs_action || 0} Needs action，${summary.failed || 0} Failed。`,
+      };
     } else {
       this.connectionState = { tone: "error", message: result.error?.message || "Core 连接失败。", impact: result.error?.impact, actions: result.error?.recovery_actions || [] };
     }
     this.renderConnectionState();
+    this.renderSetupDoctor();
     this.plugin.notify(result.ok ? "KnowledgeOS Core 连接正常" : result.error?.message || "连接失败", { error: !result.ok, force: true });
   }
 }

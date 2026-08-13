@@ -28,6 +28,19 @@ import { probeRuntimeResources } from "./runtime/resourceMonitor.js";
 import { materializeFieldDueJobs, materializeStartupJobs, replayRuntimeEvent } from "./runtime/triggers.js";
 import { RuntimeRepository, restoreRuntimeDatabase } from "./runtime/repository.js";
 import { createModuleScaffold } from "./modules/scaffold.js";
+
+const CONCURRENT_COMMAND_API_METHODS = new Set<CommandApiMethod>([
+  "getTodayItems", "getSystemCenterSnapshot", "listInboxItems", "getInboxCenterSnapshot", "listReviewItems",
+  "getModules", "getInstances", "getRecentRuns", "getRunDetails", "listTasks", "getTaskDetails", "getTaskRuntimeStatus",
+  "listCodexModels", "getQualityDashboard", "listQualityIssues", "getFieldProvenance", "getModuleBuilderPlatformContract",
+  "previewModuleBlueprint", "getModuleReadiness",
+]);
+
+function commandApiRequestCanRunConcurrently(method: CommandApiMethod | null, params: Record<string, JsonValue> = {}): boolean {
+  if (!method || !CONCURRENT_COMMAND_API_METHODS.has(method)) return false;
+  if (method === "getTodayItems") return params.refresh_markdown === false;
+  return true;
+}
 import { scaffoldModuleFromBlueprint, validateModuleBlueprint } from "./modules/blueprint.js";
 import { installModulePackage, packModuleDirectory, rollbackModulePackage } from "./modules/packageManager.js";
 import { validateModule } from "./modules/validator.js";
@@ -180,30 +193,41 @@ async function main(): Promise<void> {
 
   if (command === "api-server") {
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    const active = new Set<Promise<void>>();
+    let mutationTail = Promise.resolve();
+    const writeResponse = (response: unknown): void => { process.stdout.write(`${JSON.stringify(response)}\n`); };
+    const handleRequest = async (line: string): Promise<void> => {
+      let requestId: string | null = null;
+      let method = "unknown";
+      try {
+        const request = JSON.parse(line) as { request_id?: string; method?: string; params?: Record<string, JsonValue>; deadline_at?: string };
+        requestId = request.request_id ?? null;
+        method = request.method ?? "unknown";
+        if (!requestId || !request.method) throw new Error("request_id and method are required");
+        if (request.deadline_at && Date.parse(request.deadline_at) <= Date.now()) {
+          throw new PkbError("REQUEST_DEADLINE_EXCEEDED", "The Command API request expired before execution began.");
+        }
+        writeResponse(await invokeCommandApi({
+          vaultRoot: parsed.vault, requestId, method: request.method as CommandApiMethod, params: request.params ?? {},
+        }));
+      } catch (error) {
+        writeResponse({
+          api_version: "1", request_id: requestId, method, state: "failed", ok: false, data: null,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        });
+      }
+    };
     for await (const line of lines) {
       if (!line.trim()) continue;
-      try {
-        const request = JSON.parse(line) as { request_id?: string; method?: string; params?: Record<string, JsonValue> };
-        if (!request.request_id || !request.method) throw new Error("request_id and method are required");
-        const response = await invokeCommandApi({
-          vaultRoot: parsed.vault,
-          requestId: request.request_id,
-          method: request.method as CommandApiMethod,
-          params: request.params ?? {},
-        });
-        process.stdout.write(`${JSON.stringify(response)}\n`);
-      } catch (error) {
-        process.stdout.write(`${JSON.stringify({
-          api_version: "1",
-          request_id: null,
-          method: "unknown",
-          state: "failed",
-          ok: false,
-          data: null,
-          error: { message: error instanceof Error ? error.message : String(error) },
-        })}\n`);
-      }
+      let parsedRequest: { method?: CommandApiMethod; params?: Record<string, JsonValue> } = {};
+      try { parsedRequest = JSON.parse(line) as typeof parsedRequest; } catch { /* handled by handleRequest */ }
+      const operation = commandApiRequestCanRunConcurrently(parsedRequest.method ?? null, parsedRequest.params)
+        ? handleRequest(line)
+        : (mutationTail = mutationTail.then(() => handleRequest(line), () => handleRequest(line)));
+      active.add(operation);
+      void operation.finally(() => active.delete(operation));
     }
+    await Promise.allSettled([...active]);
     return;
   }
 

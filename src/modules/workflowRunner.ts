@@ -810,7 +810,9 @@ export function createModuleWorkflowRunner(executeJson: CodexJsonExecutor = exec
           const snapshot = await createGitSnapshot(vaultRoot, runId);
           await executeOperationPlan(vaultRoot, plan, {
             allowedTypes: ["create-file", "update-frontmatter", "append-section", "move-file"],
-            allowedTargets: plan.operations.map((operation) => operation.target!).filter(Boolean), requiredReviewId: null, gitSnapshot: snapshot,
+            allowedTargets: plan.operations.map((operation) => operation.target!).filter(Boolean),
+            allowedDestinations: plan.operations.flatMap((operation) => operation.type === "move-file" && typeof operation.payload.destination === "string" ? [operation.payload.destination] : []),
+            requiredReviewId: null, gitSnapshot: snapshot,
           });
           // Preserve the exact Capture/Task that produced a Review. This is
           // required both for user explanation and for fixture tests to prove

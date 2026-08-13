@@ -698,6 +698,9 @@ test("Module SDK allows structured plans but rejects cross-boundary and red oper
   assert.throws(() => sdk.assertReadable("20-Workspace/Reading Log/reading-2026/Notes/a.md", 4), /integer from 0 to 3/);
   assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-002", taskId: "TASK-002", summary: "bad", operations: [{ ...operation, target: "20-Workspace/Applications/secret.md" }] }), /cannot propose a write/);
   assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-003", taskId: "TASK-003", summary: "bad", operations: [{ ...operation, type: "delete-file" }] }), /delete operations/);
+  assert.throws(() => sdk.buildOperationPlan({ planId: "PLAN-004", taskId: "TASK-004", summary: "bad move", operations: [{
+    ...operation, type: "move-file", payload: { destination: "20-Workspace/Applications/stolen.md" },
+  }] }), /cannot propose a move/);
 });
 
 test("Prompt and Workflow registries support default, pin, testing and generation trace", async () => {

@@ -1,5 +1,7 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createSystemCenterViews(deps) {
-  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
+  const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, presentationTimeZone, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError, displayJson, rollbackLabel, RollbackConfirmModal } = deps;
 class RunDetailsModal extends Modal {
   constructor(app, plugin, runId, onChanged) {
     super(app); this.plugin = plugin; this.runId = runId; this.onChanged = onChanged;
@@ -558,6 +560,7 @@ class SystemCenterView extends ItemView {
     this.sectionData = new Map();
     this.sectionFetchedAt = new Map();
     this.sectionWarnings = new Map();
+    this.refreshGate = new LatestRequestGate();
   }
   getViewType() { return SYSTEM_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS System"; }
@@ -565,6 +568,7 @@ class SystemCenterView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(options = {}) {
+    this.refreshGate.request();
     const background = options.background === true;
     if (options.preserveCache !== true) this.sectionData.clear();
     if (this.refreshPromise) {
@@ -575,7 +579,7 @@ class SystemCenterView extends ItemView {
       let nextIsBackground = background;
       do {
         this.refreshQueued = false;
-        await this.performRefresh(nextIsBackground);
+        await this.performRefresh(nextIsBackground, this.refreshGate.current());
         nextIsBackground = true;
       } while (this.refreshQueued);
     })();
@@ -583,14 +587,17 @@ class SystemCenterView extends ItemView {
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(background) {
+  async performRefresh(background, generation = this.refreshGate.current()) {
     const section = this.activeSection;
     const currentData = this.data?.section === section ? this.data : this.sectionData.get(section);
     const preserveContent = Boolean(currentData && this.contentEl.childElementCount > 0);
     this.contentEl.setAttr("aria-busy", "true");
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else this.renderLoading();
-    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", { section });
+    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", {
+      section, ...(["tasks", "history"].includes(section) ? { page_size: section === "tasks" ? LIST_PAGE_SIZE : 20 } : {}),
+    });
+    if (!this.refreshGate.isCurrent(generation)) return;
     this.contentEl.removeAttribute("aria-busy");
     if (!response.ok) {
       if (preserveContent) this.renderStaleStatus(response.error);
@@ -616,6 +623,7 @@ class SystemCenterView extends ItemView {
   async openSection(section) {
     if (this.activeSection === section) return;
     this.activeSection = section;
+    this.refreshGate.request();
     const cached = this.sectionData.get(section);
     if (cached) {
       this.data = cached;
@@ -624,6 +632,35 @@ class SystemCenterView extends ItemView {
     }
     this.data = null;
     await this.refresh({ background: true, preserveCache: true });
+  }
+
+  async loadNextPage(button) {
+    const section = this.activeSection;
+    const cursor = this.data?.page?.next_cursor;
+    if (!cursor || !["tasks", "history"].includes(section)) return;
+    const generation = this.refreshGate.request();
+    button.disabled = true;
+    button.setText("正在加载…");
+    const response = await this.plugin.client.invoke("getSystemCenterSnapshot", {
+      section, page_size: section === "tasks" ? LIST_PAGE_SIZE : 20, cursor,
+    });
+    if (!this.refreshGate.isCurrent(generation) || this.activeSection !== section) return;
+    if (!response.ok) {
+      button.disabled = false;
+      button.setText("重试加载更多");
+      this.plugin.notify(response.error?.message || "无法加载下一页", { error: true });
+      return;
+    }
+    const next = this.normalizeSectionData(section, response.data);
+    if (!next) { button.disabled = false; button.setText("重试加载更多"); return; }
+    const key = section === "tasks" ? "tasks" : "runs";
+    const id = section === "tasks" ? "task_id" : "run_id";
+    const merged = new Map([...(this.data[key] || []), ...(next[key] || [])].map((item) => [item[id], item]));
+    next[key] = [...merged.values()];
+    this.data = next;
+    this.sectionData.set(section, next);
+    this.sectionFetchedAt.set(section, new Date().toISOString());
+    this.render();
   }
 
   renderBackgroundStatus(text, failed = false, retry = false) {
@@ -686,6 +723,7 @@ class SystemCenterView extends ItemView {
     if (section === "tasks") {
       if (!requireArray("tasks") || !requireObject("runtime")) return null;
       normalizeRuntime();
+      if (!requireObject("page")) normalized.page = { has_more: false, next_cursor: null };
     }
     if (section === "quality") {
       if (!requireObject("quality") || !normalized.quality?.overview) return null;
@@ -700,7 +738,10 @@ class SystemCenterView extends ItemView {
       for (const key of ["reviews", "runs"]) if (!requireArray(key)) { normalized[key] = []; warnings.push(key); }
       normalizeInbox();
     }
-    if (section === "history" && !requireArray("runs")) return null;
+    if (section === "history") {
+      if (!requireArray("runs")) return null;
+      if (!requireObject("page")) normalized.page = { has_more: false, next_cursor: null };
+    }
     this.sectionWarnings.set(section, [...new Set(warnings)]);
     return normalized;
   }
@@ -879,7 +920,7 @@ class SystemCenterView extends ItemView {
     const runTasks = createToolbarButton(actions, "play", "运行队列");
     runTasks.onclick = async () => {
       runTasks.disabled = true;
-      const response = await this.plugin.client.invoke("runTaskCycle", {
+      const response = await this.plugin.taskClient.invoke("runTaskCycle", {
         limit: 2,
         codex_model: this.plugin.settings.codexModel,
         codex_reasoning_effort: this.plugin.settings.codexReasoningEffort,
@@ -898,7 +939,7 @@ class SystemCenterView extends ItemView {
     summary.setText(`运行中 ${taskCounts.running || 0} · 已排队 ${taskCounts.queued || 0} · 等待条件 ${(taskCounts["waiting-for-network"] || 0) + (taskCounts["waiting-for-ai"] || 0) + (taskCounts["waiting-for-user"] || 0) + (taskCounts.deferred || 0)} · 失败 ${taskCounts.failed || 0}`);
     let shown = 0;
     for (const [label, statuses] of groups) {
-      const tasks = this.data.tasks.filter((task) => statuses.includes(task.status)).slice(0, 50);
+      const tasks = this.data.tasks.filter((task) => statuses.includes(task.status));
       if (!tasks.length) continue;
       shown += tasks.length;
       const section = root.createEl("section", { cls: "knowledgeos-system-section", attr: { "aria-label": label } });
@@ -907,6 +948,10 @@ class SystemCenterView extends ItemView {
       for (const task of tasks) this.renderTask(list, task);
     }
     if (!shown) this.renderEmptyState(root, "circle-check", "当前没有运行中或等待处理的任务", "新的手动任务和自动任务会显示在这里。", true);
+    if (this.data.page?.has_more && this.data.page?.next_cursor) {
+      const more = root.createEl("button", { cls: "knowledgeos-system-load-more", text: "加载更多任务" });
+      more.onclick = () => this.loadNextPage(more);
+    }
     const jobs = (this.data.runtime.jobs || []).filter((job) => job.enabled && job.trigger?.type !== "startup");
     if (jobs.length) {
       const details = root.createEl("details", { cls: "knowledgeos-system-disclosure knowledgeos-scheduled-jobs" });
@@ -917,7 +962,7 @@ class SystemCenterView extends ItemView {
         card.createEl("strong", { text: labelJob(job.job_id, job.module) });
         card.createDiv({ cls: "knowledgeos-system-row-description", text: job.trigger?.type === "field-due" ? "在信息到期时检查" : "按计划自动运行" });
         const run = card.createEl("button", { text: "立即运行" });
-        run.onclick = async () => { run.disabled = true; const response = await this.plugin.client.invoke("enqueueTask", { job_id: job.job_id }); if (!response.ok) this.plugin.notify(response.error?.message || "任务创建失败", { error: true }); else this.plugin.notify(response.data.deduplicated ? "任务已在队列中" : "任务已加入队列"); await this.refresh(); };
+        run.onclick = async () => { run.disabled = true; const response = await this.plugin.taskClient.invoke("enqueueTask", { job_id: job.job_id }); if (!response.ok) this.plugin.notify(response.error?.message || "任务创建失败", { error: true }); else this.plugin.notify(response.data.deduplicated ? "任务已在队列中" : "任务已加入队列"); await this.refresh(); };
         renderDeveloperDetails(card, this.plugin, [["Job ID", job.job_id], ["Workflow", job.workflow], ["Trigger", job.trigger?.type], ["Priority", job.priority]]);
       }
     }
@@ -1006,9 +1051,12 @@ class SystemCenterView extends ItemView {
       this.renderEmptyState(root, "history", "尚无运行记录", "任务完成或失败后，运行记录会显示在这里。");
       return;
     }
-    const limit = this.plugin.settings.developerMode ? this.data.runs.length : 20;
     const list = root.createDiv({ cls: "knowledgeos-system-list knowledgeos-system-history-list" });
-    for (const run of this.data.runs.slice(0, limit)) this.renderRun(list, run);
+    for (const run of this.data.runs) this.renderRun(list, run);
+    if (this.data.page?.has_more && this.data.page?.next_cursor) {
+      const more = root.createEl("button", { cls: "knowledgeos-system-load-more", text: "加载更多运行记录" });
+      more.onclick = () => this.loadNextPage(more);
+    }
   }
 
   renderQuality(root) {
@@ -1019,7 +1067,7 @@ class SystemCenterView extends ItemView {
     heading.createEl("h3", { text: "知识质量" });
     heading.createDiv({ cls: "knowledgeos-page-subtitle", text: "来源、新鲜度、审核与数据一致性" });
     const audit = header.createEl("button", { text: "运行每周审计" });
-    audit.onclick = async () => { audit.disabled = true; const response = await this.plugin.client.invoke("runQualityAudit", { frequency: "weekly" }); if (!response.ok) this.plugin.notify(response.error?.message || "质量审计失败", { error: true }); await this.refresh(); };
+    audit.onclick = async () => { audit.disabled = true; const response = await this.plugin.taskClient.invoke("runQualityAudit", { frequency: "weekly" }); if (!response.ok) this.plugin.notify(response.error?.message || "质量审计失败", { error: true }); await this.refresh(); };
     const overview = section.createEl("section", { cls: "knowledgeos-system-metrics knowledgeos-quality-grid", attr: { "aria-label": "知识质量摘要" } });
     this.renderMetric(overview, "需要关注", String(quality.overview.active_issues || 0), "当前活跃问题");
     this.renderMetric(overview, "严重问题", String(quality.overview.critical || 0), "需要立即检查");
@@ -1031,7 +1079,7 @@ class SystemCenterView extends ItemView {
     if (this.plugin.settings.developerMode) {
       const observationPanel = section.createEl("details", { cls: "knowledgeos-technical" });
       observationPanel.createEl("summary", { text: "I14 真实观察" });
-      observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 时区 ${evaluation.timezone || observation.timezone || "Asia/Shanghai"} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
+      observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `状态 ${observation.status || "未开始"} · 时区 ${evaluation.timezone || observation.timezone || presentationTimeZone()} · 已观察 ${observation.elapsed_days || 0}/${observation.minimum_days || 14} 天 · 实测日期 ${coverage.unique_days || 0}/${coverage.required_unique_days || 7} · 周审计 ${coverage.weekly_audits || 0}/${coverage.required_weekly_audits || 2}` });
       observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `初步结论 ${evaluation.overall || "insufficient-evidence"} · 最终评估资格 ${evaluation.eligible_for_final_review ? "已满足" : "未满足"}` });
       for (const [criterion, result] of Object.entries(evaluation.criteria || {})) observationPanel.createDiv({ cls: "knowledgeos-review-meta", text: `${criterion}: ${result?.status || "insufficient-evidence"}` });
     }

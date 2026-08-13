@@ -1,3 +1,5 @@
+const { LatestRequestGate } = require("../services/latest-request");
+
 function createInboxCenterViews(deps) {
   const { ItemView, Modal, Notice, PluginSettingTab, Setting, setIcon, VIEW_TYPE, REVIEW_VIEW_TYPE, INBOX_VIEW_TYPE, SYSTEM_VIEW_TYPE, settingsDefaults, moduleUiMetadata, manifestFormatters, LIST_PAGE_SIZE, FALLBACK_CODEX_MODELS, REASONING_LABELS, markLiveRegion, taskCycleChanged, shouldAutoRefreshPath, missingBuiltCliFailure, labelStatus, labelModule, labelJob, labelField, friendlyAction, calendarDayDifference, formatTime, formatVerificationSchedule, createTime, friendlyDashboardDescription, friendlyDashboardTitle, createToolbarButton, renderLoadingSkeleton, addCardArrow, renderDeveloperDetails, renderRecoverableError } = deps;
 class InboxCenterView extends ItemView {
@@ -8,7 +10,6 @@ class InboxCenterView extends ItemView {
     this.expandedItems = new Set();
     this.pendingItemIds = new Set();
     this.itemActionErrors = new Map();
-    this.visibleLimit = LIST_PAGE_SIZE;
     this.listing = null;
     this.refreshPromise = null;
     this.refreshQueued = false;
@@ -16,6 +17,7 @@ class InboxCenterView extends ItemView {
     this.backgroundStatus = null;
     this.partialWarnings = [];
     this.lastSuccessfulAt = null;
+    this.refreshGate = new LatestRequestGate();
   }
   getViewType() { return INBOX_VIEW_TYPE; }
   getDisplayText() { return "KnowledgeOS Inbox"; }
@@ -23,6 +25,7 @@ class InboxCenterView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh(selectedItemId = null) {
+    this.refreshGate.request();
     if (selectedItemId) this.pendingSelectedItemId = selectedItemId;
     if (this.refreshPromise) {
       this.refreshQueued = true;
@@ -33,21 +36,22 @@ class InboxCenterView extends ItemView {
         this.refreshQueued = false;
         const nextSelectedItemId = this.pendingSelectedItemId;
         this.pendingSelectedItemId = null;
-        await this.performRefresh(nextSelectedItemId);
+        await this.performRefresh(nextSelectedItemId, this.refreshGate.current());
       } while (this.refreshQueued);
     })();
     try { await this.refreshPromise; }
     finally { this.refreshPromise = null; }
   }
 
-  async performRefresh(selectedItemId = null) {
+  async performRefresh(selectedItemId = null, generation = this.refreshGate.current()) {
     const root = this.contentEl;
     root.addClass("knowledgeos-inbox-center");
     const preserveContent = this.listing !== null && root.childElementCount > 0;
     if (preserveContent) this.renderBackgroundStatus("更新中…");
     else renderLoadingSkeleton(root, "正在加载 Inbox…");
     if (!preserveContent) this.decorateLoadingShell(root);
-    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", {});
+    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", { page_size: LIST_PAGE_SIZE });
+    if (!this.refreshGate.isCurrent(generation)) return;
     if (!response.ok) {
       const error = response.error;
       if (preserveContent) this.renderStaleStatus(error);
@@ -172,9 +176,8 @@ class InboxCenterView extends ItemView {
     ];
     let rendered = 0;
     for (const [id, label, matches] of sections) {
-      if (rendered >= this.visibleLimit) break;
       const items = this.listing.items.filter(matches);
-      const visibleItems = items.slice(0, this.visibleLimit - rendered);
+      const visibleItems = items;
       if (!visibleItems.length) continue;
       let section;
       if (id === "deferred") {
@@ -189,11 +192,31 @@ class InboxCenterView extends ItemView {
       for (const item of visibleItems) this.renderItem(section, item, item.item_id === selectedItemId);
       rendered += visibleItems.length;
     }
-    if (this.listing.items.length > rendered) {
+    if (this.listing.page?.has_more && this.listing.page?.next_cursor) {
+      const remaining = typeof this.listing.page.total === "number" ? Math.max(0, this.listing.page.total - this.listing.items.length) : null;
       const more = root.createEl("button", { cls: "knowledgeos-inbox-load-more", text: `加载更多（还有 ${this.listing.items.length - rendered} 项）` });
-      more.onclick = () => { this.visibleLimit += LIST_PAGE_SIZE; this.render(selectedItemId); };
+      more.setText(remaining === null ? "加载更多" : `加载更多（还有 ${remaining} 项）`);
+      more.onclick = () => this.loadMoreInbox(more, selectedItemId);
     }
     root.scrollTop = scrollTop;
+  }
+
+  async loadMoreInbox(button, selectedItemId = null) {
+    const cursor = this.listing?.page?.next_cursor;
+    if (!cursor) return;
+    const generation = this.refreshGate.request();
+    button.disabled = true; button.setText("正在加载…");
+    const response = await this.plugin.client.invoke("getInboxCenterSnapshot", { page_size: LIST_PAGE_SIZE, cursor });
+    if (!this.refreshGate.isCurrent(generation)) return;
+    if (!response.ok || !response.data?.inbox) {
+      button.disabled = false; button.setText("重试加载更多");
+      this.plugin.notify(response.error?.message || "无法加载下一页 Inbox", { error: true });
+      return;
+    }
+    const next = response.data.inbox;
+    next.items = [...new Map([...this.listing.items, ...(next.items || [])].map((item) => [item.item_id, item])).values()];
+    this.listing = next;
+    this.render(selectedItemId);
   }
 
   selectedRoute(item) {

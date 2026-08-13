@@ -81,6 +81,11 @@ python -m pip install -r requirements.txt
 npm run build
 ```
 
+The committed lockfile uses the official npm registry. A clean checkout must
+install with `npm ci` without relying on an existing `node_modules` directory
+or a shared npm cache; developer-specific registry settings must not be written
+back to `package-lock.json`.
+
 Run the CLI through `node dist/cli.js`, or optionally register `pkb` locally:
 
 ```powershell
@@ -121,10 +126,19 @@ node dist/cli.js config sync --vault "D:\Obsidian\KnowledgeOS Vault"
 ## Obsidian plugin
 
 1. Complete the Engine installation and build above.
-2. Copy `plugins/knowledgeos-obsidian/` to:
-   `<vault>/.obsidian/plugins/knowledgeos/`
-3. Enable **KnowledgeOS** in Obsidian Community Plugins.
-4. In plugin Settings, choose the built `dist/cli.js` and the Vault path, then
+2. Build the self-contained Obsidian bundle and prepare an installable folder:
+
+   ```powershell
+   npm run build:plugin
+   npm run pack:plugin
+   ```
+
+3. Copy the contents of `release/knowledgeos-obsidian/` to
+   `<vault>/.obsidian/plugins/knowledgeos/`. The destination must contain
+   `main.js`, `manifest.json`, and `styles.css` at its root; copying the source
+   tree without building it is not a valid installation.
+4. Enable **KnowledgeOS** in Obsidian Community Plugins.
+5. In plugin Settings, choose the built `dist/cli.js` and the Vault path, then
    use **Test connection**.
 
 The plugin communicates only through the Core Command API. It does not read or

@@ -10,6 +10,7 @@ import { executeOperationPlan } from "../core/operationExecutor.js";
 import type { JsonObject, OperationPlan, RunLog } from "../core/types.js";
 import { initializeVault } from "../core/vault.js";
 import { invokeCommandApi } from "../platform/commandApi.js";
+import { enablePerformanceDiagnostics, performanceDiagnosticsSnapshot, resetPerformanceDiagnostics } from "../core/performanceDiagnostics.js";
 
 async function executeLoggedPlan(vault: string, sequence: number, value: string): Promise<{ runId: string; plan: OperationPlan }> {
   const suffix = String(sequence).padStart(6, "0");
@@ -103,7 +104,47 @@ test("System Center snapshot consolidates all read models into one API response"
     const tasks = await invokeCommandApi({ vaultRoot: vault, requestId: "SYS-TASKS", method: "getSystemCenterSnapshot", params: { section: "tasks" } });
     assert.equal(tasks.ok, true);
     assert.equal("modules" in (tasks.data as JsonObject), false);
+    assert.equal(typeof (tasks.data as JsonObject).runtime, "object");
   } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test("Recent Runs uses a rebuildable bounded index after the first safe fallback", async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "knowledgeos-run-index-"));
+  try {
+    await initializeVault(vault, "disabled");
+    const logRoot = path.join(vault, "90-System", "Logs");
+    for (let index = 0; index < 200; index += 1) {
+      const number = index + 1; const runId = `RUN-2026-${String(number).padStart(6, "0")}`;
+      const completed = new Date(Date.parse("2026-01-01T00:00:00Z") + index * 1000).toISOString();
+      await fs.writeFile(path.join(logRoot, `${runId}.md`), ["---", `run_id: ${runId}`, "task_id: null", "plan_id: null", "source_module: core",
+        "instance_id: null", "review_id: null", "status: completed", "git_snapshot: null", `started_at: '${completed}'`, `completed_at: '${completed}'`,
+        "schema_version: 1", "---", "", `# ${runId}`, "", "Synthetic run.", ""].join("\n"), "utf8");
+    }
+    enablePerformanceDiagnostics(); resetPerformanceDiagnostics();
+    const fallback = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-INDEX-1", method: "getRecentRuns", params: { limit: 20, include_rollback: false } });
+    assert.equal(fallback.ok, true);
+    assert.equal((fallback.data as JsonObject[]).length, 20);
+    assert.equal(performanceDiagnosticsSnapshot().markdown_files_parsed, 200);
+    resetPerformanceDiagnostics();
+    const indexed = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-INDEX-2", method: "getRecentRuns", params: { limit: 20, include_rollback: false } });
+    assert.equal((indexed.data as JsonObject[])[0]?.run_id, "RUN-2026-000200");
+    assert.equal(performanceDiagnosticsSnapshot().files_discovered, 0);
+    assert.equal(performanceDiagnosticsSnapshot().markdown_files_parsed, 0);
+    assert.equal(performanceDiagnosticsSnapshot().python_subprocesses, 1);
+    const firstPage = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-PAGE-1", method: "getRecentRuns", params: { page_size: 17, include_rollback: false } });
+    const firstPageData = firstPage.data as JsonObject;
+    assert.equal((firstPageData.items as JsonObject[]).length, 17);
+    assert.equal(firstPageData.has_more, true);
+    const secondPage = await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-PAGE-2", method: "getRecentRuns", params: { page_size: 17, cursor: firstPageData.next_cursor ?? null, include_rollback: false } });
+    const secondPageData = secondPage.data as JsonObject;
+    assert.equal((secondPageData.items as JsonObject[]).length, 17);
+    assert.equal((secondPageData.items as JsonObject[])[0]?.run_id, "RUN-2026-000183");
+    assert.equal(new Set([...(firstPageData.items as JsonObject[]), ...(secondPageData.items as JsonObject[])].map((item) => item.run_id)).size, 34);
+    await fs.rm(path.join(vault, "90-System", "Cache", "run-summary-index.sqlite"), { force: true });
+    resetPerformanceDiagnostics();
+    assert.equal(((await invokeCommandApi({ vaultRoot: vault, requestId: "RUN-INDEX-3", method: "getRecentRuns", params: { limit: 5, include_rollback: false } })).data as JsonObject[]).length, 5);
+    assert.equal(performanceDiagnosticsSnapshot().markdown_parse_requests > 0, true);
+  } finally { enablePerformanceDiagnostics(false); await fs.rm(vault, { recursive: true, force: true }); }
 });
 
 test("Core API server correlates multiple requests over one process", async () => {
@@ -131,7 +172,7 @@ test("Core API server correlates multiple requests over one process", async () =
         server!.stdin!.write(`${JSON.stringify({ request_id: requestId, method: "getInstances", params: {} })}\n`);
       }
     });
-    assert.deepEqual(responses.map((response) => response.request_id), ["SERVER-ONE", "SERVER-TWO"]);
+    assert.deepEqual(responses.map((response) => response.request_id).sort(), ["SERVER-ONE", "SERVER-TWO"]);
     assert.equal(responses.every((response) => response.ok === true), true);
     server.stdin!.end();
     await new Promise<void>((resolve) => server!.once("exit", () => resolve()));
@@ -140,6 +181,12 @@ test("Core API server correlates multiple requests over one process", async () =
     if (server && !server.killed) server.kill();
     await fs.rm(vault, { recursive: true, force: true });
   }
+});
+
+test("Core API server only treats Today requests without Markdown writes as concurrent", async () => {
+  const source = await fs.readFile(path.resolve("src", "cli.ts"), "utf8");
+  assert.match(source, /method === "getTodayItems"\) return params\.refresh_markdown === false/);
+  assert.match(source, /commandApiRequestCanRunConcurrently\(parsedRequest\.method/);
 });
 
 test("rollback refuses changed files and requires confirmation for later overlapping runs", async () => {

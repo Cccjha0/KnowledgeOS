@@ -89,6 +89,24 @@ def main():
         print(json.dumps({"data": data, "content": content}, ensure_ascii=False))
         return
 
+    if command == "parse-markdown-batch":
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, list):
+            fail("Batch payload must be a list")
+        output = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, str):
+                output.append({"ok": False, "path": None, "error": f"Item {index} is not a path string"})
+                continue
+            try:
+                file_path = Path(item)
+                data, content = parse_frontmatter(file_path.read_text(encoding="utf-8"))
+                output.append({"ok": True, "path": item, "document": {"data": data, "content": content}})
+            except Exception as error:
+                output.append({"ok": False, "path": item, "error": str(error)})
+        print(json.dumps(output, ensure_ascii=False))
+        return
+
     if command == "write-markdown":
         path = Path(sys.argv[2])
         payload = json.load(sys.stdin)
@@ -192,6 +210,34 @@ def main():
                 details.append({"path": location, "message": error.message})
             fail("Schema validation failed", details)
         print(json.dumps({"ok": True}, ensure_ascii=False))
+        return
+
+    if command == "validate-batch":
+        from jsonschema import Draft202012Validator, FormatChecker
+
+        engine_root = Path(sys.argv[2]).resolve()
+        payload = json.load(sys.stdin)
+        if not isinstance(payload, list):
+            fail("Batch validation payload must be a list")
+        schemas, registry = load_schemas(engine_root)
+        validators = {}
+        output = []
+        for index, item in enumerate(payload):
+            if not isinstance(item, dict) or not isinstance(item.get("schema_id"), str) or "data" not in item:
+                output.append({"ok": False, "index": index, "errors": [{"path": "<root>", "message": "Batch item requires schema_id and data"}]})
+                continue
+            schema_id = item["schema_id"]
+            if schema_id not in schemas:
+                output.append({"ok": False, "index": index, "errors": [{"path": "<root>", "message": f"Unknown schema: {schema_id}"}]})
+                continue
+            if schema_id not in validators:
+                validators[schema_id] = Draft202012Validator(schemas[schema_id], registry=registry, format_checker=FormatChecker())
+            errors = sorted(validators[schema_id].iter_errors(item["data"]), key=lambda error: list(error.path))
+            output.append({"ok": not errors, "index": index, "errors": [
+                {"path": ".".join(str(part) for part in error.path) or "<root>", "message": error.message}
+                for error in errors
+            ]})
+        print(json.dumps(output, ensure_ascii=False))
         return
 
     fail(f"Unknown command: {command}")

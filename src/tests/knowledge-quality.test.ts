@@ -108,9 +108,9 @@ test("Today translates stale quality issues into a user action", () => {
     suppressed_until: null,
     resolution: null,
   });
-  assert.equal(item.title, "重要申请信息需要重新核验");
-  assert.match(item.description, /申请开放状态/);
-  assert.match(item.description, /不会直接覆盖正式档案/);
+  assert.equal(item.title, "重要信息需要重新核验");
+  assert.match(item.description, /application open/);
+  assert.match(item.description, /不会直接覆盖正式数据/);
 });
 
 test("content ownership protects user and source regions while mixed AI changes require review", () => {

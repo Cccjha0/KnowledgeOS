@@ -8,13 +8,19 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build:plugin": "esbuild plugins/knowledgeos-obsidian/main.js --bundle --platform=node --format=cjs --target=es2022 --external:obsidian --outfile=plugins/knowledgeos-obsidian/dist/main.js",
+    "pack:plugin": "node tools/pack-obsidian-plugin.mjs",
     "check:boundaries": "python -X utf8 tools/check_core_boundaries.py",
+    "lint": "node tools/check-source-format.mjs && eslint plugins/knowledgeos-obsidian --max-warnings 0 && npm run typecheck",
     "prepare": "npm run build",
     "validate": "node dist/cli.js validate --vault ../knowledgeos-vault",
     "test": "npm run check:boundaries && npm run build && npm run test:engine",
     "test:engine": "node tools/run-engine-tests.mjs",
     "test:codex-isolation": "node --test dist/tests/codex-context.integration.test.js",
-    "test:plugin-smoke": "node plugins/knowledgeos-obsidian/tests/core-command-client.smoke.test.cjs",
+    "test:plugin-smoke": "npm run build:plugin && node tools/run-plugin-smoke-tests.mjs",
+    "benchmark:generate": "node tools/generate-synthetic-vault.mjs",
+    "benchmark:ux": "npm run build && node tools/benchmark-ux-performance.mjs",
     "chain": "node dist/cli.js application process-report 20-Workspace/Applications/australia-masters-2027/Inbox/2026-07-27-Monash-C6007-Update.md --vault ../knowledgeos-vault"
   },
   "engines": {
@@ -22,6 +28,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^9.39.5",
     "typescript": "^5.8.3"
   }
 }

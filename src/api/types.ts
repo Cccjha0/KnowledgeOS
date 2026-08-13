@@ -14,6 +14,7 @@ export type UiOperationState =
   | "cancelled";
 
 export type CommandApiMethod =
+  | "getSetupDoctor"
   | "getTodayItems"
   | "getSystemCenterSnapshot"
   | "createCapture"

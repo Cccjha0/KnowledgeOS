@@ -8,12 +8,35 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { CoreCommandClient } = require("../services/core-command-client");
+const { LatestRequestGate } = require("../services/latest-request");
 const { createReviewCenterViews } = require("../views/review-center");
 const { createInboxCenterViews } = require("../views/inbox-center");
 const { createSystemCenterViews } = require("../views/system-center");
 const { createTodayViews } = require("../views/today");
 const { createSettingsViews } = require("../views/settings-tab");
 const { createModuleBuilderViews } = require("../views/module-builder-modal");
+const { affectedKnowledgeViews, affectedKnowledgeViewsForPaths } = require("../services/view-refresh-policy");
+const { rollbackLabel } = require("../components/rollback-modal");
+
+test("Vault changes invalidate only the affected KnowledgeOS views", () => {
+  assert.deepEqual(affectedKnowledgeViews("Today.md"), []);
+  assert.deepEqual(affectedKnowledgeViews("90-System/Logs/run.md"), ["today", "system"]);
+  assert.deepEqual(affectedKnowledgeViews("00-Inbox/capture.md"), ["today", "inbox"]);
+  assert.deepEqual(affectedKnowledgeViews("20-Workspace/Reading/Inbox/book.pdf"), ["today", "inbox"]);
+  assert.deepEqual(affectedKnowledgeViews("90-System/Review Queue/REV-1.md"), ["today", "reviews", "system"]);
+  assert.deepEqual(affectedKnowledgeViews("90-System/State/Sidecars/asset.json"), ["today", "inbox"]);
+  assert.deepEqual(affectedKnowledgeViews("90-System/State/Inbox/item.json"), ["today", "inbox"]);
+  assert.deepEqual(affectedKnowledgeViews("20-Workspace/Courses/course-1/Assignments/A1.md"), ["today", "system"]);
+  assert.deepEqual(affectedKnowledgeViewsForPaths([
+    "90-System/Review Queue/Pending/REV-1.md", "00-Inbox/capture.md",
+  ]), ["today", "reviews", "system", "inbox"]);
+});
+
+test("shared rollback presentation describes unavailable and confirmable recovery", () => {
+  assert.equal(rollbackLabel({ can_rollback: false }), "不可自动撤销");
+  assert.equal(rollbackLabel({ can_rollback: true, requires_confirmation: false }), "安全撤销");
+  assert.equal(rollbackLabel({ can_rollback: true, requires_confirmation: true }), "撤销（需要确认）");
+});
 
 function createMockBridge(onRequest) {
   const child = new EventEmitter();
@@ -112,6 +135,57 @@ test("CoreCommandClient times out stalled requests and removes them from pending
   client.close();
 });
 
+test("CoreCommandClient does not resubmit a mutating request after its UI wait expires", async () => {
+  let requestCount = 0;
+  const settled = [];
+  let bridge;
+  const client = new CoreCommandClient(clientSettings, {
+    requestTimeoutMs: 1,
+    onOperationSettled: (event) => settled.push(event),
+    spawn: () => (bridge = createMockBridge((child, request) => {
+      requestCount += 1;
+      setTimeout(() => child.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, data: { saved: true } })}\n`), 20);
+    })),
+  });
+  const first = await client.invoke("createCapture", { content: "one" }, null, { timeoutMs: 5 });
+  assert.equal(first.state, "running");
+  const duplicate = await client.invoke("createCapture", { content: "one" }, null, { timeoutMs: 5 });
+  assert.equal(duplicate.state, "running");
+  assert.equal(requestCount, 1);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].method, "createCapture");
+  assert.equal(settled[0].response.data.saved, true);
+  const completed = await client.invoke("createCapture", { content: "one" });
+  assert.equal(completed.ok, true);
+  assert.equal(requestCount, 1);
+  client.close();
+});
+
+test("CoreCommandClient does not emit background completion for operations resolved in the UI", async () => {
+  const settled = [];
+  const client = new CoreCommandClient(clientSettings, {
+    onOperationSettled: (event) => settled.push(event), spawn: () => createMockBridge(),
+  });
+  assert.equal((await client.invoke("manageTask", { task_id: "TASK-1", action: "retry" })).ok, true);
+  assert.deepEqual(settled, []);
+  client.close();
+});
+
+test("CoreCommandClient reports a bridge failure after a mutation outlives its UI wait", async () => {
+  const settled = [];
+  let bridge;
+  const client = new CoreCommandClient(clientSettings, {
+    requestTimeoutMs: 1, onOperationSettled: (event) => settled.push(event),
+    spawn: () => (bridge = createMockBridge(() => {})),
+  });
+  assert.equal((await client.invoke("manageTask", { task_id: "TASK-2", action: "retry" }, null, { timeoutMs: 5 })).state, "running");
+  bridge.emit("exit", 1);
+  assert.equal(settled.length, 1);
+  assert.equal(settled[0].response.ok, false);
+  client.close();
+});
+
 test("CoreCommandClient matches concurrent requests to their own responses", async () => {
   const client = new CoreCommandClient(clientSettings, {
     spawn: () => createMockBridge((bridge, request) => {
@@ -128,6 +202,52 @@ test("CoreCommandClient matches concurrent requests to their own responses", asy
   assert.deepEqual(second.data, { order: 2 });
   assert.equal(client.pending.size, 0);
   client.close();
+});
+
+test("CoreCommandClient deduplicates canonical concurrent reads and clears them after success or failure", async () => {
+  let requestCount = 0;
+  let fail = false;
+  const client = new CoreCommandClient(clientSettings, {
+    spawn: () => createMockBridge((bridge, request) => {
+      requestCount += 1;
+      setTimeout(() => bridge.stdout.write(`${JSON.stringify(fail
+        ? { request_id: request.request_id, ok: false, state: "failed", error: { message: "synthetic failure" } }
+        : { request_id: request.request_id, ok: true, data: request.params })}\n`), 10);
+    }),
+  });
+  const [first, second] = await Promise.all([
+    client.invoke("getInstances", { module_id: "reading-log", filters: { active: true, status: "open" } }),
+    client.invoke("getInstances", { filters: { status: "open", active: true }, module_id: "reading-log" }),
+  ]);
+  assert.deepEqual(first.data, second.data);
+  assert.equal(requestCount, 1);
+  assert.equal(client.inFlightReads.size, 0);
+  fail = true;
+  assert.equal((await client.invoke("getInstances", { module_id: "reading-log" })).ok, false);
+  assert.equal(client.inFlightReads.size, 0);
+  fail = false;
+  assert.equal((await client.invoke("getInstances", { module_id: "reading-log" })).ok, true);
+  assert.equal(requestCount, 3, "a completed or failed read must not become a persistent cache");
+  client.close();
+});
+
+test("LatestRequestGate discards out-of-order responses and accepts only the newest generation", async () => {
+  const gate = new LatestRequestGate();
+  const committed = [];
+  const firstGeneration = gate.request();
+  const first = new Promise((resolve) => setTimeout(() => {
+    if (gate.isCurrent(firstGeneration)) committed.push("old");
+    resolve();
+  }, 20));
+  const secondGeneration = gate.request();
+  const second = new Promise((resolve) => setTimeout(() => {
+    if (gate.isCurrent(secondGeneration)) committed.push("new");
+    resolve();
+  }, 1));
+  await Promise.all([first, second]);
+  assert.deepEqual(committed, ["new"]);
+  gate.invalidate();
+  assert.equal(gate.isCurrent(secondGeneration), false);
 });
 
 test("CoreCommandClient fails malformed JSON safely and starts a fresh bridge", async () => {
@@ -203,4 +323,36 @@ test("view factories expose the existing view and settings constructors", () => 
   assert.equal(new constructors.InboxCenterView({}, {}).getViewType(), "knowledgeos-inbox");
   assert.equal(new constructors.ReviewCenterView({}, {}).getViewType(), "knowledgeos-review");
   assert.equal(new constructors.SystemCenterView({}, {}).getViewType(), "knowledgeos-system");
+});
+
+test("Setup Doctor presents every check state and explicit Vault mutation warnings", () => {
+  const source = require("node:fs").readFileSync(require("node:path").resolve(__dirname, "../views/settings-tab.js"), "utf8");
+  assert.match(source, /invoke\("getSetupDoctor", \{\}\)/);
+  assert.match(source, /Ready.*Needs action.*Failed/s);
+  assert.match(source, /执行建议的修复会修改 Vault/);
+  assert.match(source, /打开 Today/);
+  assert.doesNotMatch(source, /invoke\("getModules", \{\}\)/);
+});
+
+test("plugin presentation time follows the Vault timezone without fixed locale assumptions", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const main = fs.readFileSync(path.resolve(__dirname, "../main.js"), "utf8");
+  const today = fs.readFileSync(path.resolve(__dirname, "../views/today.js"), "utf8");
+  const reviews = fs.readFileSync(path.resolve(__dirname, "../views/review-center.js"), "utf8");
+  assert.doesNotMatch(`${main}\n${today}\n${reviews}`, /timeZone: "Asia\/Shanghai"|new Intl\.DateTimeFormat\("zh-CN"|getTimezoneOffset\(\)/);
+  assert.match(main, /vault-config\.json/);
+  assert.match(today, /formatTodayHeading/);
+  assert.match(reviews, /zonedLocalToIso/);
+});
+
+test("idle task wake calculation stays local and bounded without a Core request", () => {
+  const source = require("node:fs").readFileSync(require("node:path").resolve(__dirname, "../main.js"), "utf8");
+  const match = source.match(/function taskWakeDelay\(data, now = Date\.now\(\)\) \{([\s\S]*?)\n\}/);
+  assert.ok(match);
+  const taskWakeDelay = new Function("TASK_WAKE_MIN_MS", "TASK_WAKE_MAX_MS", `return function taskWakeDelay(data, now) {${match[1]}\n}`)(1_000, 300_000);
+  const started = process.hrtime.bigint();
+  for (let index = 0; index < 10_000; index += 1) assert.equal(taskWakeDelay({ has_work: false, next_wake_at: null }, Date.now()), 300_000);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1_000_000;
+  assert.ok(elapsedMs < 250, `10,000 idle wake calculations took ${elapsedMs.toFixed(3)}ms`);
 });

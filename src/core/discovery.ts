@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseYaml, validateSchema } from "./bridge.js";
+import { parseValidateYamlBatch } from "./bridge.js";
 import { exists, readJson } from "./files.js";
 import type { JsonObject } from "./types.js";
 
@@ -26,15 +26,14 @@ async function childDirectories(root: string): Promise<string[]> {
 }
 
 export async function discoverModules(engineRoot: string): Promise<DiscoveredDocument[]> {
-  const result: DiscoveredDocument[] = [];
+  const manifests: string[] = [];
   for (const directory of await childDirectories(path.join(engineRoot, "modules"))) {
     const manifest = path.join(directory, "module.yaml");
     if (!(await exists(manifest))) continue;
-    const data = parseYaml(engineRoot, manifest);
-    validateSchema(engineRoot, MODULE_SCHEMA, data);
-    result.push({ path: manifest, data });
+    manifests.push(manifest);
   }
-  return result;
+  const parsed = parseValidateYamlBatch(engineRoot, manifests.map((manifest) => ({ path: manifest, schema_id: MODULE_SCHEMA })));
+  return manifests.map((manifest, index) => ({ path: manifest, data: parsed[index]! }));
 }
 
 export async function discoverModulesForVault(engineRoot: string, vaultRoot: string): Promise<DiscoveredDocument[]> {
@@ -44,6 +43,7 @@ export async function discoverModulesForVault(engineRoot: string, vaultRoot: str
   );
   const result = new Map<string, DiscoveredDocument>();
   const officialById = new Map(official.map((module) => [String(module.data.id), module]));
+  const installedManifests: Array<{ id: string; status: string; manifest: string }> = [];
   for (const entry of installed.modules ?? []) {
     if (typeof entry.id !== "string" || !["enabled", "disabled"].includes(entry.status ?? "")) continue;
     const officialModule = officialById.get(entry.id);
@@ -65,9 +65,11 @@ export async function discoverModulesForVault(engineRoot: string, vaultRoot: str
       if (officialModule) result.set(entry.id, { path: officialModule.path, data: { ...officialModule.data, status: String(entry.status) } });
       continue;
     }
-    const data = parseYaml(vaultRoot, manifest);
-    validateSchema(engineRoot, MODULE_SCHEMA, data);
-    result.set(entry.id, { path: manifest, data: { ...data, status: String(entry.status) } });
+    installedManifests.push({ id: entry.id, status: String(entry.status), manifest });
+  }
+  const installedData = parseValidateYamlBatch(vaultRoot, installedManifests.map(({ manifest }) => ({ path: manifest, schema_id: MODULE_SCHEMA })));
+  for (const [index, entry] of installedManifests.entries()) {
+    result.set(entry.id, { path: entry.manifest, data: { ...installedData[index]!, status: entry.status } });
   }
   for (const module of official) {
     const id = String(module.data.id);
@@ -78,16 +80,15 @@ export async function discoverModulesForVault(engineRoot: string, vaultRoot: str
 }
 
 export async function discoverInstances(vaultRoot: string): Promise<DiscoveredDocument[]> {
-  const result: DiscoveredDocument[] = [];
+  const instances: string[] = [];
   const root = path.join(vaultRoot, "90-System", "Instances");
   for (const directory of await childDirectories(root)) {
     const instance = path.join(directory, "instance.yaml");
     if (!(await exists(instance))) continue;
-    const data = parseYaml(vaultRoot, instance);
-    validateSchema(vaultRoot, INSTANCE_SCHEMA, data);
-    result.push({ path: instance, data });
+    instances.push(instance);
   }
-  return result;
+  const parsed = parseValidateYamlBatch(vaultRoot, instances.map((instance) => ({ path: instance, schema_id: INSTANCE_SCHEMA })));
+  return instances.map((instance, index) => ({ path: instance, data: parsed[index]! }));
 }
 
 export async function discoverRoutingContext(engineRoot: string, vaultRoot: string): Promise<RoutingDiscoveryContext> {

@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "os": "win32 10.0.26200 x64",
+    "node": "v22.11.0",
+    "python": "Python 3.13.11",
+    "commit_sha": "fb4d84646fc15da9fb25b6c08e0bfe0ca380c229",
+    "fixture_scale": "small",
+    "generated_at": "2026-08-12T21:17:00.712Z"
+  },
+  "fixture_counts": {
+    "modules": 3,
+    "instances": 3,
+    "records": 50,
+    "inbox": 10,
+    "reviews": 10,
+    "runs": 100,
+    "tasks": 100,
+    "quality": 20
+  },
+  "methodology": {
+    "warmups": 1,
+    "iterations": 5,
+    "statistics": [
+      "median",
+      "p95",
+      "min",
+      "max"
+    ],
+    "content_logged": false
+  },
+  "results": {
+    "getTodayItems": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 4163.793,
+        "p95_ms": 4212.185,
+        "min_ms": 4155.334,
+        "max_ms": 4212.185,
+        "response_bytes": {
+          "median": 52376,
+          "p95": 52376
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 15,
+          "files_discovered": 180,
+          "markdown_parse_requests": 7,
+          "markdown_files_parsed": 170,
+          "yaml_parse_requests": 14,
+          "schema_validations": 138,
+          "parse_cache_hits": 10,
+          "parse_cache_misses": 311,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 177.133,
+        "p95_ms": 184.07,
+        "min_ms": 175.928,
+        "max_ms": 184.07,
+        "response_bytes": {
+          "median": 52377,
+          "p95": 52377
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 180,
+          "markdown_parse_requests": 7,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 3,
+          "schema_validations": 127,
+          "parse_cache_hits": 321,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    }
+  }
+}
