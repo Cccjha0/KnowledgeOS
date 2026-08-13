@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "os": "win32 10.0.26200 x64",
+    "node": "v22.11.0",
+    "python": "Python 3.13.11",
+    "commit_sha": "ea87f967919ee0ab826fdea39c3bfc07524e6456",
+    "fixture_scale": "large",
+    "generated_at": "2026-08-13T02:22:52.223Z"
+  },
+  "fixture_counts": {
+    "modules": 3,
+    "instances": 30,
+    "records": 10000,
+    "inbox": 1000,
+    "reviews": 1000,
+    "runs": 20000,
+    "tasks": 10000,
+    "quality": 3000
+  },
+  "methodology": {
+    "warmups": 1,
+    "iterations": 5,
+    "statistics": [
+      "median",
+      "p95",
+      "min",
+      "max"
+    ],
+    "content_logged": false
+  },
+  "results": {
+    "api-server-cold-start": {
+      "samples": 5,
+      "median_ms": 1026.57,
+      "p95_ms": 1049.819,
+      "min_ms": 956.701,
+      "max_ms": 1049.819,
+      "response_bytes": {
+        "median": 11288,
+        "p95": 11288
+      }
+    },
+    "getModules": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 2213.57,
+        "p95_ms": 2252.424,
+        "min_ms": 2188.9,
+        "max_ms": 2252.424,
+        "response_bytes": {
+          "median": 5653,
+          "p95": 5653
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 3,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 38,
+          "schema_validations": 38,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 38,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 39.956,
+        "p95_ms": 41.392,
+        "min_ms": 39.304,
+        "max_ms": 41.392,
+        "response_bytes": {
+          "median": 5654,
+          "p95": 5654
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 0,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 38,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "getInstances": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 728.918,
+        "p95_ms": 747.749,
+        "min_ms": 713.503,
+        "max_ms": 747.749,
+        "response_bytes": {
+          "median": 11301,
+          "p95": 11301
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 30,
+          "schema_validations": 30,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 30,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 14.566,
+        "p95_ms": 14.684,
+        "min_ms": 14.47,
+        "max_ms": 14.684,
+        "response_bytes": {
+          "median": 11302,
+          "p95": 11302
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 0,
+          "files_discovered": 0,
+          "markdown_parse_requests": 0,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 30,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "getInboxCenterSnapshot": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 2551.621,
+        "p95_ms": 3773.033,
+        "min_ms": 2535.246,
+        "max_ms": 3773.033,
+        "response_bytes": {
+          "median": 101315,
+          "p95": 101315
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 5.2,
+          "files_discovered": 1200,
+          "markdown_parse_requests": 1.2,
+          "markdown_files_parsed": 240,
+          "yaml_parse_requests": 38,
+          "schema_validations": 38,
+          "parse_cache_hits": 10,
+          "parse_cache_misses": 278,
+          "parse_cache_evictions": 0
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 255.666,
+        "p95_ms": 259.945,
+        "min_ms": 253.089,
+        "max_ms": 259.945,
+        "response_bytes": {
+          "median": 101316,
+          "p95": 101316
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 1000,
+          "markdown_parse_requests": 1,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 0,
+          "parse_cache_hits": 88,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    },
+    "listReviewItems": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 5475.502,
+        "p95_ms": 7782.36,
+        "min_ms": 5462.269,
+        "max_ms": 7782.36,
+        "response_bytes": {
+          "median": 49929,
+          "p95": 49929
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 53.2,
+          "files_discovered": 1000,
+          "markdown_parse_requests": 51.2,
+          "markdown_files_parsed": 290,
+          "yaml_parse_requests": 0,
+          "schema_validations": 250,
+          "parse_cache_hits": 20,
+          "parse_cache_misses": 530,
+          "parse_cache_evictions": 10
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 206.122,
+        "p95_ms": 211.879,
+        "min_ms": 201.636,
+        "max_ms": 211.879,
+        "response_bytes": {
+          "median": 49930,
+          "p95": 49930
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 1,
+          "files_discovered": 1000,
+          "markdown_parse_requests": 51,
+          "markdown_files_parsed": 0,
+          "yaml_parse_requests": 0,
+          "schema_validations": 50,
+          "parse_cache_hits": 150,
+          "parse_cache_misses": 0,
+          "parse_cache_evictions": 0
+        }
+      }
+    }
+  }
+}

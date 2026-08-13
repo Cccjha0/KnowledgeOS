@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "environment": {
+    "os": "win32 10.0.26200 x64",
+    "node": "v22.11.0",
+    "python": "Python 3.13.11",
+    "commit_sha": "ea87f967919ee0ab826fdea39c3bfc07524e6456",
+    "fixture_scale": "large",
+    "generated_at": "2026-08-13T02:28:54.215Z"
+  },
+  "fixture_counts": {
+    "modules": 3,
+    "instances": 30,
+    "records": 10000,
+    "inbox": 1000,
+    "reviews": 1000,
+    "runs": 20000,
+    "tasks": 10000,
+    "quality": 3000
+  },
+  "methodology": {
+    "warmups": 1,
+    "iterations": 5,
+    "statistics": [
+      "median",
+      "p95",
+      "min",
+      "max"
+    ],
+    "content_logged": false
+  },
+  "results": {
+    "getTodayItems": {
+      "cold": {
+        "samples": 5,
+        "median_ms": 31311.901,
+        "p95_ms": 54304.643,
+        "min_ms": 31123.697,
+        "max_ms": 54304.643,
+        "response_bytes": {
+          "median": 139618,
+          "p95": 139618
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 43.4,
+          "files_discovered": 17000,
+          "markdown_parse_requests": 33.2,
+          "markdown_files_parsed": 17000,
+          "yaml_parse_requests": 41,
+          "schema_validations": 13452,
+          "parse_cache_hits": 0,
+          "parse_cache_misses": 30455,
+          "parse_cache_evictions": 16000
+        }
+      },
+      "warm": {
+        "samples": 5,
+        "median_ms": 22925.512,
+        "p95_ms": 23113.101,
+        "min_ms": 5224.285,
+        "max_ms": 23113.101,
+        "response_bytes": {
+          "median": 139619,
+          "p95": 139619
+        },
+        "diagnostics_per_request": {
+          "python_subprocesses": 22.6,
+          "files_discovered": 13000,
+          "markdown_parse_requests": 20.6,
+          "markdown_files_parsed": 8600,
+          "yaml_parse_requests": 1.8,
+          "schema_validations": 13414,
+          "parse_cache_hits": 13453.8,
+          "parse_cache_misses": 8600,
+          "parse_cache_evictions": 8600
+        }
+      }
+    }
+  }
+}
