@@ -76,6 +76,7 @@ export class RuntimeRepository {
   runtimeStats(): JsonObject { return this.call<JsonObject>("runtime-stats"); }
   nextWake(now = new Date().toISOString()): JsonObject { return this.call<JsonObject>("next-wake", { now }); }
   systemCenterData(since: string): JsonObject { return this.call<JsonObject>("system-center-data", { since }); }
+  systemOverviewData(since: string): JsonObject { return this.call<JsonObject>("system-overview-data", { since }); }
   todayData(): JsonObject { return this.call<JsonObject>("today-data"); }
   registerJob(job: JobDefinition): void { this.call("register-job", job); }
   listJobs(): JobDefinition[] { return this.call<JobDefinition[]>("list-jobs"); }

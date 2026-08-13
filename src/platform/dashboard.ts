@@ -4,14 +4,15 @@ import { qualityIssueToDashboardItem } from "../quality/presentation.js";
 import type { QualityIssue } from "../quality/domain.js";
 import { RuntimeRepository } from "../runtime/repository.js";
 import type { RuntimeTask } from "../runtime/domain.js";
-import { discoverInboxContext, discoverInboxItems, inboxDashboardItem } from "./inboxDiscovery.js";
+import { discoverInboxContext, inboxDashboardItem, listInboxPage } from "./inboxDiscovery.js";
 import { collectModuleDashboardItems } from "../modules/dashboardProvider.js";
 import { createTaskPresentationCatalog, taskPresentation } from "./taskDashboardPresentation.js";
 
 export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot> {
   const context = await discoverInboxContext(vaultRoot);
   const enabled = new Set(context.modules.map((module) => String(module.data.id)));
-  const discoveredInbox = await discoverInboxItems(vaultRoot, context);
+  const inbox = await listInboxPage(vaultRoot, { page_size: 50 }, context);
+  const discoveredInbox = inbox.items;
   const inboxItemIds = new Set(discoveredInbox.map((item) => item.item_id));
   const presentationCatalog = createTaskPresentationCatalog(context.modules);
   const items = discoveredInbox
@@ -45,7 +46,8 @@ export async function getTodaySnapshot(vaultRoot: string): Promise<TodaySnapshot
       .filter((issue) => ["critical", "high"].includes(issue.severity) || issue.issue_type === "overdue-review")
       .map(qualityIssueToDashboardItem));
   } finally { runtime.close(); }
-  return buildTodaySnapshot(vaultRoot, items, enabled);
+  const inboxCount = typeof inbox.counts.total === "number" ? inbox.counts.total : discoveredInbox.length;
+  return buildTodaySnapshot(vaultRoot, items, enabled, { inbox: inboxCount });
 }
 
 export async function rebuildTodayDashboard(vaultRoot: string): Promise<string> {

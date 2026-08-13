@@ -42,6 +42,10 @@ def main():
             if statuses:
                 clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
                 values.extend(statuses)
+            module_ids = payload.get("module_ids") or []
+            if module_ids:
+                clauses.append(f"source_module IN ({','.join('?' for _ in module_ids)})")
+                values.extend(module_ids)
             for column, key in (("source_module", "module_id"), ("instance_id", "instance_id"), ("priority", "priority"), ("action", "action")):
                 if payload.get(key):
                     clauses.append(f"{column}=?")

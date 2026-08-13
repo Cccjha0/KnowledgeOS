@@ -329,6 +329,9 @@ function runtimeView(runtimeData: JsonObject): JsonObject {
 }
 
 function qualityOverview(runtimeData: JsonObject): JsonObject {
+  if (runtimeData.quality_overview && typeof runtimeData.quality_overview === "object" && !Array.isArray(runtimeData.quality_overview)) {
+    return runtimeData.quality_overview as JsonObject;
+  }
   const active = (runtimeData.quality_active as JsonObject[] | undefined) ?? [];
   const resolved = (runtimeData.quality_resolved as JsonObject[] | undefined) ?? [];
   const tasks = (runtimeData.tasks as JsonObject[] | undefined) ?? [];
@@ -346,6 +349,12 @@ function qualityOverview(runtimeData: JsonObject): JsonObject {
 async function systemRuntimeData(vaultRoot: string): Promise<JsonObject> {
   const repository = await RuntimeRepository.open(vaultRoot);
   try { return repository.systemCenterData(new Date(Date.now() - 7 * 86_400_000).toISOString()); }
+  finally { repository.close(); }
+}
+
+async function systemOverviewRuntimeData(vaultRoot: string): Promise<JsonObject> {
+  const repository = await RuntimeRepository.open(vaultRoot);
+  try { return repository.systemOverviewData(new Date(Date.now() - 7 * 86_400_000).toISOString()); }
   finally { repository.close(); }
 }
 
@@ -450,7 +459,8 @@ async function execute(context: CommandContext): Promise<JsonValue> {
         } as unknown as JsonValue;
       } finally { repository.close(); }
     }
-    const runtimeData = ["full", "overview", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
+    const runtimeData = section === "overview" ? await systemOverviewRuntimeData(vaultRoot)
+      : ["full", "quality"].includes(section) ? await systemRuntimeData(vaultRoot) : {};
     const runtime = runtimeView(runtimeData);
     const tasks = ((runtimeData.tasks as JsonValue[] | undefined) ?? []).slice(0, 200);
     if (section === "quality") {
@@ -461,18 +471,20 @@ async function execute(context: CommandContext): Promise<JsonValue> {
     const inboxContext = await discoverInboxContext(vaultRoot, routing);
     const instances = instanceViews(routing.instances, {});
     if (section === "overview") {
-      const [inbox, reviews, runs] = await Promise.all([
-        listInbox(vaultRoot, {}, inboxContext),
-        listReviews(vaultRoot, { statuses: ["pending", "error"] }),
-        listRunViews(vaultRoot, { limit: 1, include_rollback: false }),
+      const [inbox, reviewPage, runPage] = await Promise.all([
+        listInboxPage(vaultRoot, { page_size: 5 }, inboxContext),
+        listReviewPage(vaultRoot, { statuses: ["pending", "error"], page_size: 5 }),
+        listRunViewPage(vaultRoot, { page_size: 1, include_rollback: false }),
       ]);
+      const reviews = Array.isArray(reviewPage.items) ? reviewPage.items : [];
       return {
         section,
         modules: routing.modules.map((module) => ({ id: module.data.id, status: module.data.status })),
         instances,
         inbox,
         reviews,
-        runs,
+        review_total: typeof reviewPage.total === "number" ? reviewPage.total : reviews.length,
+        runs: Array.isArray(runPage.items) ? runPage.items : [],
         tasks,
         runtime,
         quality: { overview: qualityOverview(runtimeData) },
