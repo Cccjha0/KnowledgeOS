@@ -12,8 +12,8 @@ Final assessment: **PARTIAL — NOT READY until the required real Obsidian visua
 - Working branch: `fix/plugin-command-api-smoke`
 - Goal-provided known baseline: `91fd3e30833ff688e23a4086e44daafea0ff8ed1` (`fix: validate plugin view dependencies`), 17 commits ahead of `main` when the goal was authored.
 - Baseline selected after fetching and comparing remote ancestry: `d15c26da898dcc939dd0a53bdd9789a8130cfbe4` (`refactor: isolate blueprint approval contracts`). It contains the goal-provided baseline and was 18 ahead / 0 behind `origin/main` at selection.
-- Acceptance implementation HEAD before this document: `1a38fe44cfd9fd1ce705924c2abad737cca25c5a`.
-- Final fetch result before the document commit: local HEAD was 45 ahead / 0 behind `origin/main`, and 3 ahead / 0 behind `origin/fix/plugin-command-api-smoke`.
+- Original acceptance implementation HEAD before this document: `1a38fe44cfd9fd1ce705924c2abad737cca25c5a`.
+- Integration update: after PR #12 merged the earlier branch work, these four remaining commits were rebased without conflict onto `origin/main` at `62184bc`. The rebased implementation commit is `08b7a5c`; this document follows it on the same branch.
 - Remote branches were ordered by commit time and checked for ancestry/containment; `main` was not assumed to be newest.
 
 ### Environment and fixtures
