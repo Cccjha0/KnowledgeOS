@@ -718,6 +718,7 @@ class SystemCenterView extends ItemView {
       normalizeRuntime();
       normalized.quality = { ...normalized.quality, overview: { ...normalized.quality.overview } };
       for (const key of ["tasks", "reviews", "modules", "instances", "runs"]) if (!requireArray(key)) { normalized[key] = []; warnings.push(key); }
+      if (!Number.isFinite(normalized.review_total)) normalized.review_total = normalized.reviews.length;
       normalizeInbox();
     }
     if (section === "tasks") {
@@ -835,7 +836,8 @@ class SystemCenterView extends ItemView {
   renderOverview(root) {
     const counts = this.data.runtime.counts || {};
     const quality = this.data.quality?.overview || {};
-    const needsAttention = (counts.failed || 0) + (counts["waiting-for-user"] || 0) + (quality.critical || 0) + (quality.high || 0) + this.data.reviews.length;
+    const reviewTotal = this.data.review_total;
+    const needsAttention = (counts.failed || 0) + (counts["waiting-for-user"] || 0) + (quality.critical || 0) + (quality.high || 0) + reviewTotal;
     const status = root.createEl("section", { cls: `knowledgeos-system-health-summary ${needsAttention ? "is-warning" : "is-good"}`, attr: { "aria-label": "系统状态" } });
     const statusIcon = status.createSpan({ cls: "knowledgeos-system-health-icon", attr: { "aria-hidden": "true" } }); setIcon(statusIcon, needsAttention ? "circle-alert" : "circle-check");
     const statusText = status.createDiv();
@@ -846,13 +848,13 @@ class SystemCenterView extends ItemView {
     this.renderMetric(metrics, "自动化", `${(counts.queued || 0) + (counts.running || 0)} 个进行中`, `等待 AI ${counts["waiting-for-ai"] || 0} · 失败 ${counts.failed || 0}`);
     this.renderMetric(metrics, "知识质量", `${quality.active_issues || 0} 个活跃问题`, `严重 ${quality.critical || 0} · 高优先级 ${quality.high || 0}`);
     this.renderMetric(metrics, "工作区", `${this.data.instances.length} 个实例`, `${this.data.modules.filter((item) => item.status === "enabled").length} 个模块已启用 · Inbox ${this.data.inbox.counts?.total || 0}`);
-    this.renderMetric(metrics, "人工处理", `${this.data.reviews.length + (counts["waiting-for-user"] || 0)} 项`, `待审核 ${this.data.reviews.length} · 等待用户 ${counts["waiting-for-user"] || 0}`);
+    this.renderMetric(metrics, "人工处理", `${reviewTotal + (counts["waiting-for-user"] || 0)} 项`, `待审核 ${reviewTotal} · 等待用户 ${counts["waiting-for-user"] || 0}`);
 
     const attentionSection = root.createEl("section", { cls: "knowledgeos-system-section", attr: { "aria-label": "需要关注" } });
     attentionSection.createEl("h3", { text: "需要关注" });
     const attentionList = attentionSection.createDiv({ cls: "knowledgeos-system-list" });
     const attention = this.data.tasks.filter((task) => ["failed", "waiting-for-user", "interrupted"].includes(task.status)).slice(0, 5);
-    if (!attention.length && !(quality.critical || quality.high) && !this.data.reviews.length) {
+    if (!attention.length && !(quality.critical || quality.high) && !reviewTotal) {
       this.renderEmptyState(attentionSection, "circle-check", "当前没有需要你处理的系统事项", "新的失败任务、质量问题或待审核事项会显示在这里。", true);
       attentionList.remove();
     } else {
@@ -864,9 +866,9 @@ class SystemCenterView extends ItemView {
         const open = createToolbarButton(row, "arrow-right", "查看知识质量");
         open.onclick = () => { void this.openSection("quality"); };
       }
-      if (this.data.reviews.length) {
+      if (reviewTotal) {
         const row = attentionList.createEl("article", { cls: "knowledgeos-system-row" });
-        row.createEl("strong", { text: `${this.data.reviews.length} 项等待审核` });
+        row.createEl("strong", { text: `${reviewTotal} 项等待审核` });
         row.createDiv({ cls: "knowledgeos-system-row-description", text: "需要你确认系统建议后才能继续。" });
         const open = createToolbarButton(row, "arrow-right", "打开审核中心");
         open.onclick = () => this.plugin.activateReviews();

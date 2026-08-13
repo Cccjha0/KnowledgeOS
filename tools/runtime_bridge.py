@@ -621,6 +621,40 @@ def dispatch(command, connection, payload):
             "metrics": dispatch("aggregate-metrics", connection, {"since": payload.get("since")}),
             "audits": dispatch("list-audits", connection, {"limit": 50}),
         }
+    if command == "system-overview-data":
+        since = payload.get("since") or (datetime.now(timezone.utc) - timedelta(days=7)).isoformat().replace("+00:00", "Z")
+        active_statuses = ("open", "acknowledged", "scheduled", "suppressed")
+        quality = connection.execute("""SELECT
+          COUNT(*) AS active_issues,
+          SUM(CASE WHEN severity='critical' THEN 1 ELSE 0 END) AS critical,
+          SUM(CASE WHEN severity='high' THEN 1 ELSE 0 END) AS high,
+          SUM(CASE WHEN first_seen>=? THEN 1 ELSE 0 END) AS new_this_week
+          FROM quality_issues WHERE status IN (?,?,?,?)""", (since, *active_statuses)).fetchone()
+        resolved = connection.execute(
+            "SELECT COUNT(*) FROM quality_issues WHERE status='resolved' AND last_seen>=?", (since,)
+        ).fetchone()[0]
+        tasks = [task_dict(row) for row in connection.execute("""SELECT * FROM tasks
+          WHERE status IN ('failed','waiting-for-user','interrupted')
+          ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END,
+                   updated_at DESC, task_id LIMIT 5""")]
+        runtime_stats = dispatch("runtime-stats", connection, {})
+        return {
+            "tasks": tasks,
+            "integrity": dispatch("integrity-check", connection, {}),
+            "schema_version": dispatch("schema-version", connection, {}),
+            "resources": dispatch("get-resource-statuses", connection, {}),
+            "jobs": dispatch("list-jobs", connection, {}),
+            "checkpoints": [],
+            "runtime_stats": runtime_stats,
+            "quality_overview": {
+                "active_issues": int(quality["active_issues"] or 0),
+                "critical": int(quality["critical"] or 0),
+                "high": int(quality["high"] or 0),
+                "new_this_week": int(quality["new_this_week"] or 0),
+                "resolved_this_week": int(resolved or 0),
+                "failed_tasks": int(runtime_stats.get("counts", {}).get("failed", 0)),
+            },
+        }
     if command == "today-data":
         tasks = [task_dict(row) for row in connection.execute("""
           SELECT * FROM tasks
