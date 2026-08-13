@@ -2,9 +2,10 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { DashboardItem, RecentRunSummary, TodayInboxGroup, TodaySnapshot } from "./types.js";
 import { parseMarkdownBatch, validateSchemaBatch } from "./bridge.js";
-import { exists, listFilesRecursive, toVaultPath } from "./files.js";
+import { exists, toVaultPath } from "./files.js";
 import { requeueDueReviews } from "./reviews.js";
 import { listRecentRunSummaries } from "./runSummaryIndex.js";
+import { listReviewSummaryPage } from "./reviewSummaryIndex.js";
 
 const DASHBOARD_SCHEMA = "https://pkb.local/schemas/core/dashboard-item.schema.json";
 const PRIORITY_WEIGHT: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
@@ -54,12 +55,23 @@ function sortItems(items: DashboardItem[], now = Date.now()): DashboardItem[] {
   return [...items].sort((a, b) => rank(a, now) - rank(b, now) || a.title.localeCompare(b.title));
 }
 
-async function collectReviewDashboardItems(vaultRoot: string): Promise<DashboardItem[]> {
+async function collectReviewDashboardItems(
+  vaultRoot: string,
+  enabledModules: ReadonlySet<string> | null,
+): Promise<{ items: DashboardItem[]; total: number }> {
   const items: DashboardItem[] = [];
-  const pendingRoot = path.join(vaultRoot, "90-System", "Review Queue", "Pending");
-  const pendingFiles = await listFilesRecursive(pendingRoot, ".md");
-  const errorRoot = path.join(vaultRoot, "90-System", "Review Queue", "Error");
-  const errorFiles = await listFilesRecursive(errorRoot, ".md");
+  const page = await listReviewSummaryPage(vaultRoot, {
+    statuses: ["pending", "error"],
+    module_ids: enabledModules ? [...enabledModules] : [],
+    page_size: TODAY_SECTION_LIMIT,
+  });
+  const summaries = Array.isArray(page.items) ? page.items as Array<Record<string, unknown>> : [];
+  const pendingFiles = summaries
+    .filter((entry) => entry.status === "pending")
+    .map((entry) => path.join(vaultRoot, ...String(entry.vault_path).split("/")));
+  const errorFiles = summaries
+    .filter((entry) => entry.status === "error")
+    .map((entry) => path.join(vaultRoot, ...String(entry.vault_path).split("/")));
   const parsed = parseMarkdownBatch(vaultRoot, [...pendingFiles, ...errorFiles]);
   for (const file of pendingFiles) {
     const document = parsed.get(file);
@@ -110,7 +122,7 @@ async function collectReviewDashboardItems(vaultRoot: string): Promise<Dashboard
       actions: ["open", "retry"],
     });
   }
-  return items;
+  return { items, total: typeof page.total === "number" ? page.total : items.length };
 }
 
 async function collectRecentRuns(vaultRoot: string): Promise<RecentRunSummary[]> {
@@ -156,11 +168,12 @@ export async function buildTodaySnapshot(
   vaultRoot: string,
   moduleItems: DashboardItem[] = [],
   enabledModules: ReadonlySet<string> | null = null,
+  countOverrides: { inbox?: number } = {},
 ): Promise<TodaySnapshot> {
   await requeueDueReviews(vaultRoot);
-  const reviewItems = await collectReviewDashboardItems(vaultRoot);
+  const reviewProjection = await collectReviewDashboardItems(vaultRoot, enabledModules);
   const all = uniqueItems([
-    ...reviewItems.filter((item) => !enabledModules || enabledModules.has(item.source_module)),
+    ...reviewProjection.items,
     ...moduleItems,
   ]);
   const validation = validateSchemaBatch(vaultRoot, all.map((item) => ({ schemaId: DASHBOARD_SCHEMA, data: item })));
@@ -200,8 +213,8 @@ export async function buildTodaySnapshot(
     module_summaries: moduleSummaries.slice(0, TODAY_SECTION_LIMIT),
     counts: {
       focus: Math.min(focusPool.length, 5),
-      reviews: reviews.length,
-      inbox: inboxItems.length,
+      reviews: reviewProjection.total,
+      inbox: countOverrides.inbox ?? inboxItems.length,
       due: due.length,
       waiting_external: waitingExternal.length,
       failures: failures.length,

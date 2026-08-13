@@ -12,6 +12,7 @@ type ProviderKind = "entity" | "due" | "recent" | "review-summary";
 const ENGINE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const DASHBOARD_SNAPSHOT_VAULT_LIMIT = 4;
 const DASHBOARD_SNAPSHOT_ITEM_LIMIT = 20_000;
+const DASHBOARD_SNAPSHOT_TTL_MS = 60_000;
 const dashboardSnapshots = new Map<string, { revision: string; expiresAt: number; items: DashboardItem[] }>();
 
 interface ProviderItem {
@@ -332,7 +333,11 @@ export async function collectModuleDashboardItems(
     }
   }
   if (result.length <= DASHBOARD_SNAPSHOT_ITEM_LIMIT) {
-    dashboardSnapshots.set(vaultRoot, { revision: inputs.revision, expiresAt: Date.now() + 10_000, items: structuredClone(result) });
+    dashboardSnapshots.set(vaultRoot, {
+      revision: inputs.revision,
+      expiresAt: Date.now() + DASHBOARD_SNAPSHOT_TTL_MS,
+      items: structuredClone(result),
+    });
     while (dashboardSnapshots.size > DASHBOARD_SNAPSHOT_VAULT_LIMIT) dashboardSnapshots.delete(dashboardSnapshots.keys().next().value!);
   }
   return result;
